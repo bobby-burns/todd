@@ -16,4 +16,4 @@ langchain-core==1.6.5
 langchain-litellm==0.9.0
 langchain-mcp-adapters==0.3.2
 litellm==1.102.1
-browser-use==0.13.9  # 0.13.10 pins mcp==2.x, which langchain-mcp-adapters 0.3.2 (mcp<2) rejects
+browser-use==0.13.10  # 0.13.10 pins mcp==2.x, which langchain-mcp-adapters 0.3.2 (mcp<2) rejects
