@@ -1,0 +1,117 @@
+# Todd — self-hosted multi-agent operator.
+#   docker compose up -d --build        → dashboard at http://localhost:3000
+#   docker compose --profile local up   → also runs Ollama for fully local models
+# Requires Docker Compose v2.24+.
+#
+# Isolation:
+#   core        postgres, api, web          (sandbox and browser can't reach the DB or the dashboard)
+#   sandbox_net api ↔ sandbox               (agent-run code can reach the API port, but every API call needs a
+#   browser_net api ↔ browser                token that only api and web have: see the api-token volume)
+# Published ports bind to 127.0.0.1 only. Todd can spend money: don't expose it publicly without adding auth.
+name: todd
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: todd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todd}
+      POSTGRES_DB: todd
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [core]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todd -d todd"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./services/api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://todd:${POSTGRES_PASSWORD:-todd}@postgres:5432/todd
+      TODD_DATA_DIR: /data
+      TODD_API_TOKEN_FILE: /shared/api_token
+      SANDBOX_URL: http://sandbox:7000
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:-change-me-sandbox-token}
+      BROWSER_CDP_HOST: browser
+      BROWSER_CDP_PORT: "9223"
+      BROWSER_LIVE_URL: ${BROWSER_LIVE_URL:-http://localhost:6080/vnc_lite.html?scale=true}
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - apidata:/data
+      - api-token:/shared
+      - ./plugins:/app/custom/plugins
+      - ./prompts:/app/custom/prompts
+    networks: [core, sandbox_net, browser_net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sandbox:
+        condition: service_started
+      browser:
+        condition: service_started
+
+  sandbox:
+    build: ./services/sandbox
+    restart: unless-stopped
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:-change-me-sandbox-token}
+    volumes:
+      - workspace:/workspace
+    networks: [sandbox_net]
+
+  browser:
+    build: ./services/browser
+    restart: unless-stopped
+    shm_size: 2gb
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      SCREEN_WIDTH: "1440"
+      SCREEN_HEIGHT: "900"
+    volumes:
+      - browser-profile:/data
+    networks: [browser_net]
+    ports:
+      - "127.0.0.1:6080:6080"   # live view (noVNC)
+
+  web:
+    build: ./services/web
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:8000
+      TODD_API_TOKEN_FILE: /shared/api_token
+    volumes:
+      - api-token:/shared:ro
+    networks: [core]
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    networks: [core]
+
+networks:
+  core:
+  sandbox_net:
+  browser_net:
+
+volumes:
+  pgdata:
+  apidata:
+  api-token:
+  workspace:
+  browser-profile:
+  ollama:

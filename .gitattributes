@@ -1,0 +1,8 @@
+# Normalize line endings. Shell scripts and Dockerfiles run inside Linux containers, so they must stay LF even
+# when the repo is cloned on Windows.
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# Keep lockfiles out of diffs and language stats.
+package-lock.json -diff linguist-generated=true
