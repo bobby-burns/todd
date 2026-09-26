@@ -52,11 +52,12 @@ Open source and self-hosted: `docker compose up` and it's yours.
   `spawn_agent(name, instructions, task, tasks, toolsets, model)` for each *group of related work* ("Store
   Listing" = keywords + metadata + submit; "Marketing Site & Domain" = domain + banner + deploy), not one
   agent per step. Independent groups run in parallel (typically 1–4 agents; limits are configurable), and the
-  planner waits on, messages or cancels them.
+  planner waits on, messages or cancels them. It stays responsive while they work: message it any time and it acts
+  right away (for example, spawns another agent) while the others keep going.
 - **Watch them think, pause them, steer them.** Each agent has its own window with its reasoning (narrated,
   plus native model reasoning where supported), tool calls, browser steps, a **Pause/Resume** button and a
-  message box. Pause an agent (or the whole run), tell it what to change, resume. Pausing also freezes an
-  agent's in-progress browser task.
+  message box. Pause an agent (or the whole run) and send it a message: it picks up the change and resumes.
+  Pausing also freezes an agent's in-progress browser task.
 - **Every agent ends with a summary.** Done / Outputs / How / Left-needs-you, shown as a card in its window.
   The planner's run summary adds a line per agent. If an agent is stopped or fails, Todd writes a fallback
   summary from what it actually did.
@@ -64,6 +65,10 @@ Open source and self-hosted: `docker compose up` and it's yours.
   domains, cloud, payments, Google, socials, launch communities, productivity, app stores, AI platforms). Todd
   detects logins in the agents' browser and shows each session's status. The planner checks the accounts it
   needs before starting, so agents don't stall on login screens.
+- **Sign in once: web and CLI.** When you sign in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe or
+  Firebase, Todd signs in that service's CLI with the same session right away. It approves the CLI's sign-in in the
+  browser itself; you only step in if the site asks for your password or 2FA, and only then, while you're there.
+  Credentials go straight into the encrypted vault; nobody copies tokens, and runs never stop for a login.
 - **Your Claude plan, or your own keys.** By default every agent (planner included) runs as a headless
   [Claude Code](https://code.claude.com) session signed in with your Claude account, so usage counts toward
   your Pro/Max plan instead of API credits (Opus 5.5 by default). Or switch Settings → Engine to **API keys**
@@ -74,6 +79,8 @@ Open source and self-hosted: `docker compose up` and it's yours.
   REST API via `api_request` with a vault key, a CLI in the sandbox, and only then the browser. `browse`
   requires a `why_not_api` reason, which is shown in the agent's window. Settings suggests official MCP
   servers (GitHub, Vercel, Stripe, Supabase, Neon, Linear, Notion, Sentry, Figma) with one-click add.
+- **Agents check their own work.** Agents that build or deploy a site open it in the browser, look at the
+  screenshot, click through, and read JavaScript errors and failed requests with `browser_console`.
 - **Spending rules the model can't override.** An auto-approve limit, per-run budgets and approval prompts,
   with every charge in a ledger. Card payments always need your approval. Card details reach the browser only
   as masked placeholders, only on the approved merchant's exact domains, with screenshots turned off.
@@ -179,7 +186,9 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
 - **Parallelism:** background agents run at the same time (max 4 at once, 12 per run by default). Browser
   tasks share one browser and queue.
 - **Pause:** each agent (and the planner) has a pause gate checked before every model call and tool call. A
-  paused browser task is paused inside browser-use. Messages sent while paused are read when it resumes.
+  paused browser task is paused inside browser-use. Sending a message to a paused agent resumes it.
+- **Responsive planner:** `spawn_agent` returns right away; `wait_for_agents` ends early when you send the planner a
+  message, so it can act on it while agents keep running. It can't finish while agents are still running.
 - **Human in the loop:** `ask_human`, `request_approval` and the spend policy pause *in place* (no
   `interrupt()` re-execution), so a 10-minute browser task isn't restarted when you answer.
 - **Secrets:** stored encrypted, referenced by tools as `{{secret:NAME}}`, never placed in model context.
@@ -250,6 +259,10 @@ Todd is at **v0.4** and under active development.
   auth is added. (Internally, the API requires a generated token and the sandbox and browser are
   network-isolated; see [ARCHITECTURE.md](ARCHITECTURE.md#security-model).)
 - **One shared browser.** Browser tasks run one at a time; other agents keep working in parallel.
+- **CLI sign-in with the browser session** covers GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe and
+  Firebase. Supabase's CLI only signs in from a real terminal, so it needs a token in Settings. Approving uses
+  generic page rules (fill the code, click Continue/Authorize); if a provider's page changes, Todd leaves the tab
+  open in the live browser for you to click Approve.
 - **Login detection is best-effort.** It's exact for services with a known session cookie. For others Todd
   loads a dashboard page and looks for a login redirect or a visible password field, and you can mark a
   service yourself.

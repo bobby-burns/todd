@@ -1,9 +1,10 @@
 """Dynamic agents: the planner spawns whatever specialists a task needs, at runtime.
 
 An agent = a name + instructions (its role, written by the planner) + a task + toolsets + a model tier.
-Each one is its own LangGraph agent with its own event stream (a window in the dashboard). Agents can run in
-the foreground (the planner waits for the result) or in the background (the planner keeps working and later
-calls wait_for_agents). The human can message or cancel any agent from its window.
+Each one is its own LangGraph agent with its own event stream (a window in the dashboard). Agents run in the
+background by default: the planner keeps working (spawning more agents, answering the human) and collects results
+with wait_for_agents. Any wait ends early when a message arrives for the waiter, so the planner never sits deaf
+while agents work. The human can message or cancel any agent from its window.
 """
 
 from __future__ import annotations
@@ -19,12 +20,16 @@ from .. import prompts, settings
 from ..config import config
 from ..db import AgentInstance, Event, get_run, select, session, utcnow
 from ..llm import model_for
-from ..runtime import RunCancelled, RunContext, cancel_agent_interactions, set_current_agent
+from ..runtime import (Inbox, RunCancelled, RunContext, cancel_agent_interactions, current_agent_id,
+                       set_current_agent)
 from ..sdk import ToolError, get_ctx, todd_tool
 from . import claude_code
 from .graph import build_agent, recursion_limit
 
 TIERS = ("default", "strong", "fast")
+INTERRUPTED = ("A new message arrived, so the wait ended early. Agents marked running keep working in the "
+               "background. Act on the message now (spawn another agent, message_agent, cancel_agent, …), then call "
+               "wait_for_agents to collect their results.")
 
 
 @dataclass
@@ -33,7 +38,7 @@ class AgentHandle:
     name: str
     toolsets: list[str]
     background: bool
-    notes: asyncio.Queue = field(default_factory=asyncio.Queue)
+    notes: Inbox = field(default_factory=Inbox)
     task: asyncio.Task | None = None
     result: dict[str, Any] | None = None
 
@@ -79,7 +84,7 @@ def fallback_summary(run_id: str, agent_id: str, status: str, summary: str) -> s
 
 
 def running(ctx: RunContext) -> list[AgentHandle]:
-    return [h for h in ctx.agents.values() if h.task and not h.task.done()]
+    return ctx.running_agents()
 
 
 async def spawn(ctx: RunContext, *, name: str, instructions: str, task: str, toolsets: list[str],
@@ -98,10 +103,11 @@ async def spawn(ctx: RunContext, *, name: str, instructions: str, task: str, too
 
     tools = [t for ts in toolsets for t in available[ts].tools]
     from ..integrations import find_integrations
+    from ..tools.cli_login import CLI_LOGIN_TOOLS
     from ..tools.human import HUMAN_TOOLS
 
     seen, uniq = set(), []
-    for t in [*tools, find_integrations, *HUMAN_TOOLS]:
+    for t in [*tools, find_integrations, *CLI_LOGIN_TOOLS, *HUMAN_TOOLS]:
         if t.name not in seen:
             uniq.append(t)
             seen.add(t.name)
@@ -167,10 +173,34 @@ async def spawn(ctx: RunContext, *, name: str, instructions: str, task: str, too
     return handle
 
 
-async def wait(handles: list[AgentHandle], timeout: float | None = None) -> None:
+async def wait(handles: list[AgentHandle], timeout: float | None = None, inbox: Inbox | None = None) -> bool:
+    """Wait for the agents to finish (or the timeout). With an inbox, a message arriving there ends the wait early
+    and returns True, so the waiter can respond while the agents keep running."""
     tasks = {h.task for h in handles if h.task and not h.task.done()}
-    if tasks:
+    if not tasks:
+        return False
+    if inbox is None:
         await asyncio.wait(tasks, timeout=timeout)
+        return False
+    if not inbox.empty():
+        return True
+    agents_done = asyncio.ensure_future(asyncio.wait(tasks))  # cancelling this never cancels the agents
+    message = asyncio.ensure_future(inbox.wait_nonempty())
+    try:
+        done, _ = await asyncio.wait({agents_done, message}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        agents_done.cancel()
+        message.cancel()
+    return message in done and agents_done not in done
+
+
+def _inbox(ctx: RunContext) -> Inbox | None:
+    """Messages for whoever is calling the tool (the planner, or a spawned agent)."""
+    agent = current_agent_id()
+    if agent == "planner":
+        return ctx.user_notes
+    h = ctx.agents.get(agent)
+    return h.notes if h else None
 
 
 def describe(h: AgentHandle) -> dict[str, Any]:
@@ -212,14 +242,15 @@ def _handle(ctx: RunContext, agent_id: str) -> AgentHandle:
 # ------------------------------------------------------------------------------------------ planner tools
 @todd_tool
 async def spawn_agent(name: str, instructions: str, task: str, toolsets: list[str], model: str = "default",
-                      background: bool = False, tasks: list[str] | None = None) -> dict:
+                      background: bool = True, tasks: list[str] | None = None) -> dict:
     """Create an agent for a coherent chunk of the work. One agent should own a group of RELATED tasks that share
     context and tools (use `tasks` for the checklist); don't create one agent per small step. Design it for the
     job: a short name (e.g. "Store Listing", "Marketing Site & Domain"), instructions describing its role,
     standards and constraints, and only the toolsets it needs — API/MCP toolsets before `browser`. Agents don't see your conversation: the task
     must be self-contained (inputs, exact outputs to report, done condition).
-    Foreground (background=false) waits and returns the agent's summary. Background returns immediately with
-    an agent_id; spawn several background agents in one turn to run them in parallel, then wait_for_agents.
+    The agent works on its own, in parallel with you and other agents: this returns right away with an agent_id.
+    Spawn every independent group in one turn, then call wait_for_agents to collect results. background=false
+    waits for this agent's summary instead (a message from the human ends the wait early; the agent keeps running).
 
     Args:
         name: short human-readable agent name
@@ -227,7 +258,7 @@ async def spawn_agent(name: str, instructions: str, task: str, toolsets: list[st
         task: the concrete assignment with all needed context and what to report back
         toolsets: toolsets to give it, e.g. ["sandbox", "github"] or ["browser", "accounts"]
         model: "default", "strong" (hard reasoning) or "fast" (simple, cheap tasks)
-        background: run without waiting (default false)
+        background: return right away and let it run in parallel (default true)
         tasks: optional checklist of related sub-tasks this one agent should complete, in order
     """
     ctx = get_ctx()
@@ -238,15 +269,17 @@ async def spawn_agent(name: str, instructions: str, task: str, toolsets: list[st
                     model=model, background=background)
     if background:
         return {"agent_id": h.id, "name": h.name, "status": "running",
-                "note": "Running in the background. Call wait_for_agents to collect its result."}
-    await wait([h])
+                "note": "Running in parallel. Spawn any other independent agents, then call wait_for_agents."}
+    if await wait([h], inbox=_inbox(ctx)):
+        return {**describe(h), "note": INTERRUPTED}
     return describe(h)
 
 
 @todd_tool
 async def wait_for_agents(agent_ids: list[str] | None = None, timeout_s: int | None = None) -> dict:
-    """Wait for background agents to finish and return their results. Omit agent_ids to wait for all running
-    agents. With timeout_s, returns early with the status of each (unfinished ones show "running").
+    """Wait for agents to finish and return their results. Omit agent_ids to wait for all running agents. Returns
+    early when a new message arrives for you (act on it, then call this again) or after timeout_s; unfinished
+    agents show "running" and keep working.
 
     Args:
         agent_ids: which agents to wait for (default: all running)
@@ -254,8 +287,11 @@ async def wait_for_agents(agent_ids: list[str] | None = None, timeout_s: int | N
     """
     ctx = get_ctx()
     handles = [_handle(ctx, i) for i in agent_ids] if agent_ids else running(ctx)
-    await wait(handles, timeout=timeout_s)
-    return {"agents": [describe(h) for h in handles]}
+    interrupted = await wait(handles, timeout=timeout_s, inbox=_inbox(ctx))
+    out: dict[str, Any] = {"agents": [describe(h) for h in handles]}
+    if interrupted:
+        out["note"] = INTERRUPTED
+    return out
 
 
 @todd_tool

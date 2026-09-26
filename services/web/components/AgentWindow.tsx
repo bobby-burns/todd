@@ -170,7 +170,7 @@ export function AgentWindow({
                 <Pause size={11} fill="currentColor" />
               </span>
               <span className="text-fg">
-                <b className="font-semibold">Paused.</b> <span className="text-fg-2">Send a message to change course, then resume.</span>
+                <b className="font-semibold">Paused.</b> <span className="text-fg-2">Send a message to change course. Sending it resumes the agent.</span>
               </span>
             </div>
           </motion.div>

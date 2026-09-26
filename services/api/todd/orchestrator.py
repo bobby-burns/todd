@@ -12,7 +12,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from . import accounts, prompts, registry, settings, vault
+from . import accounts, connect, prompts, registry, settings, vault
 from .agents import claude_code, dynamic
 from .agents.graph import build_agent, recursion_limit
 from .config import config
@@ -33,6 +33,10 @@ def integrations_summary() -> str:
         f"- GitHub: {'connected' if vault.has_secret('GITHUB_TOKEN') else 'NOT configured'}",
         f"- Domain registrant contact: {'complete' if contact_ok else 'incomplete (domain purchases will fail)'}",
         f"- Payment card for browser checkouts: {'stored' if vault.has_secret('CARD_NUMBER') else 'none'}",
+        "- CLIs signed in with the human's account: " + (", ".join(c.name for c in connect.CONNECTORS.values()
+                                                                    if connect.is_connected(c.service)) or "none")
+        + " (others can be connected with cli_login: " + ", ".join(
+            c.service for c in connect.CONNECTORS.values() if not connect.is_connected(c.service)) + ")",
         f"- Vault secrets: {', '.join(x['name'] for x in vault.list_secrets()) or 'none'}",
         "- Model tiers: " + ", ".join(f"{k}={v}" for k, v in cfg["models"].items()),
     ]
@@ -133,7 +137,8 @@ class RunManager:
         return False
 
     def note(self, run_id: str, text: str, agent_id: str = "planner") -> bool:
-        """Human message to the planner or to a specific running agent (read on its next turn)."""
+        """Human message to the planner or to a specific running agent. It's read on the agent's next step, ends a
+        wait_for_agents early, and resumes the agent if it was paused."""
         ctx = self.contexts.get(run_id)
         if not ctx or run_id not in self.tasks or self.tasks[run_id].done():
             return False
@@ -145,6 +150,7 @@ class RunManager:
                 return False
             h.notes.put_nowait(f"[from the human] {text}")
         ctx.emit(agent_id, "note", text, {"from": "human"})
+        ctx.resume_agent(agent_id, by="your message")  # messaging a paused agent is the go-ahead to continue
         return True
 
     def pause(self, run_id: str, agent_id: str | None = None, resume: bool = False) -> int:

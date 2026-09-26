@@ -1,10 +1,18 @@
-# The sandbox is where code agents work: node 22 + pnpm + git + python + common deploy CLIs.
+# The sandbox is where code agents work: node 22 + pnpm + git + gh + python + common deploy CLIs.
 # Only the API can reach it (no published ports). It never sees the vault — tokens are injected per command.
 FROM node:22-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates jq unzip zip ripgrep python3 python3-venv python3-pip build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI from GitHub's official apt repository. Todd signs it in per command (GH_TOKEN from the vault).
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && npm install -g vercel firebase-tools && npm cache clean --force
 

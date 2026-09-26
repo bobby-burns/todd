@@ -101,7 +101,7 @@ def test_planner_spawns_agent_end_to_end(loop):
     fake.SCRIPTS[PLANNER] = [
         step(think("One agent is enough."), text("Plan: one writer."),
              tool("spawn_agent", name="Writer", instructions="Echo things.", task="Echo hi, then finish.",
-                  toolsets=["demo"])),
+                  toolsets=["demo"], background=False)),
         step(finish("Done: all\nAgents: Writer — echoed")),
     ]
     fake.SCRIPTS[worker("Writer")] = [
@@ -157,12 +157,12 @@ def test_nudge_pause_and_message(loop):
             await asyncio.sleep(0.05)
         aid = agents_of(rid)[0].id
         assert manager.pause(rid, aid) == 1
-        assert manager.note(rid, "Use uppercase from now on.", agent_id=aid)
         await asyncio.sleep(2.5)
         n = len([e for e in events_of(rid) if e.agent == aid and e.kind == "tool_call"])
         await asyncio.sleep(2.0)
         assert len([e for e in events_of(rid) if e.agent == aid and e.kind == "tool_call"]) == n  # held at the gate
-        manager.pause(rid, aid, resume=True)
+        assert manager.note(rid, "Use uppercase from now on.", agent_id=aid)
+        assert not manager.is_paused(rid, aid)  # the message resumed it
         run = await wait_status(rid, {"succeeded", "failed"}, timeout=90)
         assert run.status == "succeeded"
         msgs = [e for e in fake.LOG if e.get("key") == worker("Slowpoke")]
@@ -170,6 +170,44 @@ def test_nudge_pause_and_message(loop):
         assert "Continue working using your tools" in blob  # the nudge
         assert "Use uppercase from now on." in blob  # the human's message reached the agent
         assert agents_of(rid)[0].status == "succeeded"
+
+    loop.run_until_complete(go())
+
+
+def test_message_interrupts_wait_for_agents(loop):
+    """A human message ends the planner's wait early: it spawns more work while the first agent keeps running."""
+    fake.SCRIPTS[PLANNER] = [
+        step(tool("spawn_agent", name="Long", instructions="x", task="Ask, then finish.", toolsets=[])),
+        step(tool("wait_for_agents")),
+        step(tool("spawn_agent", name="Docs", instructions="x", task="Write the docs.", toolsets=[])),
+        step(tool("wait_for_agents")),
+        step(finish("Done: both")),
+    ]
+    fake.SCRIPTS[worker("Long")] = [step(tool("ask_human", question="Keep going?")), step(finish("Done: long"))]
+    fake.SCRIPTS[worker("Docs")] = [step(finish("Done: docs"))]
+
+    async def go():
+        rid = new_run("interrupt the wait")
+        manager.start(rid)
+        it = await pending(rid, timeout=60)  # Long is asking the human
+        for _ in range(400):
+            if any(e.agent == "planner" and e.kind == "tool_call" and e.data.get("tool") == "wait_for_agents"
+                   for e in events_of(rid)):
+                break
+            await asyncio.sleep(0.05)
+        assert manager.note(rid, "Also write the docs.")
+        for _ in range(400):
+            if any(a.name == "Docs" for a in agents_of(rid)):
+                break
+            await asyncio.sleep(0.05)
+        long = next(a for a in agents_of(rid) if a.name == "Long")
+        assert long.status == "running"  # the planner acted while Long kept working
+        resolve_interaction(it.id, decision=None, answer="yes")
+        run = await wait_status(rid, {"succeeded", "failed"}, timeout=90)
+        assert run.status == "succeeded", [e.text for e in events_of(rid) if e.kind == "error"]
+        blob = " ".join(str(e.get("last")) for e in fake.LOG if e.get("key") == PLANNER)
+        assert "wait ended early" in blob and "Also write the docs." in blob
+        assert {a.name: a.status for a in agents_of(rid)} == {"Long": "succeeded", "Docs": "succeeded"}
 
     loop.run_until_complete(go())
 
@@ -272,7 +310,8 @@ def _browser_up() -> bool:
 def test_direct_browser_control(loop):
     page = os.getenv("TODD_TEST_PAGE", "http://127.0.0.1:8765/asc.html")
     fake.SCRIPTS[PLANNER] = [
-        step(tool("spawn_agent", name="Surfer", instructions="x", task="Read the subtitle.", toolsets=["browser"])),
+        step(tool("spawn_agent", name="Surfer", instructions="x", task="Read the subtitle.", toolsets=["browser"],
+                  background=False)),
         step(finish("Done: read it")),
     ]
     fake.SCRIPTS[worker("Surfer")] = [

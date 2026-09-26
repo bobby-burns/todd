@@ -28,6 +28,7 @@ from .agents.dynamic import ORCHESTRATION_TOOLS
 from .integrations import find_integrations
 from .sdk import SOURCE_KEY, for_planner, tag, toolset_of
 from .tools.browser_tools import BROWSER_TOOLS
+from .tools.cli_login import CLI_LOGIN_TOOLS
 from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
 from .tools.sandbox_tools import SANDBOX_TOOLS
@@ -51,8 +52,10 @@ class Toolset:
 
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
-    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, python, vercel/firebase CLIs) with a workspace "
-                       "shared by all agents in this run: shell, read/write/list files, git_push to GitHub.",
+    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase CLIs) with a "
+                       "workspace shared by all agents in this run: shell, read/write/list files, git_push, the "
+                       "GitHub CLI (`gh`) and `cli` for Vercel/Netlify/Railway/Cloudflare/Stripe/Firebase, all "
+                       "signed in with the human's account (connect with cli_login).",
                        SANDBOX_TOOLS,
                        guide="Commands have no TTY: always pass non-interactive flags (e.g. `npx create-next-app@latest "
                              "app --ts --tailwind --eslint --app --use-npm --yes`). Verify with a real build before "
@@ -60,11 +63,13 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                              "relative to the run workspace, which other agents may also use: stay in your directory."),
     "browser": Toolset("browser", "A real Chromium where the human is signed in to their accounts: browse(task) "
                        "runs multi-step web tasks (consoles without APIs, forms, sign-in-gated pages, card "
-                       "checkout with approval). One browser, shared: browser tasks run one at a time.",
+                       "checkout with approval, checking websites you built). One browser, shared: browser tasks run "
+                       "one at a time.",
                        BROWSER_TOOLS,
                        guide="Last resort: call find_integrations first and pass why_not_api. Each browse() call should be one focused goal with a clear done condition and the exact "
                              "values to report. Don't create new accounts; the human is usually signed in already. "
-                             "Copy keys/config values exactly into your summary (or vault_store them if you have vault)."),
+                             "Copy config values (IDs, URLs) exactly into your summary, but never credentials: don't "
+                             "create API keys or tokens unless the task says so, and connect services with cli_login."),
     "vercel": Toolset("vercel", "Vercel API: check/buy domains (spend-gated), projects, domains/DNS, env vars, "
                       "deployments.", VERCEL_TOOLS),
     "github": Toolset("github", "GitHub API: create repositories.", GITHUB_TOOLS),
@@ -82,18 +87,22 @@ from .tools.browser_direct import DIRECT_BROWSER_TOOLS  # noqa: E402
 
 DIRECT_BROWSER_TOOLSET = Toolset(
     "browser", "A real Chromium where the human is signed in to their accounts, driven step by step: browser_start, "
-    "then browser_navigate/click/type/keys/scroll/search, browser_done. For consoles without APIs, forms, "
-    "sign-in-gated pages and card checkout with approval. One browser, shared: agents take turns.",
+    "then browser_navigate/click/type/keys/scroll/search/read_text/console, browser_done. For consoles without APIs, "
+    "forms, sign-in-gated pages and card checkout with approval, and for checking and debugging websites you built. "
+    "One browser, shared: agents take turns.",
     DIRECT_BROWSER_TOOLS,
-    guide="Last resort: call find_integrations first and pass why_not_api to browser_start. Read the page state "
+    guide="For work on a service it's the last resort: call find_integrations first and pass why_not_api to "
+          "browser_start. To check a site you built or deployed, just open it: look at the screenshot, click through, "
+          "and run browser_console (reload=true catches load errors). Read the page state "
           "after each action and use element [index] numbers. Don't create new accounts; the human is usually signed "
           "in already. On captchas/2FA, ask_human (they can take over the live browser). Always call browser_done "
-          "when finished. Copy keys/config values exactly into your summary (or vault_store them if you have vault).")
+          "when finished. Copy exact text (code, IDs, URLs) with browser_read_text. Credentials never pass through you: "
+          "connect services with cli_login, and if the task needs a key the page shows, browser_save_secret it.")
 
 for _ts in [*BUILTIN_TOOLSETS.values(), DIRECT_BROWSER_TOOLSET]:
     for _t in _ts.tools:
         tag(_t, source="builtin")
-for _t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations]:
+for _t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations, *CLI_LOGIN_TOOLS]:
     tag(_t, source="builtin", planner=True)
 
 _plugin_toolsets: dict[str, Toolset] = {}
@@ -102,7 +111,7 @@ _plugin_errors: list[dict[str, str]] = []
 
 def _builtin_tool_names() -> set[str]:
     names = {t.name for ts in [*BUILTIN_TOOLSETS.values(), DIRECT_BROWSER_TOOLSET] for t in ts.tools}
-    return names | {t.name for t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations]} | {"finish"}
+    return names | {t.name for t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations, *CLI_LOGIN_TOOLS]} | {"finish"}
 
 
 def load_plugins() -> None:
@@ -195,7 +204,7 @@ def all_toolsets(extra: dict[str, Toolset] | None = None, engine: str = "api") -
 
 def planner_tools(toolsets: dict[str, Toolset]) -> list[BaseTool]:
     out, seen = [], set()
-    for t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations,
+    for t in [*ORCHESTRATION_TOOLS, *HUMAN_TOOLS, find_integrations, *CLI_LOGIN_TOOLS,
               *(t for ts in toolsets.values() for t in ts.tools if for_planner(t))]:
         if t.name not in seen:
             out.append(t)

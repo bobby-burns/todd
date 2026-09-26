@@ -2,9 +2,10 @@
 
 `find_integrations` tells an agent, per service, in order of preference:
   1. a toolset that's ready right now (built-in API toolset, plugin, or configured MCP server)
-  2. an official MCP server the human could add in one click
-  3. a REST API usable via `api_request` (if its key is in the vault) or a CLI in the sandbox
-  4. the browser, only when none of the above exist or would need setup the human hasn't done
+  2. a REST API usable via `api_request` (if its key is in the vault)
+  3. its CLI signed in with the human's account (`cli`), or connecting it with their browser session (`cli_login`)
+  4. an official MCP server the human could add in one click, or a CLI in the sandbox
+  5. the browser, only when none of the above exist or would need setup the human hasn't done
 """
 
 from __future__ import annotations
@@ -33,23 +34,26 @@ class Integration:
 I = Integration
 CATALOG: list[Integration] = [
     I("github", "GitHub", ["gh"], toolset="github", api_docs="https://docs.github.com/rest", api_secrets=["GITHUB_TOKEN"],
-      cli="git (sandbox; git_push handles auth)", mcp_url="https://api.githubcopilot.com/mcp/",
+      cli="gh and git (sandbox: the `gh` and `git_push` tools handle auth)", mcp_url="https://api.githubcopilot.com/mcp/",
       mcp_docs="https://github.com/github/github-mcp-server"),
     I("vercel", "Vercel", [], toolset="vercel", api_docs="https://vercel.com/docs/rest-api", api_secrets=["VERCEL_TOKEN"],
-      cli="npx vercel (sandbox)", mcp_url="https://mcp.vercel.com", mcp_docs="https://vercel.com/docs/mcp"),
+      cli="the Vercel CLI (sandbox: cli(\"vercel\", …))", mcp_url="https://mcp.vercel.com", mcp_docs="https://vercel.com/docs/mcp"),
     I("stripe", "Stripe", [], api_docs="https://docs.stripe.com/api", api_secrets=["STRIPE_SECRET_KEY"],
-      cli="npx stripe (sandbox)", mcp_url="https://mcp.stripe.com", mcp_docs="https://docs.stripe.com/mcp"),
+      cli="the Stripe CLI (sandbox: cli(\"stripe\", …))", mcp_url="https://mcp.stripe.com", mcp_docs="https://docs.stripe.com/mcp"),
     I("supabase", "Supabase", [], api_docs="https://supabase.com/docs/reference/api",
       api_secrets=["SUPABASE_ACCESS_TOKEN"], cli="npx supabase (sandbox)", mcp_url="https://mcp.supabase.com/mcp",
       mcp_docs="https://supabase.com/docs/guides/getting-started/mcp"),
     I("firebase", "Firebase", ["google firebase"], api_docs="https://firebase.google.com/docs/projects/api/reference/rest",
-      api_secrets=["GOOGLE_APPLICATION_CREDENTIALS_JSON"], cli="firebase (sandbox; `firebase mcp` also runs an MCP server)",
+      api_secrets=["GOOGLE_APPLICATION_CREDENTIALS_JSON"],
+      cli="the Firebase CLI (sandbox: cli(\"firebase\", …); `firebase mcp` also runs an MCP server)",
       browser_note="Without a service-account key, creating projects/apps is quickest in the console via the browser."),
     I("cloudflare", "Cloudflare", ["wrangler"], api_docs="https://developers.cloudflare.com/api/",
-      api_secrets=["CLOUDFLARE_API_TOKEN"], cli="npx wrangler (sandbox)",
+      api_secrets=["CLOUDFLARE_API_TOKEN"], cli="Wrangler (sandbox: cli(\"cloudflare\", …))",
       mcp_docs="https://developers.cloudflare.com/agents/model-context-protocol/"),
     I("netlify", "Netlify", [], api_docs="https://docs.netlify.com/api/get-started/", api_secrets=["NETLIFY_AUTH_TOKEN"],
-      cli="npx netlify-cli (sandbox)"),
+      cli="the Netlify CLI (sandbox: cli(\"netlify\", …))"),
+    I("railway", "Railway", [], api_docs="https://docs.railway.com/reference/public-api", api_secrets=["RAILWAY_TOKEN"],
+      cli="the Railway CLI (sandbox: cli(\"railway\", …))"),
     I("neon", "Neon", [], api_docs="https://api-docs.neon.tech/reference/getting-started-with-neon-api",
       api_secrets=["NEON_API_KEY"], mcp_url="https://mcp.neon.tech/mcp"),
     I("linear", "Linear", [], api_docs="https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
@@ -112,7 +116,16 @@ def _configured_mcp(it: Integration) -> str | None:
     return None
 
 
-def assess(query: str, available_toolsets: set[str] | None = None) -> dict[str, Any]:
+def _needs_connect(it: Integration) -> bool:
+    from . import connect
+
+    return (it.id in connect.CONNECTORS and not connect.is_connected(it.id)
+            and not all(vault.has_secret(s) for s in it.api_secrets))
+
+
+def assess(query: str, available_toolsets: set[str] | None = None,
+           browser_status: dict[str, str] | None = None) -> dict[str, Any]:
+    """browser_status: service id -> "signed_in" / "signed_out" / "unknown" (from the accounts check)."""
     it = _find(query)
     if it is None:
         return {"service": query, "known": False, "recommendation": "Not in the catalog. Search its docs with "
@@ -121,11 +134,14 @@ def assess(query: str, available_toolsets: set[str] | None = None) -> dict[str, 
     have = [s for s in it.api_secrets if vault.has_secret(s)]
     api_ready = bool(it.api_secrets) and len(have) == len(it.api_secrets)
     mcp_ts = _configured_mcp(it)
+    from . import connect
+
+    conn = connect.CONNECTORS.get(it.id)
     out: dict[str, Any] = {"service": it.name, "known": True}
     if it.toolset and it.toolset in toolsets and (api_ready or not it.api_secrets):
         rec = f"Use the `{it.toolset}` toolset (API, ready)."
         route = "toolset"
-    elif it.id in toolsets:  # a plugin toolset named after the service
+    elif it.id in toolsets and it.id != it.toolset:  # a plugin toolset named after the service
         rec = f"Use the `{it.id}` toolset (plugin, ready)."
         route = "toolset"
     elif mcp_ts and mcp_ts in toolsets:
@@ -135,6 +151,21 @@ def assess(query: str, available_toolsets: set[str] | None = None) -> dict[str, 
         rec = ("Use `api_request` against its REST API with " + ", ".join(f"{{{{secret:{s}}}}}" for s in it.api_secrets)
                + (f", or `{it.cli}` in the sandbox" if it.cli else "") + f". Docs: {it.api_docs}")
         route = "api"
+    elif conn is not None and not conn.secret and connect.is_connected(it.id):
+        rec = (f"The {conn.name} is signed in with the human's account: cli(\"{it.id}\", \"{conn.example}\") in the "
+               "sandbox toolset. No token or login step needed.")
+        route = "cli"
+    elif _needs_connect(it):
+        signed_in = (browser_status or {}).get(it.id) == "signed_in"
+        after = (f"the `{it.toolset}` toolset, gh and git_push work" if conn and conn.secret
+                 else f"use cli(\"{it.id}\", …)")
+        rec = (f"{it.name} isn't connected to Todd yet" + (", but the browser is signed in to it. " if signed_in else ". ")
+               + f"Call cli_login(\"{it.id}\"): Todd signs the {conn.name if conn else 'CLI'} in with "
+               f"{'that' if signed_in else 'the browser'} session and approves it itself (the human only steps in "
+               f"for a password or 2FA page). Afterwards {after}. "
+               + ("" if signed_in else f"If the browser isn't signed in to {it.name}, request_signins first. ")
+               + "Don't create tokens or keys in the browser.")
+        route = "connect"
     elif it.mcp_url:
         rec = (f"An official MCP server exists ({it.mcp_url}). If you'll use {it.name} more than once, ask the human "
                f"to add it (Settings → Toolsets, one click). For a one-off, the browser is acceptable.")
@@ -176,4 +207,14 @@ async def find_integrations(services: list[str]) -> dict:
         available = set(getattr(get_ctx(), "toolsets", {}) or {})
     except RuntimeError:
         available = set()
-    return {"services": [assess(s, available) for s in services]}
+    connectable = [it.id for it in map(_find, services) if it and _needs_connect(it)]
+    status: dict[str, str] = {}
+    if connectable:
+        from . import accounts
+
+        try:
+            st = await accounts.statuses(connectable)
+            status = {a["id"]: a["status"] for a in st["accounts"]}
+        except Exception:  # noqa: BLE001  (browser offline: the recommendation still works)
+            pass
+    return {"services": [assess(s, available, status) for s in services]}

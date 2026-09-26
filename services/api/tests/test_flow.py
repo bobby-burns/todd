@@ -83,7 +83,7 @@ def test_spawned_agent_uses_sandbox_and_plugin_toolset(loop):
         SCRIPTS["planner"][:] = [
             AIMessage("I'll spawn a builder.", tool_calls=[call(
                 "spawn_agent", name="Site Builder", instructions="You build small sites.", task="write hello.txt",
-                toolsets=["sandbox", "demo"])]),
+                toolsets=["sandbox", "demo"], background=False)]),
             lambda msgs: AIMessage("", tool_calls=[call("finish", summary=msgs[-1].content, success=True)]),
         ]
         rid = new_run("code test")

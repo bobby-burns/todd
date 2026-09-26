@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, LogIn, LogOut, RefreshCw, ShieldCheck, SkipForward } from "lucide-react";
-import { api, type Account, type AccountsResponse } from "@/lib/api";
+import { Check, LogIn, LogOut, RefreshCw, ShieldCheck, SkipForward, TerminalSquare } from "lucide-react";
+import { api, type Account, type AccountsResponse, type CliStatus } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
 import { ActivityIndicator } from "./ui";
 
@@ -81,10 +81,71 @@ export function expiresLabel(a: Account): string | null {
   return `session ~${days}d left`;
 }
 
+const CLI_BUSY = ["starting", "approving", "needs_you"];
+
+/** Connect (and follow) the account's CLI with the browser session. */
+function useCli(a: Account, onChange?: () => void) {
+  const [st, setSt] = useState<CliStatus | null>(a.cli ?? null);
+  const busy = !!st && CLI_BUSY.includes(st.state);
+  useEffect(() => {
+    if (a.cli && !CLI_BUSY.includes(st?.state ?? "")) setSt(a.cli);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a.cli?.state, a.cli?.connected]);
+  useEffect(() => {
+    if (!busy) return;
+    const t = setInterval(
+      () =>
+        api<CliStatus>(`/accounts/${a.id}/connect`)
+          .then((s) => {
+            setSt(s);
+            if (!CLI_BUSY.includes(s.state)) onChange?.();
+          })
+          .catch(() => {}),
+      1500,
+    );
+    return () => clearInterval(t);
+  }, [busy, a.id, onChange]);
+  const start = useCallback(
+    () => api<CliStatus>(`/accounts/${a.id}/connect`, { method: "POST" }).then(setSt).catch((e) => setSt((s) => s && { ...s, state: "failed", message: e.message })),
+    [a.id],
+  );
+  return { st, busy, start };
+}
+
+/** "CLI" line on an account: the same sign-in, for the service's command-line tool. */
+export function CliRow({ a, onChange }: { a: Account; onChange?: () => void }) {
+  const { st, busy, start } = useCli(a, onChange);
+  if (!st) return null;
+  const tone = st.connected ? "var(--green)" : st.state === "needs_you" ? "var(--orange)" : st.state === "failed" ? "var(--red)" : "var(--fg-2)";
+  return (
+    <div className="mt-3 flex items-start gap-2 rounded-[12px] bg-fill/60 px-2.5 py-2 text-[11.5px] leading-snug">
+      <TerminalSquare size={13} className="mt-px shrink-0 text-fg-3" />
+      <div className="min-w-0 flex-1">
+        <span className="font-semibold text-fg">{st.name}</span>{" "}
+        <span style={{ color: tone }}>
+          {st.connected ? "signed in with this account" : busy ? st.message || "Connecting…" : st.state === "failed" ? st.message : "not connected"}
+        </span>
+        {st.state === "needs_you" && <div className="mt-0.5 text-fg-2">Finish it in the browser panel. Todd continues on its own.</div>}
+      </div>
+      {busy ? (
+        <ActivityIndicator size={12} />
+      ) : (
+        !st.connected &&
+        a.status === "signed_in" && (
+          <button className="btn btn-glass btn-sm shrink-0" onClick={start} title="Sign in the CLI with this browser session">
+            Connect
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
 /**
  * Guided sign-in: for each account in the queue, open its login page in the live browser and wait until the
  * sign-in is detected (session cookie), then move to the next. For sites without a known cookie, the human
- * confirms and Todd verifies by visiting the site.
+ * confirms and Todd verifies by visiting the site. Sign in once: when the account has a CLI, Todd connects it with
+ * the fresh session right away (the human is still here if a 2FA page appears), then moves on.
  */
 export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[]; onDone: () => void; onChange?: () => void }) {
   const queue = useMemo(() => accounts.filter((a) => a.status !== "signed_in" && !a.via), [accounts]);
@@ -94,6 +155,7 @@ export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const opened = useRef<string | null>(null);
+  const connecting = useRef<string | null>(null);
   const id = ids[idx];
 
   useEffect(() => {
@@ -109,14 +171,20 @@ export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[
         .then((a) => {
           if (!alive) return;
           setCurrent(a);
-          if (a.status === "signed_in" && a.source === "session cookie") {
-            onChange?.();
-            setTimeout(() => alive && setIdx((i) => i + 1), 900);
+          if (a.status !== "signed_in" || (a.source !== "session cookie" && connecting.current !== id)) return;
+          if (a.cli && !a.cli.connected && a.cli.state !== "failed") {
+            if (connecting.current !== id) {
+              connecting.current = id;
+              api(`/accounts/${id}/connect`, { method: "POST" }).catch(() => {});
+            }
+            return; // wait for the CLI too: sign in once
           }
+          onChange?.();
+          setTimeout(() => alive && setIdx((i) => i + 1), 900);
         })
         .catch(() => {});
     tick();
-    const t = setInterval(tick, 2500);
+    const t = setInterval(tick, 1500);
     return () => {
       alive = false;
       clearInterval(t);
@@ -153,7 +221,14 @@ export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[
         return;
       }
       onChange?.();
-      setIdx((i) => i + 1);
+      const acct = accounts.find((x) => x.id === id);
+      if (acct?.cli && !acct.cli.connected) {
+        connecting.current = id; // the tick advances once the CLI is connected too
+        await api(`/accounts/${id}/connect`, { method: "POST" });
+        setMsg(null);
+      } else {
+        setIdx((i) => i + 1);
+      }
     } catch (e: any) {
       setMsg(e.message);
     }
@@ -187,7 +262,9 @@ export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[
               <div className="mt-0.5 text-[12.5px] leading-snug text-fg-2">
                 The login page is open in the agents&apos; browser. Take control and sign in.{" "}
                 {a.cookies.length ? "Todd notices automatically." : "Then tap “I'm signed in” and Todd will check."}
+                {a.cli && ` Todd then signs in the ${a.cli.name} with the same session.`}
               </div>
+              {a.status === "signed_in" && a.cli && <CliRow a={a} />}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {a.cookies.length > 0 && a.status !== "signed_in" && (
@@ -271,6 +348,7 @@ export function AccountCard({ a, onChange, onSignIn }: { a: Account; onChange: (
           )}
         </div>
       )}
+      {a.cli && <CliRow a={a} onChange={onChange} />}
       {note && <p className="mt-2 text-[11.5px] text-fg-2">{note}</p>}
     </div>
   );

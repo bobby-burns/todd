@@ -12,7 +12,8 @@ async def browse(task: str, why_not_api: str, start_url: str | None = None, paym
                  payment_merchant: str | None = None, payment_domains: list[str] | None = None) -> dict:
     """LAST RESORT: run a focused, multi-step task in the real browser, where the human is signed in to their
     accounts. Only use it when find_integrations shows no usable API, MCP server or CLI for this job (e.g. a
-    console with no API, an app-reviewed posting API, a one-off checkout). Give one clear goal, the "done" condition, and exactly which values to report back. The human
+    console with no API, an app-reviewed posting API, a one-off checkout). Also the right tool to check a website you
+    built or deployed (does it render, do links and forms work, any visible errors?). Give one clear goal, the "done" condition, and exactly which values to report back. The human
     can watch and take over (captchas, 2FA). Only set payment_* when the task must pay by card: it always needs
     the human's approval, and card details only work on payment_domains.
 

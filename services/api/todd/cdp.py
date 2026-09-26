@@ -24,6 +24,7 @@ class CDP:
     def __init__(self) -> None:
         self._ids = itertools.count(1)
         self._ws = None
+        self.events: list[dict[str, Any]] = []  # events that arrived while waiting for a reply
 
     async def __aenter__(self) -> "CDP":
         try:
@@ -54,8 +55,27 @@ class CDP:
                     if "error" in data:
                         raise CDPError(f"{method}: {data['error'].get('message')}")
                     return data.get("result", {})
+                if "method" in data:
+                    self.events.append(data)
 
         return await asyncio.wait_for(wait(), timeout)
+
+    async def poll_events(self, seconds: float) -> None:
+        """Collect events for up to `seconds` (for pages that only report through events)."""
+        assert self._ws is not None
+        try:
+            while True:
+                data = json.loads(await asyncio.wait_for(self._ws.recv(), seconds))
+                if "method" in data:
+                    self.events.append(data)
+        except asyncio.TimeoutError:
+            pass
+
+    def take(self, method: str) -> dict[str, Any] | None:
+        for i, ev in enumerate(self.events):
+            if ev.get("method") == method:
+                return self.events.pop(i)
+        return None
 
 
 async def online() -> bool:
@@ -142,3 +162,144 @@ async def probe(url: str, timeout: float = 20) -> dict[str, Any]:
                 await c.send("Target.closeTarget", {"targetId": target})
             except CDPError:
                 pass
+
+
+# ------------------------------------------------------------------------------------------ CLI sign-in approval
+# One step on a CLI's approval page, decided in the page: stop on password/2FA pages (the human's job), fill the
+# one-time code, or find the button that approves (never cancel/deny/switch account). Returns what to do next.
+APPROVE_JS = r"""(code, hosts) => {
+  const host = location.hostname;
+  const vis = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+    && getComputedStyle(el).visibility !== 'hidden';
+  const text = ((document.body && document.body.innerText) || '').slice(0, 3000);
+  if (!hosts.some((h) => host === h || host.endsWith('.' + h))) return {state: 'offsite', host};
+  if ([...document.querySelectorAll('input[type=password]')].some(vis)) return {state: 'password', host};
+  const otp = [...document.querySelectorAll('input[autocomplete="one-time-code"], input[name*="otp" i], ' +
+    'input[id*="otp" i], input[name*="totp" i], input[name*="2fa" i]')].some(vis);
+  if (otp || /confirm access|verify (it's|that it's|its) you|two-factor|security key|use (a |your )?passkey/i.test(text))
+    return {state: 'verify', host};
+  const raw = (code || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  const setv = (el, v) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  };
+  const boxes = [...document.querySelectorAll('input:not([type]), input[type=text], input[type=tel]')]
+    .filter(vis).filter((i) => !i.disabled && !i.readOnly);
+  if (raw) {
+    const singles = boxes.filter((i) => i.maxLength === 1);
+    if (singles.length >= raw.length) {
+      if (singles.slice(0, raw.length).map((i) => i.value).join('').toUpperCase() !== raw) {
+        [...raw].forEach((c, k) => setv(singles[k], c));
+        return {state: 'filled'};
+      }
+    } else if (boxes.length === 1 && boxes[0].value.replace(/[^A-Za-z0-9]/g, '').toUpperCase() !== raw) {
+      setv(boxes[0], code);
+      return {state: 'filled'};
+    }
+  }
+  const label = (b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ');
+  const bad = /cancel|deny|decline|reject|not now|go back|sign out|log out|switch|different|another|remove/i;
+  const good = /^(continue|authori[sz]e|allow|approve|confirm|next|submit|yes|grant|connect|accept|activate)\b/i;
+  const tiles = [...document.querySelectorAll('[data-identifier]')].filter(vis);  // Google's account chooser
+  const target = tiles.length === 1 ? tiles[0] : [...document.querySelectorAll(
+      'button, input[type=submit], [role=button]')].filter(vis)
+    .find((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true' && good.test(label(b)) && !bad.test(label(b)));
+  if (!target) return {state: 'idle'};
+  target.scrollIntoView({block: 'center'});
+  const r = target.getBoundingClientRect();
+  return {state: 'click', label: label(target).slice(0, 60) || 'account', x: r.left + r.width / 2, y: r.top + r.height / 2};
+}"""
+
+DONE_PAGE = ("<!doctype html><title>Signed in</title><body style='font:15px system-ui;padding:40px'>"
+             "<b>Todd finished this sign-in.</b> You can close this tab.</body>")
+
+_TEXT_JS = r"""(() => { const out = []; const walk = (n) => { if (n.nodeType === 3) out.push(n.nodeValue);
+  if (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA') { if (n.type !== 'password') out.push(' ' + n.value + ' '); }
+  (n.shadowRoot ? [n.shadowRoot] : []).concat([...(n.childNodes || [])]).forEach(walk); };
+  walk(document.body || document); return out.join(' '); })()"""
+
+
+async def approve(url: str, *, hosts: list[str], code: str | None = None, callback: str | None = None,
+                  page_code_re: str | None = None, done: Any = None, on_state: Any = None,
+                  auto_seconds: float = 90, timeout: float = 600, max_clicks: int = 8) -> dict[str, Any]:
+    """Open a CLI's approval page in the live browser and approve it with the signed-in session.
+
+    For `auto_seconds` Todd fills the one-time code and clicks approve-type buttons (real mouse events), only on
+    `hosts`. It stops acting on a password, 2FA or account-confirmation page, or after `max_clicks`, and reports
+    "needs_you" through `on_state` so the human can finish in the same tab. Until `timeout` it keeps watching for:
+    `done()` (the CLI finished), a redirect to `callback` (caught before the browser loads it: the browser can't reach
+    the CLI's localhost, so the URL is returned to be replayed where the CLI runs), or a code on the page matching
+    `page_code_re`. Returns {"state": "approved"|"timeout", "callback"?, "page_code"?, "tab"}."""
+    import base64
+    import re
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    clicks, handed_over = 0, False
+
+    def report(state: str, message: str = "") -> None:
+        if on_state:
+            on_state(state, message)
+
+    async with CDP() as c:
+        tab = (await c.send("Target.createTarget", {"url": "about:blank"}))["targetId"]
+        try:
+            await c.send("Target.activateTarget", {"targetId": tab})
+        except CDPError:
+            pass
+        sid = (await c.send("Target.attachToTarget", {"targetId": tab, "flatten": True}))["sessionId"]
+        if callback:
+            await c.send("Fetch.enable", {"patterns": [{"urlPattern": callback + "*", "requestStage": "Request"}]},
+                         session_id=sid)
+        await c.send("Page.navigate", {"url": url}, session_id=sid)
+        report("approving", "Approving in the browser with your signed-in session")
+        while loop.time() - start < timeout:
+            await c.poll_events(1.2)
+            ev = c.take("Fetch.requestPaused")
+            if ev:
+                caught = ev["params"]["request"]["url"]
+                await c.send("Fetch.fulfillRequest", {
+                    "requestId": ev["params"]["requestId"], "responseCode": 200,
+                    "responseHeaders": [{"name": "Content-Type", "value": "text/html; charset=utf-8"}],
+                    "body": base64.b64encode(DONE_PAGE.encode()).decode()}, session_id=sid)
+                return {"state": "approved", "callback": caught, "tab": tab}
+            if done and done():
+                return {"state": "approved", "tab": tab}
+            try:
+                if page_code_re:
+                    res = await c.send("Runtime.evaluate", {"expression": _TEXT_JS, "returnByValue": True},
+                                       session_id=sid)
+                    m = re.search(page_code_re, str(res.get("result", {}).get("value") or ""))
+                    if m:
+                        return {"state": "approved", "page_code": m.group(1), "tab": tab}
+                if handed_over:
+                    continue
+                res = await c.send("Runtime.evaluate", {
+                    "expression": f"({APPROVE_JS})({json.dumps(code)}, {json.dumps(list(hosts))})",
+                    "returnByValue": True}, session_id=sid)
+            except CDPError:  # navigating: the page is between documents
+                continue
+            step = res.get("result", {}).get("value") or {}
+            state = step.get("state")
+            if state in ("password", "verify") or loop.time() - start > auto_seconds or clicks >= max_clicks:
+                handed_over = True
+                why = {"password": "is asking for your password", "verify": "wants you to confirm it's you (2FA)"}
+                report("needs_you", f"The page {why.get(state, 'needs you')}: finish it in the browser panel. "
+                                    "Todd continues as soon as it's approved.")
+            elif state == "click":
+                x, y = float(step["x"]), float(step["y"])
+                for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
+                    await c.send("Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, "button": "left",
+                                                              "clickCount": 1}, session_id=sid)
+                clicks += 1
+                report("approving", f"Clicked “{step.get('label')}”")
+        return {"state": "timeout", "tab": tab}
+
+
+async def close_tab(target: str) -> None:
+    try:
+        async with CDP() as c:
+            await c.send("Target.closeTarget", {"targetId": target})
+    except Exception:  # noqa: BLE001
+        pass

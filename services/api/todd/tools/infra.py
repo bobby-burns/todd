@@ -246,7 +246,8 @@ async def vercel_deployment_status(deployment_id: str) -> dict:
 async def _github(method: str, path: str, *, json: Any = None) -> Any:
     token = vault.get_secret("GITHUB_TOKEN")
     if not token:
-        raise ToolError("GITHUB_TOKEN is not configured. Ask the human to add it in Settings → Integrations.")
+        raise ToolError("GITHUB_TOKEN is not configured. If the browser is signed in to GitHub, connect it with "
+                        "cli_login(\"github\"); otherwise ask the human to add it in Settings → Integrations.")
     async with httpx.AsyncClient(base_url=GITHUB_API, timeout=60) as c:
         r = await c.request(method, path, json=json, headers={
             "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
@@ -287,7 +288,8 @@ async def vault_list() -> list[str]:
 
 @todd_tool(toolset="vault")
 async def vault_store(name: str, value: str) -> str:
-    """Store a value (e.g. an API key the browser agent obtained) in the encrypted vault.
+    """Store a value you generated or were given (e.g. a password you created for a new database) in the encrypted
+    vault. A key shown on a web page goes in with browser_save_secret instead, so it never passes through you.
 
     Args:
         name: UPPER_SNAKE_CASE name

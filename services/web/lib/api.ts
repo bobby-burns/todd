@@ -86,6 +86,17 @@ export type AgentInfo = {
 
 export type AccountStatus = "signed_in" | "signed_out" | "unknown";
 
+/** The account's CLI, signed in with the same browser session ("sign in once"). */
+export type CliStatus = {
+  service: string;
+  name: string;
+  state: "idle" | "starting" | "approving" | "needs_you" | "connected" | "failed";
+  message: string;
+  code: string | null;
+  url: string | null;
+  connected: boolean;
+};
+
 export type Account = {
   id: string;
   name: string;
@@ -102,6 +113,7 @@ export type Account = {
   expires?: number | null;
   checked_at?: string | null;
   cookie_count?: number;
+  cli?: CliStatus | null;
 };
 
 export type AccountsResponse = { browser_online: boolean; accounts: Account[]; categories: string[] };

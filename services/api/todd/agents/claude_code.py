@@ -264,7 +264,11 @@ async def _call(sess: Session, name: str, args: dict) -> dict:
     if sess.finished is not None:
         return {"content": [{"type": "text", "text": "You already finished. Don't call more tools."}], "isError": True}
     if name == "finish":
-        sess.finished = {"summary": str(args.get("summary", "")), "success": bool(args.get("success", True))}
+        blocked = ctx.finish_blocker(sess.agent_id)
+        if blocked:
+            ctx.emit(sess.agent_id, "status", "Can't finish yet: agents are still running")
+            return {"content": [{"type": "text", "text": blocked}], "isError": True}
+        sess.finished ={"summary": str(args.get("summary", "")), "success": bool(args.get("success", True))}
         return {"content": [{"type": "text", "text": "Finished. Don't call any more tools; reply with one short line."}],
                 "isError": False}
     if sess.tool_calls > sess.max_calls:

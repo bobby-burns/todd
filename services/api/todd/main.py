@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import accounts, events, llm, prompts, registry, settings, vault
+from . import accounts, connect, events, llm, prompts, registry, settings, vault
 from .config import config
 from .db import AgentInstance, Event, Interaction, LedgerEntry, Run, init_db, select, session
 from .orchestrator import integrations_summary, manager
@@ -446,10 +446,17 @@ async def cancel_run_agent(run_id: str, agent_id: str) -> dict:
 
 
 # ------------------------------------------------------------------------------------------ accounts
+def _with_cli(a: dict) -> dict:
+    """Add the account's CLI sign-in (sign in once: the web session and the CLI), if it has one."""
+    c = connect.CONNECTORS.get(a["id"])
+    return {**a, "cli": connect.status(c.service) if c else None}
+
+
 @app.get("/api/accounts")
 async def accounts_list(selected_only: bool = False) -> dict:
     ids = (settings.get("accounts_selected") or []) if selected_only else None
     st = await accounts.statuses(ids)
+    st["accounts"] = [_with_cli(a) for a in st["accounts"]]
     st["categories"] = list(dict.fromkeys(a["category"] for a in st["accounts"]))
     return st
 
@@ -459,7 +466,32 @@ async def account_status(service_id: str) -> dict:
     st = await accounts.statuses([service_id])
     if not st["accounts"]:
         raise HTTPException(404, "unknown service")
-    return {"browser_online": st["browser_online"], **st["accounts"][0]}
+    return {"browser_online": st["browser_online"], **_with_cli(st["accounts"][0])}
+
+
+@app.post("/api/accounts/{service_id}/connect")
+async def account_connect(service_id: str) -> dict:
+    """Sign the service's CLI in with the browser session (Todd approves it in the live browser; the human only
+    finishes a password/2FA page if one appears). Poll GET …/connect for progress."""
+    if service_id not in connect.CONNECTORS:
+        raise HTTPException(404, "this service has no CLI sign-in")
+    connect.start(service_id)
+    return connect.status(service_id)
+
+
+@app.get("/api/accounts/{service_id}/connect")
+def account_connect_status(service_id: str) -> dict:
+    if service_id not in connect.CONNECTORS:
+        raise HTTPException(404, "this service has no CLI sign-in")
+    return connect.status(service_id)
+
+
+@app.delete("/api/accounts/{service_id}/connect")
+def account_disconnect(service_id: str) -> dict:
+    if service_id not in connect.CONNECTORS:
+        raise HTTPException(404, "this service has no CLI sign-in")
+    connect.disconnect(service_id)
+    return connect.status(service_id)
 
 
 async def _browser_call(coro):

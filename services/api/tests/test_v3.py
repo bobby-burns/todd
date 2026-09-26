@@ -1,4 +1,5 @@
-"""Pause/resume, end-of-work summaries, API-first routing, task checklists."""
+"""Pause/resume, responsive planner (messages end waits, resume paused agents), end-of-work summaries,
+API-first routing, task checklists."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from langchain_core.messages import AIMessage
 from todd import vault
 from todd.db import AgentInstance, Event, select, session
 from todd.orchestrator import manager
+from todd.runtime import resolve_interaction
 from todd.sdk import ToolError
 
 from .helpers import SCRIPTS, agents_of, call, events_of, new_run, pending, wait_status
@@ -21,6 +23,14 @@ def slow(msg: AIMessage, secs: float = 0.4):
         time.sleep(secs)
         return msg
     return f
+
+
+async def until(pred, timeout: float = 10) -> None:
+    for _ in range(int(timeout * 20)):
+        if pred():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("condition not met in time")
 
 
 def test_pause_and_resume_agent(loop):
@@ -158,3 +168,88 @@ def test_browse_requires_reason(loop):
 
     r = loop.run_until_complete(browse.ainvoke({"task": "do a thing", "why_not_api": "no"}))
     assert r["success"] is False and "why_not_api" in r["result"]
+
+
+def test_message_interrupts_wait_so_planner_can_spawn_more(loop):
+    async def go():
+        seen: dict[str, str] = {}
+
+        def react(msgs):
+            seen["wait"], seen["note"] = str(msgs[-2].content), str(msgs[-1].content)
+            return AIMessage("", tool_calls=[call("spawn_agent", name="Docs", instructions="x", task="write docs",
+                                                  toolsets=[])])
+
+        SCRIPTS["Long"] = [AIMessage("", tool_calls=[call("ask_human", question="Keep going?")]),
+                           AIMessage("", tool_calls=[call("finish", success=True, summary="long done")])]
+        SCRIPTS["Docs"] = [AIMessage("", tool_calls=[call("finish", success=True, summary="docs done")])]
+        SCRIPTS["planner"][:] = [
+            AIMessage("", tool_calls=[call("spawn_agent", name="Long", instructions="x", task="long job", toolsets=[])]),
+            lambda msgs: AIMessage("", tool_calls=[call("wait_for_agents")]),
+            react,
+            lambda msgs: AIMessage("", tool_calls=[call("wait_for_agents")]),
+            lambda msgs: AIMessage("", tool_calls=[call("finish", success=True, summary=str(msgs[-1].content))]),
+        ]
+        rid = new_run("interrupt the wait")
+        manager.start(rid)
+        it = await pending(rid)  # Long is asking the human; the planner is waiting on it
+        await until(lambda: any(e.agent == "planner" and e.kind == "tool_call" and e.data.get("tool") == "wait_for_agents"
+                                for e in events_of(rid)))
+        assert manager.note(rid, "Also write the docs.")
+        await until(lambda: any(a.name == "Docs" for a in agents_of(rid)))
+        assert next(a for a in agents_of(rid) if a.name == "Long").status == "running"  # kept working meanwhile
+        resolve_interaction(it.id, decision=None, answer="yes")
+        run = await wait_status(rid, {"succeeded", "failed"})
+        assert run.status == "succeeded", run.summary
+        assert "wait ended early" in seen["wait"] and "Also write the docs." in seen["note"]
+        assert "long done" in run.summary and "docs done" in run.summary
+        assert {a.name: a.status for a in agents_of(rid)} == {"Long": "succeeded", "Docs": "succeeded"}
+    loop.run_until_complete(go())
+
+
+def test_message_resumes_paused_planner(loop):
+    async def go():
+        SCRIPTS["planner"][:] = [
+            slow(AIMessage("", tool_calls=[call("echo", text="a")]), 0.3),
+            lambda msgs: AIMessage("", tool_calls=[call("finish", success=True, summary=" / ".join(
+                str(m.content) for m in msgs if m.type == "human"))]),
+        ]
+        rid = new_run("resume on message")
+        manager.start(rid)
+        await asyncio.sleep(0.1)
+        assert manager.pause(rid, "planner") == 1
+        await asyncio.sleep(1.0)
+        assert manager.is_active(rid) and manager.is_paused(rid, "planner")  # held at the gate
+        assert manager.note(rid, "Switch to plan B.")
+        assert not manager.is_paused(rid, "planner")
+        run = await wait_status(rid, {"succeeded", "failed"})
+        assert run.status == "succeeded" and "Switch to plan B." in run.summary
+        assert any(e.agent == "planner" and e.text == "Resumed by your message" for e in events_of(rid))
+    loop.run_until_complete(go())
+
+
+def test_planner_cannot_finish_while_agents_run(loop):
+    async def go():
+        seen: dict[str, str] = {}
+
+        def after_refusal(msgs):
+            seen["refusal"] = str(msgs[-1].content)
+            return AIMessage("", tool_calls=[call("wait_for_agents")])
+
+        SCRIPTS["Busy"] = [AIMessage("", tool_calls=[call("ask_human", question="Still there?")]),
+                           AIMessage("", tool_calls=[call("finish", success=True, summary="busy done")])]
+        SCRIPTS["planner"][:] = [
+            AIMessage("", tool_calls=[call("spawn_agent", name="Busy", instructions="x", task="y", toolsets=[])]),
+            lambda msgs: AIMessage("", tool_calls=[call("finish", success=True, summary="too early")]),
+            after_refusal,
+            lambda msgs: AIMessage("", tool_calls=[call("finish", success=True, summary=str(msgs[-1].content))]),
+        ]
+        rid = new_run("finish guard")
+        manager.start(rid)
+        it = await pending(rid)
+        await until(lambda: "refusal" in seen)
+        resolve_interaction(it.id, decision=None, answer="yes")
+        run = await wait_status(rid, {"succeeded", "failed"})
+        assert run.status == "succeeded" and "busy done" in run.summary
+        assert "Not finished" in seen["refusal"] and "Busy" in seen["refusal"]
+        assert agents_of(rid)[0].status == "succeeded"  # an early finish didn't cancel it
+    loop.run_until_complete(go())

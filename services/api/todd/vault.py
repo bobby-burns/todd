@@ -76,12 +76,12 @@ PROTECTED_EXACT = {"VERCEL_TOKEN", "GITHUB_TOKEN", "OPENAI_COMPATIBLE_API_KEY", 
 
 
 def is_protected(name: str) -> bool:
-    """Integration tokens, model-provider keys and card fields: tools use them internally, but agents may never
-    inject them into values ({{secret:NAME}}) or overwrite them."""
+    """Integration tokens, model-provider keys, card fields and CLI sign-ins (CLI_STATE_*): tools use them
+    internally, but agents may never inject them into values ({{secret:NAME}}) or overwrite them."""
     from .llm import PROVIDER_KEYS
 
     n = name.upper()
-    return n in PROTECTED_EXACT or n in PROVIDER_KEYS.values() or n.startswith("CARD_")
+    return n in PROTECTED_EXACT or n in PROVIDER_KEYS.values() or n.startswith(("CARD_", "CLI_STATE_"))
 
 
 def secret_values(min_len: int = 6) -> list[str]:

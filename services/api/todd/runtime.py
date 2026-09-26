@@ -26,6 +26,25 @@ def set_current_agent(agent_id: str):
     return _current_agent.set(agent_id)
 
 
+class Inbox(asyncio.Queue):
+    """Messages for one agent (from the human or the planner). Besides being a queue, it can be awaited until
+    something arrives without taking it out, so a long wait (wait_for_agents) can end early and let the agent read
+    the message on its next step."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._arrived = asyncio.Event()
+
+    def put_nowait(self, item: Any) -> None:
+        super().put_nowait(item)
+        self._arrived.set()
+
+    async def wait_nonempty(self) -> None:
+        while self.empty():
+            self._arrived.clear()
+            await self._arrived.wait()
+
+
 class PauseGate:
     """Per-agent pause switch. Agents check it between steps (model turns, tool batches, browser steps)."""
 
@@ -55,7 +74,7 @@ class RunContext:
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
         self.cancelled = False
-        self.user_notes: asyncio.Queue[str] = asyncio.Queue()
+        self.user_notes = Inbox()  # the human's messages to the planner
         self._waiting = 0
         self.browser_lock = asyncio.Lock()  # one shared browser; browser tasks run one at a time
         self._images: dict[str, str] = {}  # agent_id -> latest screenshot to hand to the model (Claude Code engine)
@@ -79,6 +98,19 @@ class RunContext:
     def check_cancelled(self) -> None:
         if self.cancelled:
             raise RunCancelled()
+
+    # ---- spawned agents -----------------------------------------------------------------
+    def running_agents(self) -> list[Any]:
+        return [h for h in self.agents.values() if h.task and not h.task.done()]
+
+    def finish_blocker(self, agent_id: str) -> str | None:
+        """Why `agent_id` can't call finish yet: the planner ending would stop every agent that's still running."""
+        busy = self.running_agents() if agent_id == "planner" else []
+        if not busy:
+            return None
+        names = ", ".join(f"{h.name} ({h.id})" for h in busy)
+        return (f"Not finished: {len(busy)} agent(s) still running: {names}. Call wait_for_agents to collect their "
+                "results, or cancel_agent the ones you no longer need, then finish.")
 
     # ---- pause / resume -----------------------------------------------------------------
     def gate(self, agent_id: str) -> PauseGate:

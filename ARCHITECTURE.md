@@ -21,11 +21,14 @@ orchestrator.py    RunManager: per run, loads toolsets (built-in + plugins + MCP
 agents/graph.py    The LangGraph agent used by the planner and every spawned agent: model → tools → model;
                    emits thinking / thoughts / messages; finish() ends it
 agents/dynamic.py  spawn_agent / wait_for_agents / message_agent / cancel_agent / list_agents; AgentHandle
+                   (spawns run in the background; waits end early when a message arrives for the waiter)
 agents/claude_code.py  Claude Code engine: headless `claude` sessions, the /mcp bridge, stream parsing, control
 agents/browser.py  browser-use over CDP (used by the browse tool); ask_human in bounded waits; screenshots;
                    card placeholders only after approval
 registry.py        Toolsets: built-in, plugin files (./plugins), MCP servers; planner tool selection
-tools/sandbox_tools.py  `sandbox` toolset: shell, files, git_push (hardened)
+tools/sandbox_tools.py  `sandbox` toolset: shell, files, git_push, gh and cli (signed in per command)
+connect.py         Sign in once: connect a service's CLI with the browser session (7 CLIs), run connected CLIs
+tools/cli_login.py cli_login: the agent side of connect.py
 tools/browser_tools.py  `browser` toolset (API engine): browse(task, why_not_api, payment…) — last resort
 tools/browser_direct.py `browser` toolset (Claude Code engine): browser_start … browser_done, step by step
 tools/infra.py     `vercel`, `github`, `vault` toolsets
@@ -57,11 +60,13 @@ vault.py           Fernet-encrypted secrets in Postgres (env var fallback), outp
    `limits.max_agents_per_run` = 12 by default): `spawn_agent(name, instructions, task, tasks, toolsets,
    model, background)` — `tasks` becomes a numbered checklist in the agent's task — creates an
    `AgentInstance` row, renders the `worker` prompt with the planner's instructions and the toolsets' docs
-   and tips, builds a LangGraph agent with those tools, and runs it as its own asyncio task. Foreground spawns
-   return the agent's summary. Background spawns return an id; `wait_for_agents` collects results.
+   and tips, builds a LangGraph agent with those tools, and runs it as its own asyncio task. Spawns return an
+   id right away (`background=false` waits for the summary instead); `wait_for_agents` collects results. Any
+   wait ends early when the human messages the planner, so it can act (spawn more, redirect, cancel) while the
+   agents keep running. The planner can't `finish` while agents are running (that would stop them).
 4. Every event carries the agent id. The dashboard's windows view shows one window per agent: its thinking,
    thoughts, tool calls, browser steps, human replies, and a message box (`POST /runs/{id}/message` with
-   `agent_id`). Agents read messages on their next turn.
+   `agent_id`). Agents read messages on their next step; a message to a paused agent also resumes it.
    **Pause:** each agent has a `PauseGate` in the `RunContext`; `call_model` and `call_tools` await it, and a
    running browser-use task is mirrored onto `agent.pause()/resume()`. `POST /runs/{id}/agents/{aid}/pause|resume`
    (the planner's id is `planner`) and `/pause-all|/resume-all`. Stopping a run releases every gate.
@@ -122,6 +127,10 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
 - **Sign out** expires the service's cookies. **Custom sites** can be added from the dashboard.
 - The onboarding wizard and "Sign in to missing" open each login page in the live browser and advance when
   the sign-in is detected.
+- **Sign in once:** if the service has a CLI Todd can connect (see `connect.CONNECTORS`), the wizard connects it
+  with the fresh session before moving on, so the human is still there if the site asks for 2FA. Each account card
+  shows its CLI and a Connect button; agents can do the same mid-run with `cli_login`, which asks the human once
+  only if a password/2FA page appears.
 
 ## Spend safety
 
@@ -157,6 +166,19 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   passes the token as an env-only HTTP header and scrubs it (and its base64 form) from output. Known limit:
   the sandbox runs as a single user, so code already running in the sandbox *during* a push could read the
   push process's environment. A per-push user or a credential proxy is the next step.
+- **CLI sign-ins (connect.py):** a CLI's browser login runs in the sandbox with a private `HOME`. `cdp.approve`
+  approves it in the shared browser with generic page rules: fill the one-time code, click Continue/Authorize
+  with real mouse events, only on the provider's own domains; never a Cancel/Deny/switch-account button, never on
+  a password, 2FA or confirm-access page (those go to the human, in the same tab). A redirect to the CLI's
+  `localhost` callback (Wrangler) is caught before the browser loads it and replayed inside the sandbox, and a code
+  the page shows (Firebase) is read by Todd and handed to the CLI. The model never sees any of it. The result goes
+  in the vault: the token itself when the CLI prints it (`gh auth token` → `GITHUB_TOKEN`, which also powers the API
+  toolset and `git_push`), otherwise an encrypted snapshot of the CLI's sign-in files (`CLI_STATE_<SERVICE>`,
+  protected). `cli` unpacks the snapshot into a private temp dir for one command, saves refreshed tokens back and
+  deletes the dir; subcommands that sign in/out or print credentials are blocked (`gh`: `auth`, `extension`,
+  `alias`, `config`, `--hostname`). Known limit, as for `git_push`: code already running in the sandbox during a CLI
+  command could read those files. `browser_save_secret` moves a key a page shows into the vault without the model
+  seeing it.
 - **Human waits:** questions stay open across bounded waits (browser-use caps each action at ~180s, so the
   browser agent calls `wait_for_human` in 150s slices). At startup, interactions left over from a dead
   process are closed.

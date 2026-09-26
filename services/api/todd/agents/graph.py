@@ -129,7 +129,11 @@ def build_agent(
         others = [c for c in calls if c is not fin]
         results = await execute_tool_calls(ctx, tool_map, others, agent_id)
         update: dict[str, Any] = {"messages": results, "nudges": 0}
-        if fin is not None:
+        blocked = ctx.finish_blocker(agent_id) if fin is not None else None
+        if blocked:
+            ctx.emit(agent_id, "status", "Can't finish yet: agents are still running")
+            update["messages"] = [*results, ToolMessage(blocked, tool_call_id=fin["id"], name="finish", status="error")]
+        elif fin is not None:
             args = fin.get("args") or {}
             update["messages"] = [*results, ToolMessage("ok", tool_call_id=fin["id"], name="finish")]
             update.update(done=True, success=bool(args.get("success", True)), summary=str(args.get("summary", "")))

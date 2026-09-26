@@ -130,9 +130,11 @@ async def _act(action: str, params: dict[str, Any], note: str) -> str:
 @todd_tool(toolset="browser")
 async def browser_start(why_not_api: str, start_url: str | None = None, payment_amount_usd: float | None = None,
                         payment_merchant: str | None = None, payment_domains: list[str] | None = None) -> str:
-    """LAST RESORT. Take the shared browser (a real Chromium where the human is signed in to their accounts) for
-    consoles without APIs, sign-in-gated pages, forms or card checkout. Call find_integrations first: prefer
-    toolsets, MCP servers, api_request and CLIs. Returns the page state; then use the other browser_* tools and
+    """Take the shared browser (a real Chromium where the human is signed in to their accounts). Two uses:
+    (1) LAST RESORT for doing work on a service: consoles without APIs, sign-in-gated pages, forms, card checkout.
+    Call find_integrations first: prefer toolsets, MCP servers, api_request and CLIs. (2) Checking and debugging
+    websites you built or deployed: open the page, look at the screenshot, click through, browser_console for errors
+    (why_not_api: e.g. "Checking the deployed site renders"). Returns the page state; then use the other browser_* tools and
     call browser_done when finished so other agents can use it. Card payment: pass payment_amount_usd,
     payment_merchant and the exact payment_domains; the human must approve, then type card fields as
     <secret>card_number</secret>, <secret>card_exp</secret>, <secret>card_cvc</secret>, <secret>card_name</secret>,
@@ -199,6 +201,7 @@ async def _start(ctx, agent_id: str, why_not_api: str, start_url: str | None, pa
         raise
     h = _Handle(browser=browser, tools=Tools(), sensitive=sensitive, ledger=ledger, reason=why_not_api.strip())
     handles[agent_id] = h
+    await _record_console(h)
     ctx.emit(agent_id, "status", f"Browser task started: {why_not_api.strip()[:200]}", {"browser": "start"})
     if start_url:
         return await _act("navigate", {"url": start_url}, f"Open {start_url}")
@@ -310,6 +313,196 @@ async def browser_search(pattern: str) -> str:
     return (getattr(r, "extracted_content", None) or getattr(r, "error", None) or "No matches.").strip()
 
 
+# Text of an element (or the page) as a person would copy it: walks the composed tree (open shadow roots, slotted
+# content), keeps form field values, and never reads password or hidden inputs. mode "value" returns what a Copy
+# button would copy (a field's value, a <clipboard-copy> value or its target) for browser_save_secret.
+_TEXT_JS = """function(mode) {
+  const root = (this && this.nodeType) ? this : document.body;
+  const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const block = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BR|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TR|UL)$/;
+  const field = (el) => {
+    if (el.tagName === 'TEXTAREA') return el.value;
+    if (el.tagName !== 'INPUT') return null;
+    const t = (el.type || 'text').toLowerCase();
+    return ['password', 'hidden', 'checkbox', 'radio', 'file', 'submit', 'button', 'image'].includes(t) ? '' : el.value;
+  };
+  if (mode === 'value') {
+    const v = field(root);
+    if (v !== null) return v;
+    if (root.tagName === 'CLIPBOARD-COPY') {
+      if (root.getAttribute('value')) return root.getAttribute('value');
+      const id = root.getAttribute('for');
+      const target = id && ((root.getRootNode().getElementById && root.getRootNode().getElementById(id)) || document.getElementById(id));
+      if (target) return field(target) ?? target.textContent;
+    }
+  }
+  const out = [];
+  const push = (t) => {  // collapsed text: no space at the start of a line or after another space
+    const last = out.length ? out[out.length - 1] : '\\n';
+    if (last.endsWith('\\n') || last.endsWith(' ')) t = t.replace(/^ +/, '');
+    if (t) out.push(t);
+  };
+  const walk = (n) => {
+    if (n.nodeType === 3) {
+      if (n.parentElement && n.parentElement.closest('pre, textarea')) out.push(n.nodeValue);
+      else push(n.nodeValue.replace(/\\s+/g, ' '));
+      return;
+    }
+    if (n.nodeType !== 1 && n.nodeType !== 11) return;
+    if (n.nodeType === 1) {
+      if (skip.has(n.tagName) || n.hidden) return;
+      const st = getComputedStyle(n);
+      if (st.display === 'none' || st.visibility === 'hidden') return;
+      const v = field(n);
+      if (v !== null) { if (v) push(' ' + v + ' '); return; }
+      if (n.tagName === 'TD' || n.tagName === 'TH') out.push('\\t');
+    }
+    const kids = n.shadowRoot ? [n.shadowRoot]
+      : n.tagName === 'SLOT' && n.assignedNodes({flatten: true}).length ? n.assignedNodes({flatten: true})
+      : [...n.childNodes];
+    for (const c of kids) walk(c);
+    if (n.nodeType === 1 && block.test(n.tagName)) out.push('\\n');
+  };
+  walk(root);
+  return out.join('').split('\\n').map(l => l.replace(/[ \\t]+$/, '')).join('\\n')
+    .replace(/\\n{3,}/g, '\\n\\n').trim();
+}"""
+
+
+async def _text(h: _Handle, index: int | None, mode: str = "text") -> str:
+    b = h.browser
+    if index is None:
+        s = await b.get_or_create_cdp_session(focus=False)
+        doc = await s.cdp_client.send.Runtime.evaluate(params={"expression": "document.body"}, session_id=s.session_id)
+        object_id = doc["result"]["objectId"]
+    else:
+        node = await b.get_element_by_index(int(index))
+        if node is None:
+            raise ToolError(f"No element [{index}] on the current page. Call browser_state to refresh the indexes.")
+        s = await b.cdp_client_for_node(node)
+        res = await s.cdp_client.send.DOM.resolveNode(params={"backendNodeId": node.backend_node_id},
+                                                      session_id=s.session_id)
+        object_id = res["object"]["objectId"]
+    r = await s.cdp_client.send.Runtime.callFunctionOn(
+        params={"objectId": object_id, "functionDeclaration": _TEXT_JS, "arguments": [{"value": mode}],
+                "returnByValue": True}, session_id=s.session_id)
+    return str(r.get("result", {}).get("value") or "")
+
+
+@todd_tool(toolset="browser")
+async def browser_read_text(index: int | None = None, max_chars: int = 20000) -> str:
+    """Copy the full text of an element (by [index]) or of the whole page, including form field values and text the
+    page state shortens (long values, shadow DOM). Use it to bring exact content into your work: code, IDs, URLs,
+    error messages. Not for credentials: keep keys out of your context with browser_save_secret.
+
+    Args:
+        index: element index from the page state (omit for the whole page)
+        max_chars: maximum characters to return (default 20000)
+    """
+    ctx, agent_id, h = _get()
+    if h.sensitive is not None:
+        raise ToolError("browser_read_text is off during a checkout.")
+    text = await _text(h, index)
+    limit = max(200, min(int(max_chars), 100000))
+    if len(text) > limit:
+        text = text[:limit] + f"\n…[{len(text) - limit} more characters: raise max_chars or pick an element]"
+    return text or "(no text)"
+
+
+@todd_tool(toolset="browser")
+async def browser_save_secret(index: int, name: str, what: str = "") -> str:
+    """Save a value the page shows (e.g. an API key displayed once after the human asked you to create it) straight
+    into the vault as NAME, without it passing through you. Point at the field, the text or its Copy button.
+    Integration tokens (GITHUB_TOKEN, VERCEL_TOKEN…) aren't saved this way: connect those with cli_login.
+
+    Args:
+        index: element index of the value (or its Copy button)
+        name: UPPER_SNAKE_CASE vault name, e.g. STRIPE_SECRET_KEY
+        what: a few words on what it is (shown to the human)
+    """
+    from .. import vault
+
+    ctx, agent_id, h = _get()
+    if not re.fullmatch(r"[A-Z0-9_]{2,64}", name):
+        raise ToolError("Secret names must be UPPER_SNAKE_CASE")
+    if vault.is_protected(name):
+        raise ToolError(f"{name} is an integration token, model key or card field: agents can't set it. Connect the "
+                        "service with cli_login, or ask the human to add it in Settings.")
+    if h.sensitive is not None:
+        raise ToolError("browser_save_secret is off during a checkout.")
+    value = (await _text(h, index, mode="value")).strip()
+    if not value:
+        raise ToolError(f"Element [{index}] has no value to save. Point at the field or text showing the key.")
+    if any(c.isspace() for c in value):
+        raise ToolError(f"Element [{index}] holds text with spaces, not a single key. Point at the key itself (or its "
+                        "Copy button).")
+    vault.set_secret(name, value)
+    ctx.emit(agent_id, "status", f"Saved {what or 'a value from the page'} to the vault as {name}")
+    return f"Saved {name} ({len(value)} characters) without showing it to you. Reference it as {{{{secret:{name}}}}}."
+
+
+# Records JS errors and console errors/warnings from page load on, for browser_console.
+_CONSOLE_JS = r"""(() => { if (window.__todd_console) return; const log = window.__todd_console = [];
+  const text = (a) => a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? (() => {
+    try { return JSON.stringify(a); } catch (e) { return String(a); } })() : String(a);
+  const push = (level, args) => { log.push({level, text: [...args].map(text).join(' ').slice(0, 600)});
+    if (log.length > 200) log.shift(); };
+  for (const level of ['error', 'warn']) { const orig = console[level];
+    console[level] = function (...a) { push(level, a); return orig.apply(this, a); }; }
+  addEventListener('error', (e) => { if (e.message) push('error', [e.message + (e.filename ? ` (${e.filename}:${e.lineno})` : '')]);
+    else if (e.target && (e.target.src || e.target.href)) push('error', ['Failed to load ' + (e.target.src || e.target.href)]); }, true);
+  addEventListener('unhandledrejection', (e) => push('error', ['Unhandled promise rejection: ' + text(e.reason)]));
+})()"""
+
+_CONSOLE_READ = r"""(() => ({url: location.href, recorded: Array.isArray(window.__todd_console),
+  logs: window.__todd_console || [],
+  status: (performance.getEntriesByType('navigation')[0] || {}).responseStatus,
+  failed: performance.getEntriesByType('resource').filter((r) => r.responseStatus >= 400)
+    .map((r) => `${r.responseStatus} ${r.name}`).slice(0, 30)}))()"""
+
+
+async def _record_console(h: _Handle) -> Any:
+    """Record errors on every page this tab loads from now on (and on the current one, from now on)."""
+    s = await h.browser.get_or_create_cdp_session(focus=False)
+    try:
+        await s.cdp_client.send.Page.addScriptToEvaluateOnNewDocument(params={"source": _CONSOLE_JS},
+                                                                       session_id=s.session_id)
+        await s.cdp_client.send.Runtime.evaluate(params={"expression": _CONSOLE_JS}, session_id=s.session_id)
+    except Exception:  # noqa: BLE001  (e.g. a page that forbids scripts)
+        pass
+    return s
+
+
+@todd_tool(toolset="browser")
+async def browser_console(reload: bool = False) -> str:
+    """Debug the current page: JavaScript errors, console errors and warnings, failed requests (4xx/5xx) and the
+    page's HTTP status. Use it to verify a site you built or deployed. reload=true reloads the page first so errors
+    during page load are caught too.
+
+    Args:
+        reload: reload the page first to capture errors from the start (default false)
+    """
+    ctx, agent_id, h = _get()
+    if h.sensitive is not None:
+        raise ToolError("browser_console is off during a checkout.")
+    s = await _record_console(h)
+    if reload:
+        await s.cdp_client.send.Page.reload(params={}, session_id=s.session_id)
+        await asyncio.sleep(3)
+    r = await s.cdp_client.send.Runtime.evaluate(params={"expression": _CONSOLE_READ, "returnByValue": True},
+                                                 session_id=s.session_id)
+    d = r.get("result", {}).get("value") or {}
+    ctx.emit(agent_id, "browser_step", "Checked the console" + (" after a reload" if reload else ""),
+             {"url": d.get("url")})
+    lines = [f"URL: {d.get('url')}  (HTTP {d.get('status') or '?'})"]
+    logs = d.get("logs") or []
+    lines += [f"{x['level'].upper()}: {x['text']}" for x in logs] or ["No JavaScript errors or console warnings."]
+    lines += [f"FAILED REQUEST: {f}" for f in d.get("failed") or []]
+    if not reload and not logs:
+        lines.append("(Errors are recorded from when you took the browser; use reload=true to include page load.)")
+    return "\n".join(lines)
+
+
 @todd_tool(toolset="browser")
 async def browser_wait(seconds: int = 3) -> str:
     """Wait for the page to update (loading, redirects), then return the new state.
@@ -355,4 +548,4 @@ async def release(ctx, agent_id: str, *, success: bool = False, result: str = ""
 
 DIRECT_BROWSER_TOOLS = [browser_start, browser_state, browser_navigate, browser_click, browser_type, browser_keys,
                         browser_select, browser_scroll, browser_back, browser_switch_tab, browser_search,
-                        browser_wait, browser_done]
+                        browser_read_text, browser_save_secret, browser_console, browser_wait, browser_done]
