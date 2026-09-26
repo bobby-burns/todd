@@ -60,6 +60,7 @@ services:
   sandbox:
     build: ./services/sandbox
     restart: unless-stopped
+    init: true  # reaps the background processes agents and CLI sign-ins leave behind
     environment:
       SANDBOX_TOKEN: ${SANDBOX_TOKEN:-change-me-sandbox-token}
     volumes:

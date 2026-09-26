@@ -47,6 +47,20 @@ class ExecReq(BaseModel):
     env: dict[str, str] = {}
 
 
+# The event loop's subprocess pipes leak extra copies of the output socket into the child (fds above 2). Anything the
+# command leaves running in the background (a dev server, a CLI login) would inherit them and hold this request open
+# until the timeout, so every command first closes the fds it doesn't need.
+CLOSE_FDS = ('for _fd in /proc/$$/fd/*; do _fd=${_fd##*/}; case $_fd in 0|1|2) ;; '
+             '*) eval "exec $_fd>&-" 2>/dev/null;; esac; done; unset _fd\n')
+
+
+def _kill(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _clip(text: str) -> str:
     if len(text) <= MAX_OUTPUT:
         return text
@@ -62,23 +76,42 @@ async def exec_(req: ExecReq) -> dict:
     env.pop("SANDBOX_TOKEN", None)
     start = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        "bash", "-lc", req.cmd, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
+        "bash", "-lc", CLOSE_FDS + req.cmd, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True,
     )
-    timed_out = False
+    chunks: list[bytes] = []
+
+    async def read() -> None:  # buffered as it arrives, so a timeout keeps what the command printed
+        assert proc.stdout is not None
+        while chunk := await proc.stdout.read(65536):
+            chunks.append(chunk)
+
+    reader = asyncio.create_task(read())
+    timed_out = held = False
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=max(1, req.timeout))
+        await asyncio.wait_for(proc.wait(), timeout=max(1, req.timeout))
     except asyncio.TimeoutError:
         timed_out = True
+        _kill(proc.pid)
+    try:  # the output ends once nothing is writing to it
+        await asyncio.wait_for(asyncio.shield(reader), timeout=5 if timed_out else 3)
+    except asyncio.TimeoutError:
+        held = not timed_out  # a background process started without redirecting its output
+        _kill(proc.pid)
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:  # a daemonized grandchild can keep the pipe open; don't wait on it forever
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            await asyncio.wait_for(asyncio.shield(reader), timeout=2)
         except asyncio.TimeoutError:
-            out = b"[process killed after timeout; output unavailable]"
-    text = out.decode(errors="replace")
+            reader.cancel()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
+    text = b"".join(chunks).decode(errors="replace")
+    if timed_out:
+        text += f"\n[stopped after the {req.timeout}s timeout]"
+    elif held:
+        text += ("\n[stopped background processes still writing to this command's output; start long-running ones "
+                 "with `nohup CMD > FILE 2>&1 &`]")
     for v in req.env.values():  # never echo injected secrets back
         if len(v) >= 8:
             text = text.replace(v, "***")
