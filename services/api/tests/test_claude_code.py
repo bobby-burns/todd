@@ -281,6 +281,30 @@ def test_resume_continues_planner_session(loop):
     loop.run_until_complete(go())
 
 
+def test_message_continues_finished_run_in_the_same_session(loop):
+    fake.SCRIPTS[PLANNER] = [
+        step(finish("Done: first pass")),
+        step(text("First pass done.")),  # the one-line reply after finishing ends the session
+        step(finish("Done: added the footer")),  # the follow-up turn
+        *[step(text("Footer added.")) for _ in range(3)],
+    ]
+
+    async def go():
+        rid = new_run("continue test")
+        manager.start(rid)
+        run = await wait_status(rid, {"succeeded", "failed"}, timeout=60)
+        assert run.summary == "Done: first pass"
+        assert manager.note(rid, "now add a footer")
+        run = await wait_status(rid, {"succeeded", "failed"}, timeout=60)
+        log = [e for e in fake.LOG if e.get("key") == PLANNER]
+        assert run.status == "succeeded" and run.summary == "Done: added the footer", run.summary
+        ask = next(e for e in log if "now add a footer" in str(e["last"]))
+        assert "This run finished" in str(ask["last"])
+        assert ask["roles"].count("assistant") >= 2  # the same Claude Code session: the first pass is in its history
+
+    loop.run_until_complete(go())
+
+
 def test_not_signed_in_is_explained(loop):
     fake.SCRIPTS[PLANNER] = [{"error": "auth"}]  # the API rejects the credentials (e.g. signed out / expired)
 

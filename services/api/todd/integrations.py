@@ -162,7 +162,7 @@ def assess(query: str, available_toolsets: set[str] | None = None,
         rec = (f"{it.name} isn't connected to Todd yet" + (", but the browser is signed in to it. " if signed_in else ". ")
                + f"Call cli_login(\"{it.id}\"): Todd signs the {conn.name if conn else 'CLI'} in with "
                f"{'that' if signed_in else 'the browser'} session and approves it itself (the human only steps in "
-               f"for a password or 2FA page). Afterwards {after}. "
+               f"for a password/2FA page or a final click the site keeps for people). Afterwards {after}. "
                + ("" if signed_in else f"If the browser isn't signed in to {it.name}, request_signins first. ")
                + "Don't create tokens or keys in the browser.")
         route = "connect"

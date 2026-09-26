@@ -12,8 +12,8 @@ from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 @todd_tool(planner=True)
 async def cli_login(service: str, reconnect: bool = False) -> dict:
     """Connect a service's CLI with the human's signed-in browser session, so nobody creates or copies a token:
-    Todd opens the CLI's sign-in in the shared browser and approves it itself. Only a password or 2FA page needs the
-    human, who is asked once. Best done before spawning agents, when find_integrations says route "connect".
+    Todd opens the CLI's sign-in in the shared browser and approves it itself. Only a password or 2FA page, or a final
+    Authorize button the site only accepts from a person, needs the human, who is asked once. Best done before spawning agents, when find_integrations says route "connect".
     Supported: github (also powers the github toolset, gh and git_push), vercel, netlify, railway, cloudflare,
     stripe, firebase. Afterwards use `cli` (or `gh` for GitHub).
 

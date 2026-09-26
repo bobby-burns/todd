@@ -30,6 +30,7 @@ DEFAULTS: dict[str, Any] = {
     "limits": {"max_concurrent_agents": 4, "max_agents_per_run": 12},
     # Accounts the user picked in onboarding / on the Accounts page, and custom sites they added.
     "accounts_selected": [],
+    "cli_auto_skip": [],  # CLIs the human disconnected: don't connect them again automatically
     "accounts_custom": [],
     "accounts_manual": {},  # id -> {"signed_in": bool, "at": iso} manual confirmations
     "onboarding_completed": False,
@@ -67,7 +68,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
-REPLACE_KEYS = {"mcp_servers", "accounts_selected", "accounts_custom", "accounts_manual"}  # updated wholesale instead of deep-merged
+REPLACE_KEYS = {"mcp_servers", "accounts_selected", "accounts_custom", "accounts_manual", "cli_auto_skip"}  # updated wholesale instead of deep-merged
 
 
 def _merge(base: Any, override: Any) -> Any:

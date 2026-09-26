@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from sqlalchemy import JSON, Column, Text
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, create_engine, delete, select
 
 from .config import config
 

@@ -126,6 +126,31 @@ def get_run(run_id: str) -> dict:
     return _run_dict(_get_run(run_id))
 
 
+class RunPatch(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+@app.patch("/api/runs/{run_id}")
+def rename_run(run_id: str, body: RunPatch) -> dict:
+    with session() as s:
+        run = s.get(Run, run_id)
+        if not run:
+            raise HTTPException(404, "run not found")
+        run.title = body.title.strip()  # updated_at stays: it marks when the run last did something
+        s.add(run)
+        s.commit()
+        s.refresh(run)
+    return _run_dict(run)
+
+
+@app.delete("/api/runs/{run_id}")
+async def delete_run(run_id: str) -> dict:
+    """Delete a run and its history (stopping it first if it's running). Ledger entries and workspace files stay."""
+    _get_run(run_id)
+    await manager.delete(run_id)
+    return {"deleted": True}
+
+
 @app.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: str) -> dict:
     _get_run(run_id)
@@ -150,11 +175,13 @@ class Note(BaseModel):
 
 @app.post("/api/runs/{run_id}/message")
 async def message_run(run_id: str, body: Note) -> dict:
-    """Steer a running run: the planner sees the message on its next turn."""
+    """Steer a running run (the planner or agent sees the message on its next step), or continue a run that has
+    ended (a message to its planner picks the conversation back up)."""
     _get_run(run_id)
+    was_active = manager.is_active(run_id)
     if not manager.note(run_id, body.text, body.agent_id):
-        raise HTTPException(409, "run or agent is not active")
-    return {"queued": True}
+        raise HTTPException(409, "that agent has finished; message the planner instead")
+    return {"queued": True, "continued": not was_active}
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -456,6 +483,7 @@ def _with_cli(a: dict) -> dict:
 async def accounts_list(selected_only: bool = False) -> dict:
     ids = (settings.get("accounts_selected") or []) if selected_only else None
     st = await accounts.statuses(ids)
+    connect.auto_connect(st["accounts"])  # sign in once: a signed-in account gets its CLI connected too
     st["accounts"] = [_with_cli(a) for a in st["accounts"]]
     st["categories"] = list(dict.fromkeys(a["category"] for a in st["accounts"]))
     return st
@@ -475,6 +503,7 @@ async def account_connect(service_id: str) -> dict:
     finishes a password/2FA page if one appears). Poll GET …/connect for progress."""
     if service_id not in connect.CONNECTORS:
         raise HTTPException(404, "this service has no CLI sign-in")
+    connect.set_auto(service_id, True)
     connect.start(service_id)
     return connect.status(service_id)
 
@@ -491,6 +520,7 @@ def account_disconnect(service_id: str) -> dict:
     if service_id not in connect.CONNECTORS:
         raise HTTPException(404, "this service has no CLI sign-in")
     connect.disconnect(service_id)
+    connect.set_auto(service_id, False)  # the human chose this: don't reconnect it on the next visit
     return connect.status(service_id)
 
 

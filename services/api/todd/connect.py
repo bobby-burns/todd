@@ -24,7 +24,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import cdp, vault
+from . import cdp, settings, vault
 from .config import config
 from .sdk import ToolError
 from .tools import sandbox
@@ -196,6 +196,27 @@ def start(service: str, on_change: Callable[[Connection], None] | None = None,
     _CONNECTIONS[c.service] = conn
     conn.task = asyncio.create_task(_flow(c, conn, on_change, browser_lock), name=f"connect-{c.service}")
     return conn
+
+
+def auto_connect(accounts: list[dict[str, Any]]) -> str | None:
+    """Sign in once, by default: when an account with a CLI is signed in to the browser but its CLI isn't connected,
+    connect it. One at a time (they share the browser), each tried once per Todd start (the Connect button retries),
+    and never a CLI the human disconnected. Returns the service it started, if any."""
+    if any(cn.task is not None and not cn.task.done() for cn in _CONNECTIONS.values()):
+        return None
+    skip = set(settings.get("cli_auto_skip") or [])
+    for a in accounts:
+        sid = a.get("id")
+        if sid in CONNECTORS and a.get("status") == "signed_in" and sid not in _CONNECTIONS and sid not in skip \
+                and not is_connected(sid):
+            start(sid)
+            return sid
+    return None
+
+
+def set_auto(service: str, on: bool) -> None:
+    skip = [s for s in (settings.get("cli_auto_skip") or []) if s != service]
+    settings.update({"cli_auto_skip": skip if on else [*skip, service]})
 
 
 def _set(conn: Connection, on_change: Any, state: str, message: str = "") -> None:

@@ -57,7 +57,11 @@ Open source and self-hosted: `docker compose up` and it's yours.
 - **Watch them think, pause them, steer them.** Each agent has its own window with its reasoning (narrated,
   plus native model reasoning where supported), tool calls, browser steps, a **Pause/Resume** button and a
   message box. Pause an agent (or the whole run) and send it a message: it picks up the change and resumes.
-  Pausing also freezes an agent's in-progress browser task.
+  Pausing also freezes an agent's in-progress browser task. Finished agents fold into a compact tray (open one
+  to read its window again, or hide it).
+- **Keep going after a run ends.** A finished (or stopped) run isn't a dead end: message its planner and it picks
+  its conversation back up with your follow-up, spawning new agents if needed. Runs can be renamed, run again or
+  deleted from the sidebar (**Edit** deletes several at once).
 - **Every agent ends with a summary.** Done / Outputs / How / Left-needs-you, shown as a card in its window.
   The planner's run summary adds a line per agent. If an agent is stopped or fails, Todd writes a fallback
   summary from what it actually did.
@@ -66,8 +70,9 @@ Open source and self-hosted: `docker compose up` and it's yours.
   detects logins in the agents' browser and shows each session's status. The planner checks the accounts it
   needs before starting, so agents don't stall on login screens.
 - **Sign in once: web and CLI.** When you sign in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe or
-  Firebase, Todd signs in that service's CLI with the same session right away. It approves the CLI's sign-in in the
-  browser itself; you only step in if the site asks for your password or 2FA, and only then, while you're there.
+  Firebase, Todd signs in that service's CLI with the same session automatically. It approves the CLI's sign-in in
+  the browser itself; you only step in for a password or 2FA page, or for the one final Authorize/Allow click some
+  sites only accept from a person (Todd scrolls to it and highlights it), and only then, while you're there.
   Credentials go straight into the encrypted vault; nobody copies tokens, and runs never stop for a login.
 - **Your Claude plan, or your own keys.** By default every agent (planner included) runs as a headless
   [Claude Code](https://code.claude.com) session signed in with your Claude account, so usage counts toward
@@ -151,7 +156,8 @@ environment variables.
 A glass-material interface (light, dark or follow-system) built with Next.js, Tailwind v4 and Motion. There's
 one window per agent with live reasoning, paired tool calls (spinner → check), browser steps with screenshots,
 chat-style messages, pause/resume and end-of-work summary cards. Approval and spend requests appear as sheets at
-the top of the run. It works on phones too, with a floating tab bar.
+the top of the run. The live browser panel has **Take control**, which opens the agents' browser big and
+interactive (sign-ins, captchas, 2FA, or helping an agent). It works on phones too, with a floating tab bar.
 
 The design system lives in `services/web/app/globals.css` (color tokens + the `glass` material),
 `components/ui.tsx` (status pills, segmented controls, switches, avatars) and `lib/motion.ts` (spring presets).
@@ -261,8 +267,10 @@ Todd is at **v0.4** and under active development.
 - **One shared browser.** Browser tasks run one at a time; other agents keep working in parallel.
 - **CLI sign-in with the browser session** covers GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe and
   Firebase. Supabase's CLI only signs in from a real terminal, so it needs a token in Settings. Approving uses
-  generic page rules (fill the code, click Continue/Authorize); if a provider's page changes, Todd leaves the tab
-  open in the live browser for you to click Approve.
+  generic page rules (fill the code, click Continue/Authorize). Some final buttons, such as GitHub's Authorize and
+  Vercel's Allow Access, stay disabled until a person interacts with the page (clickjacking protection); Todd
+  doesn't work around that, so it asks you for that one click. If a provider's page changes, Todd leaves the tab
+  open in the live browser for you to finish.
 - **Login detection is best-effort.** It's exact for services with a known session cookie. For others Todd
   loads a dashboard page and looks for a login redirect or a visible password field, and you can mark a
   service yourself.

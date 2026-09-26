@@ -80,6 +80,11 @@ vault.py           Fernet-encrypted secrets in Postgres (env var fallback), outp
 7. If the process dies, runs and agents are marked `interrupted` at startup. **Resume** continues the planner
    from its last checkpoint. Background agents from before the restart are gone; the planner re-spawns what
    it still needs.
+8. A run that has ended (any status) continues when the human messages its planner: `RunManager.start(run_id,
+   followup=…)` reopens the planner's conversation (the same LangGraph thread with `done` reset, or the same Claude
+   Code session with `--resume`) with the message and a note that earlier agents have stopped. `DELETE /runs/{id}`
+   stops a run if needed and removes its events, agents, interactions, screenshots, checkpoints and Claude Code
+   session files; ledger entries and workspace files stay. `PATCH /runs/{id}` renames it.
 
 ## Engines
 
@@ -100,8 +105,8 @@ plan the CLI is signed in with (`docker compose exec -it api claude auth login`;
   agent's next tool result, or sent as a new turn; a turn that ends without `finish` gets a nudge (3 max);
   cancel kills the process group right away; auth failures (`api_retry` 401/403) fail fast with sign-in steps;
   rate-limit retries show up as status lines.
-- **Resume:** the planner's session id is `uuid5(run id)`, so Resume continues the same conversation with
-  `--resume`.
+- **Resume:** the planner's session id is `uuid5(run id)`, so Resume (and a follow-up message to a finished run)
+  continues the same conversation with `--resume`.
 - **Browser:** the `browser` toolset becomes `tools/browser_direct.py`: `browser_start(why_not_api, …)`,
   `browser_navigate/click/type/keys/select/scroll/back/switch_tab/search/wait/state`, `browser_done`, built on
   browser-use's primitives over CDP (indexed elements, screenshots returned to the model as images). Same run-wide
@@ -169,7 +174,12 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
 - **CLI sign-ins (connect.py):** a CLI's browser login runs in the sandbox with a private `HOME`. `cdp.approve`
   approves it in the shared browser with generic page rules: fill the one-time code, click Continue/Authorize
   with real mouse events, only on the provider's own domains; never a Cancel/Deny/switch-account button, never on
-  a password, 2FA or confirm-access page (those go to the human, in the same tab). A redirect to the CLI's
+  a password, 2FA or confirm-access page (those go to the human, in the same tab; once the human is past them,
+  Todd carries on). A device-code field that looks like a 2FA field (sized for or holding the code) is filled, not
+  handed over. Final buttons that stay disabled until a person interacts (GitHub's focus check, Vercel's Allow
+  Access) aren't worked around: Todd scrolls to the button, outlines it and asks the human for that click. When an
+  account is signed in and its CLI isn't, `GET /api/accounts` starts the connection (one at a time, once per start,
+  never for a CLI the human disconnected). A redirect to the CLI's
   `localhost` callback (Wrangler) is caught before the browser loads it and replayed inside the sandbox, and a code
   the page shows (Firebase) is read by Todd and handed to the CLI. The model never sees any of it. The result goes
   in the vault: the token itself when the CLI prints it (`gh auth token` → `GITHUB_TOKEN`, which also powers the API

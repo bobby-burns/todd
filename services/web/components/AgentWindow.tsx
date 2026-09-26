@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Maximize2, Minimize2, Pause, Play, Square } from "lucide-react";
+import { ArrowUp, ChevronsDownUp, Maximize2, Minimize2, Pause, Play, Square } from "lucide-react";
 import { agentColor, api, shortModel, usd, type AgentInfo, type TEvent } from "@/lib/api";
 import { softSpring, spring } from "@/lib/motion";
 import { buildFeed, EventRow } from "./EventRow";
@@ -19,6 +19,7 @@ export function AgentWindow({
   onToggleMax,
   onShot,
   onChanged,
+  onCollapse,
 }: {
   runId: string;
   agent: AgentInfo;
@@ -30,6 +31,8 @@ export function AgentWindow({
   onToggleMax: () => void;
   onShot: (src: string) => void;
   onChanged?: () => void;
+  /** A finished agent the human opened from the tray: fold it back. */
+  onCollapse?: () => void;
 }) {
   const color = agentColor(agents, agent.id);
   const [msg, setMsg] = useState("");
@@ -43,6 +46,7 @@ export function AgentWindow({
   const feed = useMemo(() => buildFeed(events), [events]);
   const last = feed[feed.length - 1];
   const working = running && !paused && agent.status === "running" && last && !(last.kind === "tool_call" && !last.result);
+  const canMessage = running || isPlanner; // a run that has ended continues when its planner gets a message
 
   async function togglePause() {
     setBusy(true);
@@ -67,6 +71,7 @@ export function AgentWindow({
     try {
       await api(`/runs/${runId}/message`, { method: "POST", json: { text: msg, agent_id: agent.id } });
       setMsg("");
+      if (!active) onChanged?.();
     } catch (e: any) {
       setErr(e.message);
     }
@@ -113,6 +118,11 @@ export function AgentWindow({
               onClick={() => api(`/runs/${runId}/agents/${agent.id}/cancel`, { method: "POST" }).catch((e) => setErr(e.message))}
             >
               <Square size={11} fill="currentColor" />
+            </button>
+          )}
+          {onCollapse && (
+            <button className="btn btn-plain btn-sm btn-icon w-7 text-fg-2" title="Collapse" onClick={onCollapse}>
+              <ChevronsDownUp size={14} />
             </button>
           )}
           <button className="btn btn-plain btn-sm btn-icon w-7 text-fg-2" title={maximized ? "Restore" : "Expand"} onClick={onToggleMax}>
@@ -177,7 +187,7 @@ export function AgentWindow({
         )}
       </AnimatePresence>
 
-      {running && (
+      {canMessage && (
         <form
           className="mx-3 mb-3 flex h-10 items-center gap-2 rounded-full bg-fill pr-1 pl-4 transition-shadow focus-within:shadow-[0_0_0_3.5px_color-mix(in_oklab,var(--accent)_30%,transparent)]"
           onSubmit={(e) => {
@@ -187,7 +197,7 @@ export function AgentWindow({
         >
           <input
             className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none placeholder:text-fg-3"
-            placeholder={`Message ${agent.name}…`}
+            placeholder={running ? `Message ${agent.name}…` : "Continue this run: tell the planner what to do next…"}
             value={msg}
             onChange={(e) => setMsg(e.target.value)}
           />

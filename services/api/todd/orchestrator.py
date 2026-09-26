@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import traceback
 import uuid
 from contextlib import AsyncExitStack
@@ -16,7 +17,7 @@ from . import accounts, connect, prompts, registry, settings, vault
 from .agents import claude_code, dynamic
 from .agents.graph import build_agent, recursion_limit
 from .config import config
-from .db import Run, get_run, select, session, update_run
+from .db import AgentInstance, Event, Interaction, Run, delete, get_run, select, session, update_run
 from .runtime import RunCancelled, RunContext, cancel_stale_interactions
 from .sdk import set_ctx
 
@@ -114,12 +115,15 @@ class RunManager:
         return InMemorySaver()
 
     # ---- control --------------------------------------------------------------------------
-    def start(self, run_id: str, resume: bool = False) -> None:
+    def start(self, run_id: str, resume: bool = False, followup: str | None = None) -> None:
+        """Start a run, resume it from its checkpoint, or (with `followup`) continue a run that has ended: the planner
+        picks up its conversation with the human's new message."""
         if run_id in self.tasks and not self.tasks[run_id].done():
             return
         ctx = RunContext(run_id)
         self.contexts[run_id] = ctx
-        self.tasks[run_id] = asyncio.create_task(self._execute(ctx, resume), name=f"run-{run_id}")
+        self.tasks[run_id] = asyncio.create_task(self._execute(ctx, resume or bool(followup), followup),
+                                                 name=f"run-{run_id}")
 
     def cancel(self, run_id: str) -> bool:
         ctx = self.contexts.get(run_id)
@@ -138,10 +142,15 @@ class RunManager:
 
     def note(self, run_id: str, text: str, agent_id: str = "planner") -> bool:
         """Human message to the planner or to a specific running agent. It's read on the agent's next step, ends a
-        wait_for_agents early, and resumes the agent if it was paused."""
+        wait_for_agents early, and resumes the agent if it was paused. A message to the planner of a run that has
+        ended continues the run."""
         ctx = self.contexts.get(run_id)
-        if not ctx or run_id not in self.tasks or self.tasks[run_id].done():
-            return False
+        if not self.is_active(run_id):
+            if agent_id != "planner" or not get_run(run_id):
+                return False
+            self.start(run_id, followup=text)
+            return True
+        assert ctx is not None
         if agent_id == "planner":
             ctx.user_notes.put_nowait(f"[from the human] {text}")
         else:
@@ -183,19 +192,50 @@ class RunManager:
         t = self.tasks.get(run_id)
         return bool(t and not t.done())
 
+    async def delete(self, run_id: str) -> None:
+        """Delete a run and its history: events, agents, questions, screenshots, the planner's checkpoints and
+        Claude Code sessions. A running run is stopped first. Ledger entries stay (the record of money spent), and so
+        do files the agents made in the workspace."""
+        task = self.tasks.get(run_id)
+        self.cancel(run_id)
+        if task and not task.done():
+            await asyncio.wait({task}, timeout=15)
+        self.contexts.pop(run_id, None)
+        with session() as s:
+            for model in (Event, Interaction, AgentInstance, Run):
+                s.exec(delete(model).where(model.run_id == run_id if model is not Run else Run.id == run_id))
+            s.commit()
+        if self.checkpointer is not None:
+            try:
+                await self.checkpointer.adelete_thread(run_id)
+            except Exception:  # noqa: BLE001
+                log.warning("couldn't delete checkpoints of run %s", run_id, exc_info=True)
+        dirs = [config.data_dir / "screens" / run_id, config.data_dir / "claude-runs" / run_id]
+        projects = config.claude_config_dir / "projects"
+        if projects.is_dir():
+            dirs += list(projects.glob(f"*claude-runs-{run_id}-*"))  # Claude Code keeps sessions per working dir
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
     # ---- execution ------------------------------------------------------------------------
-    async def _execute(self, ctx: RunContext, resume: bool) -> None:
+    async def _execute(self, ctx: RunContext, resume: bool, followup: str | None = None) -> None:
         run_id = ctx.run_id
         set_ctx(ctx)  # task-local: visible to every tool running inside this run
         run = get_run(run_id)
         assert run is not None
+        previous = run.status
         update_run(run_id, status="running")
         engine = settings.get("engine") if settings.get("engine") in ("api", "claude_code") else "claude_code"
         if resume:
             engine = run_engine(run_id) or engine  # a resumed run keeps the engine it started with
         ctx.engine = engine  # type: ignore[attr-defined]  # fixed for the life of the run
-        ctx.emit("system", "status", "Run resumed from last checkpoint" if resume else "Run started",
-                 {"engine": engine})
+        if followup:
+            ctx.emit("planner", "note", followup, {"from": "human"})
+            ctx.emit("system", "status", "Run continued with your message", {"engine": engine})
+        else:
+            ctx.emit("system", "status", "Run resumed from last checkpoint" if resume else "Run started",
+                     {"engine": engine})
+        follow_msg = _followup_message(previous, followup) if followup else None
         try:
             mcp_toolsets, mcp_errors = await registry.load_mcp_toolsets()
             for e in mcp_errors:
@@ -207,7 +247,7 @@ class RunManager:
                 toolsets=registry.toolsets_prompt(ctx.toolsets))  # type: ignore[attr-defined]
             planner_tools = registry.planner_tools(ctx.toolsets)  # type: ignore[attr-defined]
             if engine == "claude_code":
-                state = await self._planner_claude_code(ctx, run, system, planner_tools, resume)
+                state = await self._planner_claude_code(ctx, run, system, planner_tools, resume, follow_msg)
             else:
                 graph = build_agent(role="planner", agent_id="planner", agent_name="Planner", system_prompt=system,
                                     tools=planner_tools, notes=ctx.user_notes, checkpointer=self.checkpointer)
@@ -217,9 +257,13 @@ class RunManager:
                 if resume:
                     snap = await graph.aget_state(cfg)
                     if snap.values.get("messages"):
-                        inp = None  # continue from the last checkpoint
+                        # continue from the last checkpoint; a follow-up reopens a finished conversation
+                        inp = {"messages": [HumanMessage(follow_msg)], "done": False, "success": False,
+                               "summary": "", "nudges": 0} if follow_msg else None
                     else:
                         ctx.emit("system", "status", "No checkpoint yet; starting from the prompt")
+                        if follow_msg:
+                            inp = {"messages": [HumanMessage(f"{run.prompt}\n\n{follow_msg}")]}
                 state = await graph.ainvoke(inp, cfg)
             ok = bool(state.get("done") and state.get("success"))
             summary = state.get("summary") or ""
@@ -250,21 +294,33 @@ class RunManager:
             self.tasks.pop(run_id, None)
 
 
-    async def _planner_claude_code(self, ctx: RunContext, run: Run, system: str, tools: list, resume: bool) -> dict:
-        """The planner as a Claude Code session. Its session id is derived from the run id, so Resume continues the
-        same conversation after a restart."""
+    async def _planner_claude_code(self, ctx: RunContext, run: Run, system: str, tools: list, resume: bool,
+                                   followup: str | None = None) -> dict:
+        """The planner as a Claude Code session. Its session id is derived from the run id, so Resume (or a follow-up
+        message) continues the same conversation, also after a restart."""
         sid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"todd-run-{run.id}"))
         exists = claude_code.session_exists(sid)
         first = run.prompt
         if resume and exists:
-            first = ("Todd restarted and this run was interrupted. Continue from where you left off. Agents that "
-                     "were running have stopped: check list_agents and re-spawn what's still needed.")
+            first = followup or ("Todd restarted and this run was interrupted. Continue from where you left off. "
+                                 "Agents that were running have stopped: check list_agents and re-spawn what's "
+                                 "still needed.")
         elif resume:
             ctx.emit("system", "status", "No checkpoint yet; starting from the prompt")
+            if followup:
+                first = f"{run.prompt}\n\n{followup}"
         return await claude_code.run_agent(ctx, role="planner", agent_id="planner", system_prompt=system,
                                            tools=tools, first_message=first, notes=ctx.user_notes,
                                            session_id=sid, resume=resume and exists,
                                            max_calls=config.planner_max_turns * 4)
+
+
+def _followup_message(previous_status: str, text: str) -> str:
+    how = {"succeeded": "finished", "failed": "ended without completing the goal", "cancelled": "was stopped by the human",
+           "interrupted": "was interrupted when Todd restarted"}.get(previous_status, "ended")
+    return (f"This run {how}. The human has sent a follow-up:\n\n[from the human] {text}\n\n"
+            "Agents from before have stopped (list_agents shows what they did and found). Act on the message: answer "
+            "it, or spawn agents for new work. Call finish with a new summary when it's handled.")
 
 
 manager = RunManager()

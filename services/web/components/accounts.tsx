@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, LogIn, LogOut, RefreshCw, ShieldCheck, SkipForward, TerminalSquare } from "lucide-react";
 import { api, type Account, type AccountsResponse, type CliStatus } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
+import { openLiveBrowser } from "./LiveBrowser";
 import { ActivityIndicator } from "./ui";
 
 export function useAccounts(pollMs = 0) {
@@ -125,15 +126,19 @@ export function CliRow({ a, onChange }: { a: Account; onChange?: () => void }) {
         <span style={{ color: tone }}>
           {st.connected ? "signed in with this account" : busy ? st.message || "Connecting…" : st.state === "failed" ? st.message : "not connected"}
         </span>
-        {st.state === "needs_you" && <div className="mt-0.5 text-fg-2">Finish it in the browser panel. Todd continues on its own.</div>}
+        {st.state === "needs_you" && <div className="mt-0.5 text-fg-2">Todd continues on its own right after.</div>}
       </div>
-      {busy ? (
+      {st.state === "needs_you" ? (
+        <button className="btn btn-accent btn-sm shrink-0" onClick={() => openLiveBrowser({ note: st.message })} title="Open the browser big, in control">
+          Open browser
+        </button>
+      ) : busy ? (
         <ActivityIndicator size={12} />
       ) : (
         !st.connected &&
         a.status === "signed_in" && (
           <button className="btn btn-glass btn-sm shrink-0" onClick={start} title="Sign in the CLI with this browser session">
-            Connect
+            {st.state === "failed" ? "Retry" : "Connect"}
           </button>
         )
       )}

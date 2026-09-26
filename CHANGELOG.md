@@ -19,6 +19,14 @@ changes).
 - `browser_read_text`: copy the full text of an element or page (shadow DOM and field values included, never
   password fields) into the agent's work.
 - `browser_save_secret`: save a key a page shows straight into the vault without the model seeing it.
+- Continue a finished run: message its planner (in its window, the run summary or the timeline) and it picks its
+  conversation back up, on both engines.
+- Rename, run again, copy the prompt of, stop or delete a run from the sidebar or the runs list; **Edit** in the
+  sidebar deletes several at once. Deleting keeps ledger entries and workspace files.
+- Finished, failed and stopped agents fold into a compact "Finished agents" tray on the run page. Open one to see
+  its window again, or hide it.
+- **Take control** opens the agents' browser in a large window you can click and type in. Sign-in prompts and CLI
+  rows that need you have an **Open browser** button.
 
 ### Changed
 
@@ -26,6 +34,11 @@ changes).
   planner, so it can act on the message while agents keep working.
 - Sending a message to a paused agent (or the planner) resumes it.
 - The planner can't finish while agents it spawned are still running.
+- A signed-in account's CLI now connects automatically when the Accounts page or Setup loads (one at a time, once per
+  start; the button retries). Disconnecting a CLI turns this off for it.
+- CLI approval: when a site keeps its final Authorize/Allow button disabled until a person interacts, Todd scrolls to
+  it, outlines it and asks you for that one click instead of waiting. After you finish a password or 2FA page, Todd
+  takes over again on the next page.
 - `find_integrations` routes a service that isn't connected but has a browser-session login to `connect`
   (`cli_login`). Agents are told never to create tokens in the browser or copy credentials through their context.
 
@@ -38,6 +51,10 @@ changes).
   timeout, because leaked descriptors kept the output stream open.
 - A sandbox command that timed out lost everything it had printed; the output is now kept.
 - The sandbox runs with an init process, so exited background processes are reaped.
+- **Take control** didn't let you control the browser (only the new-tab view did): noVNC treats `view_only=0` as
+  on. The Setup and Accounts browsers were affected too.
+- Vercel's device-code field (`autocomplete="one-time-code"`) was mistaken for a 2FA prompt, so the Vercel CLI
+  sign-in stopped for you right away.
 
 ## [0.4.0] - 2026-09-25
 

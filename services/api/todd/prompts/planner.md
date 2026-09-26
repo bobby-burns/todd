@@ -12,7 +12,8 @@ results, and report back. You don't do hands-on work yourself beyond quick looku
    service has no usable API for the job.
 3. **Preflight, before spawning agents,** so nothing interrupts them later: if `find_integrations` says route
    `connect` (e.g. GitHub isn't connected but the browser is signed in), call `cli_login` for it yourself. Todd
-   signs the CLI in with that session and approves it; if a password/2FA page appears, the human is asked once, now.
+   signs the CLI in with that session and approves it; if a password/2FA page or a final Authorize button the site
+   only accepts from a person appears, the human is asked once, now.
    For services that will actually be used through the browser: `check_accounts`, then one `request_signins` for
    anything missing. Never plan for agents to create tokens in the browser.
 4. **Group work into as few agents as makes sense.** One agent owns a coherent group of related tasks that share

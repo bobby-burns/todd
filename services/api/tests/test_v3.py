@@ -253,3 +253,69 @@ def test_planner_cannot_finish_while_agents_run(loop):
         assert "Not finished" in seen["refusal"] and "Busy" in seen["refusal"]
         assert agents_of(rid)[0].status == "succeeded"  # an early finish didn't cancel it
     loop.run_until_complete(go())
+
+
+def test_message_continues_a_finished_run(loop):
+    async def go():
+        seen: list[str] = []
+
+        def second(msgs):
+            seen.append("\n".join(str(m.content) for m in msgs))
+            return AIMessage("", tool_calls=[call("finish", success=True, summary="Done: second pass")])
+
+        SCRIPTS["planner"][:] = [
+            AIMessage("", tool_calls=[call("finish", success=True, summary="Done: first pass")]),
+            second,
+        ]
+        rid = new_run("continue me")
+        manager.start(rid)
+        assert (await wait_status(rid, {"succeeded"})).summary == "Done: first pass"
+        assert manager.note(rid, "now add a footer", "some-finished-agent") is False  # only the planner continues
+        assert manager.note(rid, "now add a footer")
+        r = await wait_status(rid, {"succeeded"})
+        assert r.summary == "Done: second pass"
+        # the planner picked its conversation back up: the original prompt, its first finish, then the follow-up
+        assert "continue me" in seen[0] and "now add a footer" in seen[0] and "This run finished" in seen[0]
+        evs = events_of(rid)
+        assert any(e.kind == "note" and e.agent == "planner" and e.text == "now add a footer" for e in evs)
+        assert any(e.kind == "status" and e.text == "Run continued with your message" for e in evs)
+    loop.run_until_complete(go())
+
+
+def test_delete_and_rename_run(loop, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from todd import main
+    from todd.config import config
+    from todd.db import LedgerEntry, Run
+
+    async def go():
+        SCRIPTS["Helper"] = [AIMessage("", tool_calls=[call("finish", success=True, summary="Done: helped")])]
+        SCRIPTS["planner"][:] = [
+            AIMessage("", tool_calls=[call("spawn_agent", name="Helper", instructions="x", task="help",
+                                           toolsets=["demo"], background=False)]),
+            AIMessage("", tool_calls=[call("finish", success=True, summary="ok")]),
+        ]
+        rid = new_run("delete me")
+        manager.start(rid)
+        await wait_status(rid, {"succeeded"})
+        assert agents_of(rid) and events_of(rid)
+        with session() as s:
+            s.add(LedgerEntry(run_id=rid, amount_usd=1.0, merchant="x", description="kept"))
+            s.commit()
+        shots = config.data_dir / "screens" / rid
+        shots.mkdir(parents=True, exist_ok=True)
+        (shots / "a.png").write_bytes(b"png")
+
+        monkeypatch.setattr(config, "api_token", "")
+        c = TestClient(main.app)
+        r = c.patch(f"/api/runs/{rid}", json={"title": "  Renamed run "})
+        assert r.status_code == 200 and r.json()["title"] == "Renamed run"
+
+        await manager.delete(rid)
+        with session() as s:
+            assert s.get(Run, rid) is None
+            assert s.exec(select(LedgerEntry).where(LedgerEntry.run_id == rid)).all()  # money records stay
+        assert not agents_of(rid) and not events_of(rid) and not shots.exists()
+        assert c.get(f"/api/runs/{rid}").status_code == 404
+    loop.run_until_complete(go())

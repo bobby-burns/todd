@@ -16,6 +16,8 @@ import { SummaryText } from "@/components/SummaryText";
 
 type View = "windows" | "timeline";
 
+const FINISHED = ["succeeded", "failed", "cancelled", "interrupted"];
+
 function loadPref<T>(key: string, dflt: T): T {
   try {
     const v = localStorage.getItem(key);
@@ -51,13 +53,21 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   const [showPrompt, setShowPrompt] = useState(false);
   const [shot, setShot] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  const [followup, setFollowup] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [opened, setOpened] = useState<string[]>([]); // finished agents the human opened from the tray
+  const [hidden, setHidden] = useState<string[]>([]); // finished agents the human dismissed (this browser only)
 
   useEffect(() => {
     setView(loadPref<View>("todd.view", "windows"));
     setShowThinking(loadPref("todd.thinking", true));
     setShowBrowser(loadPref("todd.browserWindow", true));
   }, []);
+  useEffect(() => setHidden(loadPref<string[]>(`todd.hidden.${id}`, [])), [id]);
+  const saveHidden = (next: string[]) => {
+    setHidden(next);
+    savePref(`todd.hidden.${id}`, next);
+  };
 
   const refresh = useCallback(() => {
     api<Run>(`/runs/${id}`).then(setRun).catch((e) => setErr(e.message));
@@ -128,6 +138,10 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
     savePref(key, v);
   };
   const spawned = agents.filter((a) => a.id !== "planner");
+  const isFinished = (a: AgentInfo) => a.id !== "planner" && FINISHED.includes(a.status);
+  const windows = agents.filter((a) => !isFinished(a) || opened.includes(a.id));
+  const tray = agents.filter((a) => isFinished(a) && !opened.includes(a.id) && !hidden.includes(a.id));
+  const hiddenCount = agents.filter((a) => isFinished(a) && !opened.includes(a.id) && hidden.includes(a.id)).length;
   const pausedCount = run.paused_agents?.length ?? 0;
   const budgetUsed = run.budget_usd ? Math.min(1, run.spent_usd / run.budget_usd) : 0;
 
@@ -294,14 +308,66 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
               <div className="mt-5 border-t border-sep pt-5">
                 <SummaryText text={run.summary} className="text-[14px]" />
               </div>
+              <form
+                className="mt-5 flex h-11 items-center gap-2 rounded-full bg-fill pr-1.5 pl-4 transition-shadow focus-within:shadow-[0_0_0_3.5px_color-mix(in_oklab,var(--accent)_30%,transparent)]"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!followup.trim()) return;
+                  act("message", { text: followup });
+                  setFollowup("");
+                }}
+              >
+                <input
+                  className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-3"
+                  placeholder="Keep going: ask the planner for a change or the next step…"
+                  value={followup}
+                  onChange={(e) => setFollowup(e.target.value)}
+                />
+                <button className="btn btn-accent btn-sm h-8 shrink-0" disabled={!followup.trim()} title="Continue this run with your message">
+                  Continue <ArrowUp size={14} strokeWidth={2.6} />
+                </button>
+              </form>
             </motion.div>
           )}
         </AnimatePresence>
 
         {view === "windows" ? (
           <LayoutGroup>
+            {(tray.length > 0 || hiddenCount > 0) && (
+              <motion.div layout transition={softSpring} className="mb-4">
+                <div className="mb-2 flex items-center gap-2 px-1.5">
+                  <span className="eyebrow">Finished agents</span>
+                  <span className="text-[11.5px] text-fg-3 tabular">{tray.length}</span>
+                  <span className="ml-auto flex items-center gap-3 text-[12px] font-medium">
+                    {hiddenCount > 0 && (
+                      <button className="text-accent" onClick={() => saveHidden([])}>
+                        Show {hiddenCount} hidden
+                      </button>
+                    )}
+                    {tray.length > 1 && (
+                      <button className="text-fg-2 hover:text-fg" onClick={() => saveHidden([...hidden, ...tray.map((a) => a.id)])}>
+                        Hide all
+                      </button>
+                    )}
+                  </span>
+                </div>
+                <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))" }}>
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    {tray.map((a) => (
+                      <FinishedCard
+                        key={a.id}
+                        agent={a}
+                        color={agentColor(agents, a.id)}
+                        onOpen={() => setOpened([...opened, a.id])}
+                        onHide={() => saveHidden([...hidden, a.id])}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
             <div className="grid gap-3 md:gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 440px), 1fr))" }}>
-              {agents.map((a) => (
+              {windows.map((a) => (
                 <AgentWindow
                   key={a.id}
                   runId={id}
@@ -314,6 +380,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                   onToggleMax={() => setMaxed(maxed === a.id ? null : a.id)}
                   onShot={setShot}
                   onChanged={refresh}
+                  onCollapse={isFinished(a) ? () => setOpened(opened.filter((x) => x !== a.id)) : undefined}
                 />
               ))}
               {showBrowser && (
@@ -337,7 +404,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
         )}
       </div>
 
-      {run.active && view === "timeline" && (
+      {view === "timeline" && (
         <form
           className="sticky bottom-24 z-20 mx-auto mb-4 w-full max-w-2xl px-3 md:bottom-4"
           onSubmit={(e) => {
@@ -348,7 +415,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           }}
         >
           <div className="glass glass-strong flex h-12 items-center gap-2 rounded-full pr-1.5 pl-5">
-            <input className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-3" placeholder="Message the planner…" value={note} onChange={(e) => setNote(e.target.value)} />
+            <input className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-3" placeholder={run.active ? "Message the planner…" : "Continue this run: tell the planner what to do next…"} value={note} onChange={(e) => setNote(e.target.value)} />
             <button className="grid h-9 w-9 place-items-center rounded-full bg-accent text-white disabled:opacity-30" disabled={!note.trim()}>
               <ArrowUp size={17} strokeWidth={2.6} />
             </button>
@@ -359,6 +426,38 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
 
       <Lightbox src={shot} onClose={() => setShot(null)} />
     </div>
+  );
+}
+
+/** A finished agent, folded down to one line: open it to see its window again, or hide it from this view. */
+function FinishedCard({ agent, color, onOpen, onHide }: { agent: AgentInfo; color: string; onOpen: () => void; onHide: () => void }) {
+  const line = (agent.summary ?? "")
+    .split("\n")
+    .map((l) => l.replace(/^[-*\s]*(\*\*)?done:?(\*\*)?\s*/i, "").trim())
+    .find(Boolean);
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.96 }}
+      transition={softSpring}
+      className="glass flex items-center gap-1 rounded-[20px] py-2 pr-1.5 pl-2.5"
+    >
+      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2.5 text-left" title="Open this agent's window">
+        <AgentAvatar name={agent.name} color={color} size={30} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-[13.5px] font-semibold tracking-[-0.01em]">{agent.name}</span>
+            <StatusPill status={agent.status} live={false} className="h-5 text-[11px]" />
+          </span>
+          <span className="block truncate text-[12px] text-fg-2">{line || agent.task.split("\n")[0]}</span>
+        </span>
+      </button>
+      <button className="btn btn-plain btn-sm btn-icon w-7 shrink-0 text-fg-3 hover:text-fg" title="Hide from this view" onClick={onHide}>
+        <X size={14} />
+      </button>
+    </motion.div>
   );
 }
 

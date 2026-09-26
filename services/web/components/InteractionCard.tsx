@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Check, CreditCard, MessageCircleQuestion, ShieldCheck, X } from "lucide-react";
+import { Check, CreditCard, Hand, MessageCircleQuestion, ShieldCheck, X } from "lucide-react";
 import { api, usd, type Interaction } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
+import { openLiveBrowser } from "./LiveBrowser";
 import { AgentAvatar, IconTile } from "./ui";
 
 const KIND = {
@@ -77,6 +78,12 @@ export function InteractionCard({
         </div>
       ) : (
         <p className="mt-4 text-[15px] leading-snug font-medium tracking-[-0.01em] whitespace-pre-wrap">{it.prompt}</p>
+      )}
+
+      {it.data?.kind_hint === "signin" && (
+        <button className="btn btn-accent mt-4" onClick={() => openLiveBrowser({ note: it.prompt })}>
+          <Hand size={14} /> Open the browser
+        </button>
       )}
 
       {it.data?.details && (

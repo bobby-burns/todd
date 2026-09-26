@@ -4,10 +4,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, Check, ChevronRight, Globe, Hand, Rocket, ShoppingBag, Wrench, X, Zap, type LucideIcon } from "lucide-react";
+import { ArrowUp, Check, Globe, Hand, Rocket, ShoppingBag, Wrench, X, Zap, type LucideIcon } from "lucide-react";
 import { api, timeAgo, usd, type Onboarding, type Run } from "@/lib/api";
 import { fadeUp, softSpring, stagger } from "@/lib/motion";
 import { ActivityIndicator, Empty, PageHeader, ProgressRing, StatusPill, listRow, listSep } from "@/components/ui";
+import { RunMenu } from "@/components/RunMenu";
 
 const TEMPLATES: { icon: LucideIcon; label: string; color: string; text: string }[] = [
   {
@@ -68,6 +69,7 @@ export default function Home() {
     api<Onboarding>("/onboarding").then(setSetup).catch(() => {});
   }, []);
 
+  const reload = () => api<Run[]>("/runs").then(setRuns).catch(() => {});
   useEffect(() => {
     let alive = true;
     const load = () => api<Run[]>("/runs").then((r) => alive && setRuns(r)).catch((e) => alive && setErr(String(e.message)));
@@ -222,8 +224,8 @@ export default function Home() {
             {runs.map((r) => {
               const si = STATUS_ICON[r.status] ?? STATUS_ICON.queued;
               return (
-                <motion.div key={r.id} variants={fadeUp} className={listSep}>
-                  <Link href={`/runs/${r.id}`} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-fill">
+                <motion.div key={r.id} variants={fadeUp} className={`${listSep} flex items-center transition-colors hover:bg-fill`}>
+                  <Link href={`/runs/${r.id}`} className="flex min-w-0 flex-1 items-center gap-3 py-3.5 pl-4">
                     <span
                       className="grid h-9 w-9 shrink-0 place-items-center rounded-[11px]"
                       style={{ background: `color-mix(in oklab, ${si.color} 16%, transparent)`, color: si.color }}
@@ -238,8 +240,8 @@ export default function Home() {
                       </div>
                     </div>
                     <StatusPill status={r.status} live={r.active} className="max-sm:hidden" />
-                    <ChevronRight size={16} className="shrink-0 text-fg-3" />
                   </Link>
+                  <RunMenu run={r} onChanged={reload} className="mx-3 h-8 w-8" />
                 </motion.div>
               );
             })}

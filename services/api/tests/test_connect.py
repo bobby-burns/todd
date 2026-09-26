@@ -164,6 +164,32 @@ def test_cli_sign_ins_are_protected():
     assert vault.is_protected(connect.state_name("vercel")) and vault.is_protected("GITHUB_TOKEN")
 
 
+def test_signed_in_accounts_get_their_cli_connected_once(monkeypatch):
+    from todd import settings
+
+    started: list[str] = []
+
+    def fake_start(service, **kw):
+        started.append(service)
+        return connect._CONNECTIONS.setdefault(service, connect.Connection(service, state="failed"))
+
+    monkeypatch.setattr(connect, "_CONNECTIONS", {})
+    monkeypatch.setattr(connect, "start", fake_start)
+    monkeypatch.setattr(connect, "is_connected", lambda s: s == "github")
+    accts = [{"id": "github", "status": "signed_in"}, {"id": "gmail", "status": "signed_in"},
+             {"id": "railway", "status": "signed_out"}, {"id": "netlify", "status": "signed_in"},
+             {"id": "vercel", "status": "signed_in"}]
+    try:
+        connect.set_auto("netlify", False)  # the human disconnected it earlier
+        assert connect.auto_connect(accts) == "vercel"
+        assert connect.auto_connect(accts) is None  # each CLI is tried once; the Connect button retries
+        connect.set_auto("netlify", True)  # connecting it by hand turns it back on
+        assert connect.auto_connect(accts) == "netlify"
+        assert started == ["vercel", "netlify"]
+    finally:
+        settings.update({"cli_auto_skip": []})
+
+
 def test_cli_login_github_puts_the_token_in_the_vault(loop, local_sandbox, fake_approval):
     async def go():
         _ctx(["sandbox"])
@@ -266,6 +292,17 @@ PAGES = {
       <button>Verify</button>""",
     "/oauth": """<h1>Allow Test CLI to access your account?</h1>
       <button onclick="location='http://localhost:59999/oauth/callback?code=abc123&state=s1'">Allow</button>""",
+    # Vercel-style: the device-code box looks like a 2FA field (one-time-code, prefilled from the URL) and the final
+    # button, far below the fold, stays disabled until a person interacts with the page.
+    "/vercel": """<h1>Authorize Device</h1><p>Enter the code from your device to grant Test CLI access.</p>
+      <input name="code" autocomplete="one-time-code" maxlength="8" value="abcd1234">
+      <div style="height:1600px"></div>
+      <button id="allow" disabled onclick="location='/approve'">Allow Access</button>
+      <p>Do not click “Allow Access” unless you initiated this login.</p>""",
+    # 2FA first; once the person verifies, the same page (same URL) shows an Authorize button Todd can click.
+    "/twofa-then-authorize": """<h1>Two-factor authentication</h1><input autocomplete="one-time-code" name="otp"
+      maxlength="6"><button id="verify" onclick="document.body.innerHTML='<h1>Authorize Test CLI</h1>' +
+      '<button onclick=&quot;location=\\'/approve\\'&quot;>Authorize test-cli</button>'">Verify</button>""",
     "/showcode": """<h1>Did you just run test login?</h1><button onclick="document.body.innerHTML=
       '<p>Copy this code into your CLI</p><input readonly value=&quot;4/0AbCdEfGhIjKlMnOpQrStUvWxYz01&quot;>'">Yes, I did</button>""",
 }
@@ -322,6 +359,66 @@ def test_approve_hands_2fa_to_the_human(loop, provider):
         assert states[-1][0] == "needs_you" and "2FA" in states[-1][1]
         assert r["state"] == "approved"  # done() stands in for the human finishing in the tab
         assert not any(h.startswith("/approve") for h in provider.hits)
+        await cdp.close_tab(r["tab"])
+    loop.run_until_complete(go())
+
+
+async def _as_human(path: str, js: str) -> None:
+    """Act in the approval tab the way the person would (a separate CDP connection, like the live view)."""
+    async with cdp.CDP() as c:
+        tab = next(t for t in (await c.send("Target.getTargets"))["targetInfos"] if path in t["url"])
+        sid = (await c.send("Target.attachToTarget", {"targetId": tab["targetId"], "flatten": True}))["sessionId"]
+        await c.send("Runtime.evaluate", {"expression": js}, session_id=sid)
+
+
+async def _until(pred, timeout: float = 20) -> None:
+    for _ in range(int(timeout * 10)):
+        if pred():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("timed out")
+
+
+@live
+def test_approve_asks_for_the_one_click_a_site_keeps_for_people(loop, provider):
+    async def go():
+        states: list[tuple[str, str]] = []
+        job = asyncio.create_task(cdp.approve(
+            provider.base + "/vercel?user_code=ABCD-1234", hosts=[provider.host], code="ABCD-1234",
+            done=lambda: any(h.startswith("/approve") for h in provider.hits),
+            on_state=lambda s, m: states.append((s, m)), timeout=40, locked_grace=2))
+        await _until(lambda: any(s == "needs_you" for s, _ in states))
+        ask = next(m for s, m in states if s == "needs_you")
+        assert "Allow Access" in ask and "2FA" not in ask  # the code box isn't mistaken for 2FA
+        async with cdp.CDP() as c:  # scrolled to the button and outlined it for the person
+            tab = next(t for t in (await c.send("Target.getTargets"))["targetInfos"] if "/vercel" in t["url"])
+            sid = (await c.send("Target.attachToTarget", {"targetId": tab["targetId"], "flatten": True}))["sessionId"]
+            seen = (await c.send("Runtime.evaluate", {"expression": "[scrollY > 500, "
+                                 "document.getElementById('allow').style.outlineStyle]", "returnByValue": True},
+                                 session_id=sid))["result"]["value"]
+        assert seen == [True, "solid"]
+        await _as_human("/vercel", "const b = document.getElementById('allow'); b.disabled = false; b.click()")
+        r = await job
+        assert r["state"] == "approved" and "/denied" not in provider.hits
+        await cdp.close_tab(r["tab"])
+    loop.run_until_complete(go())
+
+
+@live
+def test_approve_takes_over_again_after_the_human_does_2fa(loop, provider):
+    async def go():
+        states: list[tuple[str, str]] = []
+        job = asyncio.create_task(cdp.approve(
+            provider.base + "/twofa-then-authorize", hosts=[provider.host], code="ABCD-1234",
+            done=lambda: any(h.startswith("/approve") for h in provider.hits),
+            on_state=lambda s, m: states.append((s, m)), timeout=40))
+        await _until(lambda: any(s == "needs_you" for s, _ in states))
+        assert "2FA" in states[-1][1] and not any(h.startswith("/approve") for h in provider.hits)
+        await _as_human("/twofa-then-authorize", "document.getElementById('verify').click()")
+        r = await job
+        assert r["state"] == "approved"
+        assert [s for s, _ in states][-2:] == ["approving", "approving"]  # "continuing", then its own click
+        assert any("Authorize test-cli" in m for _, m in states)
         await cdp.close_tab(r["tab"])
     loop.run_until_complete(go())
 

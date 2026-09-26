@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { motion } from "motion/react";
-import { KeyRound, Monitor, Moon, Receipt, Rocket, Settings2, Sun, Zap } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Check, KeyRound, Monitor, Moon, Receipt, Rocket, Settings2, Sun, Zap } from "lucide-react";
 import { api, type Interaction, type Run } from "@/lib/api";
-import { spring } from "@/lib/motion";
+import { softSpring, spring } from "@/lib/motion";
+import { RunMenu } from "./RunMenu";
 import { Segmented, StatusDot } from "./ui";
 
 const items = [
@@ -19,8 +20,9 @@ const items = [
 
 const isActive = (path: string, href: string) => (href === "/" ? path === "/" || path.startsWith("/runs") : path.startsWith(href));
 
-function usePolled<T>(path: string, ms: number, init: T): T {
+function usePolled<T>(path: string, ms: number, init: T): [T, () => void] {
   const [v, setV] = useState<T>(init);
+  const [nonce, setNonce] = useState(0);
   useEffect(() => {
     let alive = true;
     const tick = () =>
@@ -33,8 +35,8 @@ function usePolled<T>(path: string, ms: number, init: T): T {
       alive = false;
       clearInterval(t);
     };
-  }, [path, ms]);
-  return v;
+  }, [path, ms, nonce]);
+  return [v, useCallback(() => setNonce((n) => n + 1), [])];
 }
 
 export function Logo({ size = 34 }: { size?: number }) {
@@ -97,9 +99,32 @@ export function ThemeSwitch() {
 
 export function Nav() {
   const path = usePathname();
-  const pending = usePolled<Interaction[]>("/interactions", 4000, []).length;
-  const runs = usePolled<Run[]>("/runs", 5000, []);
-  const recent = runs.slice(0, 6);
+  const router = useRouter();
+  const pending = usePolled<Interaction[]>("/interactions", 4000, [])[0].length;
+  const [runs, reload] = usePolled<Run[]>("/runs", 5000, []);
+  const [editing, setEditing] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const recent = runs;
+
+  const stopEditing = () => {
+    setEditing(false);
+    setPicked([]);
+    setConfirm(false);
+  };
+  const pick = (id: string) => {
+    setConfirm(false);
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  };
+  async function deletePicked() {
+    setBusy(true);
+    for (const id of picked) await api(`/runs/${id}`, { method: "DELETE" }).catch(() => {});
+    if (picked.some((id) => path === `/runs/${id}`)) router.push("/");
+    setBusy(false);
+    stopEditing();
+    reload();
+  }
 
   return (
     <aside className="sticky top-0 hidden h-dvh shrink-0 p-3 md:block md:w-[92px] lg:w-[272px]">
@@ -145,24 +170,89 @@ export function Nav() {
 
         {recent.length > 0 && (
           <div className="mt-6 hidden min-h-0 flex-1 flex-col lg:flex">
-            <div className="eyebrow mb-1.5 px-3">Recent</div>
+            <div className="mb-1.5 flex items-center px-3">
+              <span className="eyebrow">Runs</span>
+              <button
+                className={`ml-auto text-[12px] font-semibold ${editing ? "text-accent" : "text-fg-2 hover:text-fg"}`}
+                onClick={() => (editing ? stopEditing() : setEditing(true))}
+                title={editing ? "Done editing" : "Select runs to delete"}
+              >
+                {editing ? "Done" : "Edit"}
+              </button>
+            </div>
             <div className="scrollbar-thin -mx-1 min-h-0 overflow-y-auto px-1">
               {recent.map((r) => {
                 const active = path === `/runs/${r.id}`;
+                const on = picked.includes(r.id);
                 return (
-                  <Link
+                  <div
                     key={r.id}
-                    href={`/runs/${r.id}`}
-                    className={`flex items-center gap-2.5 rounded-[12px] px-3 py-2 text-[13px] transition-colors ${
-                      active ? "bg-fill text-fg" : "text-fg-2 hover:bg-fill hover:text-fg"
-                    }`}
+                    className={`group flex items-center rounded-[12px] transition-colors ${active && !editing ? "bg-fill text-fg" : "text-fg-2 hover:bg-fill hover:text-fg"}`}
                   >
-                    <StatusDot status={r.status} live={r.active} size={6} />
-                    <span className="truncate">{r.title}</span>
-                  </Link>
+                    <AnimatePresence initial={false}>
+                      {editing && (
+                        <motion.button
+                          initial={{ width: 0, opacity: 0 }}
+                          animate={{ width: 26, opacity: 1 }}
+                          exit={{ width: 0, opacity: 0 }}
+                          transition={softSpring}
+                          onClick={() => pick(r.id)}
+                          className="grid shrink-0 place-items-center overflow-hidden pl-2.5"
+                          aria-label={on ? "Unselect" : "Select"}
+                        >
+                          <span className={`grid h-[18px] w-[18px] place-items-center rounded-full transition-colors ${on ? "bg-accent text-white" : "ring-[1.5px] ring-fg-3 ring-inset"}`}>
+                            {on && <Check size={11} strokeWidth={3.2} />}
+                          </span>
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
+                    <Link
+                      href={`/runs/${r.id}`}
+                      onClick={(e) => {
+                        if (editing) {
+                          e.preventDefault();
+                          pick(r.id);
+                        }
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 py-2 pr-1 pl-3 text-[13px]"
+                    >
+                      <StatusDot status={r.status} live={r.active} size={6} />
+                      <span className="truncate">{r.title}</span>
+                    </Link>
+                    {!editing && <RunMenu run={r} onChanged={reload} className={`mr-1.5 ${active ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"}`} />}
+                  </div>
                 );
               })}
             </div>
+            <AnimatePresence>
+              {editing && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
+                  transition={softSpring}
+                  className="mt-2 flex items-center gap-2 border-t border-sep px-1.5 pt-2.5"
+                >
+                  <button
+                    className="text-[12px] font-medium text-fg-2 hover:text-fg"
+                    onClick={() => {
+                      setConfirm(false);
+                      setPicked(runs.filter((r) => !r.active).map((r) => r.id));
+                    }}
+                    title="Select every run that isn't running"
+                  >
+                    Select finished
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm ml-auto"
+                    disabled={!picked.length || busy}
+                    onClick={() => (confirm ? deletePicked() : setConfirm(true))}
+                  >
+                    {confirm ? `Delete ${picked.length}?` : `Delete${picked.length ? ` ${picked.length}` : ""}`}
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         )}
 
@@ -180,7 +270,7 @@ export function Nav() {
 /** Floating glass tab bar on phones. */
 export function TabBar() {
   const path = usePathname();
-  const pending = usePolled<Interaction[]>("/interactions", 5000, []).length;
+  const pending = usePolled<Interaction[]>("/interactions", 5000, [])[0].length;
   return (
     <nav className="fixed inset-x-3 bottom-[max(12px,env(safe-area-inset-bottom))] z-40 md:hidden">
       <div className="glass glass-strong mx-auto flex h-[62px] max-w-md items-center justify-around rounded-full px-2">
