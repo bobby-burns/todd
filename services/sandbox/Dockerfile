@@ -1,6 +1,6 @@
 # The sandbox is where code agents work: node 22 + pnpm + git + gh + python + common deploy CLIs.
 # Only the API can reach it (no published ports). It never sees the vault — tokens are injected per command.
-FROM node:22-bookworm
+FROM node:26-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates jq unzip zip ripgrep python3 python3-venv python3-pip build-essential \
