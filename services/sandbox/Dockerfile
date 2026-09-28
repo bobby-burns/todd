@@ -1,4 +1,4 @@
-# The sandbox is where code agents work: node 22 + pnpm + git + gh + python + common deploy CLIs.
+# The sandbox is where code agents work: node 22 + pnpm + git + gh + python + common deploy CLIs + EAS (mobile).
 # Only the API can reach it (no published ports). It never sees the vault — tokens are injected per command.
 FROM node:22-bookworm
 
@@ -14,7 +14,8 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
        > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable && npm install -g vercel firebase-tools && npm cache clean --force
+# eas-cli: iOS/Android builds on Expo's servers (the `mobile` toolset signs it in per command with EXPO_TOKEN)
+RUN corepack enable && npm install -g vercel firebase-tools eas-cli && npm cache clean --force
 
 RUN python3 -m venv /opt/sandbox && /opt/sandbox/bin/pip install --no-cache-dir \
       fastapi==0.141.1 "uvicorn[standard]==0.54.0"

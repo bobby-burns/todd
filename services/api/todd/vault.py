@@ -72,7 +72,8 @@ def has_secret(name: str) -> bool:
     return bool(get_secret(name))
 
 
-PROTECTED_EXACT = {"VERCEL_TOKEN", "GITHUB_TOKEN", "OPENAI_COMPATIBLE_API_KEY", "TODD_API_TOKEN"}
+PROTECTED_EXACT = {"VERCEL_TOKEN", "GITHUB_TOKEN", "OPENAI_COMPATIBLE_API_KEY", "TODD_API_TOKEN",
+                   "EXPO_TOKEN", "ASC_PRIVATE_KEY", "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"}  # the last three: tools/mobile.py
 
 
 def is_protected(name: str) -> bool:

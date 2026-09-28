@@ -70,13 +70,22 @@ CATALOG: list[Integration] = [
       api_secrets=["PORKBUN_API_KEY", "PORKBUN_SECRET_KEY"]),
     I("namecheap", "Namecheap", [], api_docs="https://www.namecheap.com/support/api/intro/",
       api_secrets=["NAMECHEAP_API_KEY"], browser_note="The API needs your IP allow-listed; the browser is fine for one-offs."),
-    I("app_store_connect", "App Store Connect", ["apple", "app store", "testflight", "asc"],
-      api_docs="https://developer.apple.com/documentation/appstoreconnectapi",
-      api_secrets=["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"], cli="fastlane / a JWT script in the sandbox",
-      browser_note="Without an App Store Connect API key, use the browser (the human is signed in)."),
-    I("google_play", "Google Play Console", ["play console", "android"],
-      api_docs="https://developers.google.com/android-publisher", api_secrets=["GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"],
-      browser_note="Without a service account, use the browser."),
+    I("expo", "Expo (EAS)", ["eas", "expo eas", "react native", "mobile app", "ios app", "android app"],
+      toolset="mobile", api_docs="https://docs.expo.dev/eas/", api_secrets=["EXPO_TOKEN"],
+      cli="EAS CLI (mobile toolset: `eas`)",
+      browser_note="Without EXPO_TOKEN, ask the human to create an access token (expo.dev → Account settings → Access "
+                   "tokens) and add it in Settings → Integrations → Mobile apps. Apps can't be built in the browser."),
+    I("app_store_connect", "App Store Connect", ["apple", "app store", "testflight", "asc", "apple developer", "ios"],
+      toolset="mobile", api_docs="https://developer.apple.com/documentation/appstoreconnectapi",
+      api_secrets=["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"],
+      cli="EAS CLI (mobile toolset: `eas build`/`eas submit` use this key)",
+      browser_note="Without an App Store Connect API key, use the browser (the human is signed in to Apple Developer). "
+                   "Creating a new app record is browser-only either way."),
+    I("google_play", "Google Play Console", ["play console", "android", "play store", "google play"],
+      toolset="mobile", api_docs="https://developers.google.com/android-publisher",
+      api_secrets=["GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"], cli="EAS CLI (mobile toolset: `eas submit`)",
+      browser_note="Without a service account, use the browser (Play Console, signed in with Google). Creating a new "
+                   "app is browser-only either way."),
     I("x", "X (Twitter)", ["twitter"], api_docs="https://docs.x.com/x-api", api_secrets=["X_BEARER_TOKEN"],
       browser_note="Posting via API needs a paid tier; otherwise post through the browser (with approval)."),
     I("linkedin", "LinkedIn", [], api_docs="https://learn.microsoft.com/linkedin/",
@@ -116,6 +125,13 @@ def _configured_mcp(it: Integration) -> str | None:
     return None
 
 
+def _api_request_can_use(it: Integration) -> bool:
+    """api_request injects protected keys only into their own API host (and can't sign requests)."""
+    from .tools.web import SECRET_HOSTS
+
+    return all(not vault.is_protected(s) or s in SECRET_HOSTS for s in it.api_secrets)
+
+
 def _needs_connect(it: Integration) -> bool:
     from . import connect
 
@@ -147,6 +163,10 @@ def assess(query: str, available_toolsets: set[str] | None = None,
     elif mcp_ts and mcp_ts in toolsets:
         rec = f"Use the `{mcp_ts}` toolset (MCP server, ready)."
         route = "mcp"
+    elif api_ready and it.toolset and not _api_request_can_use(it):
+        rec = (f"Its keys are in the vault, but only the `{it.toolset}` toolset can use them (they're signed or "
+               f"handed to the CLI per call): do this in an agent that has `{it.toolset}`.")
+        route = "toolset_needed"
     elif api_ready:
         rec = ("Use `api_request` against its REST API with " + ", ".join(f"{{{{secret:{s}}}}}" for s in it.api_secrets)
                + (f", or `{it.cli}` in the sandbox" if it.cli else "") + f". Docs: {it.api_docs}")

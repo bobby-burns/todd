@@ -7,7 +7,7 @@
 | `web`      | Next.js 16 dashboard. Proxies `/api/*` to the API, including SSE streams    | 127.0.0.1:3000     |
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token)   |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, LangGraph checkpoints     | internal           |
-| `sandbox`  | node 22 / pnpm / git / python / vercel + firebase CLIs, with a small exec API | internal         |
+| `sandbox`  | node 22 / pnpm / git / python / vercel + firebase + eas CLIs, with a small exec API | internal   |
 | `browser`  | Headful Chromium on Xvfb; CDP (via socat :9223) + noVNC live view           | 127.0.0.1:6080     |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal           |
 
@@ -33,6 +33,8 @@ tools/browser_tools.py  `browser` toolset (API engine): browse(task, why_not_api
 tools/browser_direct.py `browser` toolset (Claude Code engine): browser_start … browser_done, step by step
 tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
+tools/mobile.py    `mobile` toolset: eas (Expo cloud builds, keys handed over per command), app_store_connect and
+                   google_play (store APIs, tokens signed in the API process); approvals for anything public
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
 tools/human.py     ask_human, request_approval (every agent)
 accounts.py        Account catalog (~70 services), status detection, sign in/out, `accounts` toolset
@@ -189,6 +191,12 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   `alias`, `config`, `--hostname`). Known limit, as for `git_push`: code already running in the sandbox during a CLI
   command could read those files. `browser_save_secret` moves a key a page shows into the vault without the model
   seeing it.
+- **Store keys (tools/mobile.py):** `EXPO_TOKEN`, `ASC_PRIVATE_KEY` and `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` are protected.
+  The App Store Connect and Play API tools sign their tokens in the API process, so those keys never reach the sandbox.
+  `eas` gets the token in its environment and the keys as files in a private temp dir that the same command deletes
+  (the same known limit as CLI sign-ins while it runs). `submit`, `update`, `build --auto-submit`, `metadata:push`,
+  production deploys, review submissions, tester invites, review replies and Play edit commits wait for the human's
+  approval in code.
 - **Human waits:** questions stay open across bounded waits (browser-use caps each action at ~180s, so the
   browser agent calls `wait_for_human` in 150s slices). At startup, interactions left over from a dead
   process are closed.

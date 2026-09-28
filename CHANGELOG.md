@@ -9,6 +9,12 @@ changes).
 
 ### Added
 
+- iOS and Android apps, without a Mac: a `mobile` toolset with `eas` (Expo's EAS CLI: cloud builds for both
+  platforms, iOS signing with your App Store Connect key, TestFlight/Play submissions, over-the-air updates),
+  `app_store_connect` and `google_play` (the stores' APIs, signed per call; keys never leave Todd). Submitting to a
+  store, publishing an update, and review submissions or tester invites always ask you first. Keys go in Settings →
+  Integrations → Mobile apps. The sandbox image now includes `eas-cli`. See [docs/mobile-apps-plan.md](docs/mobile-apps-plan.md)
+  for what's next (simulators and emulators).
 - Sign in once: signing in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe or Firebase (Accounts page,
   Setup) also signs in that service's CLI with the same session. Todd approves it in the browser itself and only
   asks you for a password/2FA page. Agents can do the same with `cli_login`.
@@ -44,6 +50,10 @@ changes).
 
 ### Fixed
 
+- Accounts: adding a service from **All services** now opens its sign-in right away (it used to only tick it, with
+  the Sign in button on another tab). Linked accounts (App Store Connect → Apple Developer, Play Console / Firebase /
+  Gmail → Google) get a Sign in button that opens the parent's login, and Setup no longer skips them ("Everything you
+  picked is already signed in" when App Store Connect wasn't).
 - The planner no longer blocks on a sub-agent: messages sent while it waited weren't seen until the agent finished.
 - `find_integrations` reported GitHub as "ready" without a `GITHUB_TOKEN` (the built-in `github` toolset was
   mistaken for a plugin).

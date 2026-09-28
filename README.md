@@ -86,6 +86,10 @@ Open source and self-hosted: `docker compose up` and it's yours.
   servers (GitHub, Vercel, Stripe, Supabase, Neon, Linear, Notion, Sentry, Figma) with one-click add.
 - **Agents check their own work.** Agents that build or deploy a site open it in the browser, look at the
   screenshot, click through, and read JavaScript errors and failed requests with `browser_console`.
+- **iOS and Android apps, no Mac needed.** The `mobile` toolset builds Expo (React Native) apps on Expo's servers
+  (iOS on their Macs), signs them with your App Store Connect key, and submits to TestFlight and Google Play with
+  your approval. Store keys stay in the vault and are signed or handed over per call. Simulators and emulators are
+  next: see the [mobile plan](docs/mobile-apps-plan.md).
 - **Spending rules the model can't override.** An auto-approve limit, per-run budgets and approval prompts,
   with every charge in a ledger. Card payments always need your approval. Card details reach the browser only
   as masked placeholders, only on the approved merchant's exact domains, with screenshots turned off.
@@ -176,6 +180,7 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
                                      │
                                      │  toolsets: sandbox ─► sandbox container (node/git/python)
                                      │            browser ─► browser-use ─CDP─► Chromium + noVNC :6080
+                                     │            mobile  ─► EAS cloud builds, App Store Connect, Google Play
                                      │            vercel, github, web, vault, accounts, plugins, mcp_*
                                      └─ postgres: runs, agents, events, approvals, vault, ledger, checkpoints
 ```
@@ -285,6 +290,10 @@ Todd is at **v0.4** and under active development.
   browser themselves step by step (`browser_start` … `browser_done`) instead of handing a task to browser-use's
   LLM, so every model call goes through your plan. The engine is fixed per run; switching affects new runs.
 - Pause takes effect at the agent's next step: a model call or tool call already in flight finishes first.
+- **Mobile apps:** there's no emulator or simulator in Todd yet, so agents hand you an install link or TestFlight
+  build to try. The first signed iOS build needs one terminal command from you (EAS only creates Apple's distribution
+  certificate interactively; the agent gives you the exact command). New App Store / Play Console apps are created in
+  the browser, since neither store's API can do it. See [docs/mobile-apps-plan.md](docs/mobile-apps-plan.md).
 - `api_request` only sends `GITHUB_TOKEN` / `VERCEL_TOKEN` to their own API hosts; model provider keys are
   never sent anywhere by tools, nor is the payment card. Other vault keys can go to any host the agent
   chooses, so only store keys you're comfortable with agents using.
@@ -293,6 +302,7 @@ Todd is at **v0.4** and under active development.
 
 Ideas under consideration. Feedback and PRs welcome.
 
+- An Android emulator and an iOS simulator agents can see and drive ([plan](docs/mobile-apps-plan.md))
 - Recorded browser "recipes": the first run explores, later runs replay a saved script and fall back to the
   model only when something changes
 - Multiple browser instances (parallel browser agents)

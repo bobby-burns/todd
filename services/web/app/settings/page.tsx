@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Blocks,
@@ -18,6 +18,7 @@ import {
   ScrollText,
   SunMoon,
   Trash2,
+  Upload,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -216,6 +217,26 @@ export default function SettingsPage() {
                 <TextSetting label="GitHub owner / org" value={s.integrations.github_owner} placeholder="optional" onSave={(v) => patch({ integrations: { ...s.integrations, github_owner: v } })} />
               </div>
               <IntegrationCheck />
+              <h3 className="mt-7 mb-1 text-[14px] font-semibold tracking-[-0.01em]">Mobile apps</h3>
+              <p className="mb-4 text-[12.5px] leading-snug text-fg-2">
+                iOS and Android apps build on Expo&apos;s servers (iOS on their Macs), so Todd needs no Mac. For iOS, create an App Store Connect team key with the Admin role
+                (Users and Access → Integrations); for Google Play, a service account invited in Play Console → Users and permissions. Keys stay in the vault; agents
+                use them only through the mobile tools.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <SecretField name="EXPO_TOKEN" label="Expo token" existing={secretMap.EXPO_TOKEN} onChange={load} hint="expo.dev → Access tokens" />
+                <SecretField name="APPLE_TEAM_ID" label="Apple Team ID" existing={secretMap.APPLE_TEAM_ID} onChange={load} hint="Membership details" />
+                <SecretField name="ASC_KEY_ID" label="App Store Connect key ID" existing={secretMap.ASC_KEY_ID} onChange={load} />
+                <SecretField name="ASC_ISSUER_ID" label="App Store Connect issuer ID" existing={secretMap.ASC_ISSUER_ID} onChange={load} />
+                <SecretFile name="ASC_PRIVATE_KEY" label="App Store Connect key (.p8)" accept=".p8" existing={secretMap.ASC_PRIVATE_KEY} onChange={load} hint="download once" />
+                <SecretFile
+                  name="GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"
+                  label="Play service account (.json)"
+                  accept=".json,application/json"
+                  existing={secretMap.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON}
+                  onChange={load}
+                />
+              </div>
             </>,
           )}
 
@@ -470,6 +491,58 @@ function SecretField({ name, label, existing, onChange, hint }: { name: string; 
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** A secret that comes as a file (an Apple .p8 key, a service account JSON): read in the browser, kept intact. */
+function SecretFile({ name, label, accept, existing, onChange, hint }: { name: string; label: string; accept: string; existing?: Secret; onChange: () => void; hint?: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div>
+      <Label hint={hint}>
+        {label}
+        {existing && <Check size={12} strokeWidth={3} className="self-center text-green" />}
+      </Label>
+      <div className="flex gap-2">
+        <button className="btn btn-glass h-9 min-w-0 flex-1 justify-start font-mono text-[12.5px]" onClick={() => input.current?.click()}>
+          <Upload size={13} className="shrink-0" />
+          <span className="truncate">{existing ? `Saved · ${existing.masked} · replace` : "Choose file"}</span>
+        </button>
+        <input
+          ref={input}
+          type="file"
+          accept={accept}
+          hidden
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (!f) return;
+            setErr(null);
+            try {
+              if (f.size > 64 * 1024) throw new Error("That file is too big for a key.");
+              await api(`/secrets/${name}`, { method: "PUT", json: { value: await f.text() } });
+              onChange();
+            } catch (x: any) {
+              setErr(x.message);
+            }
+          }}
+        />
+        {existing && (
+          <button
+            className="btn btn-glass btn-icon h-9 w-9 shrink-0 hover:text-red"
+            title="Remove"
+            onClick={async () => {
+              await api(`/secrets/${name}`, { method: "DELETE" });
+              onChange();
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
+      {err && <p className="mt-1 text-[12px] text-red">{err}</p>}
     </div>
   );
 }

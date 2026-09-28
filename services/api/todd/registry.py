@@ -1,6 +1,6 @@
 """Toolsets: the building blocks the planner hands to the agents it spawns.
 
-  * built-in toolsets (sandbox, browser, vercel, github, web, vault, accounts)
+  * built-in toolsets (sandbox, browser, vercel, github, web, vault, accounts, mobile)
   * plugin toolsets: every LangChain tool found in ./plugins/*.py (module-level BaseTool instances or a `TOOLS`
     list). A tool's toolset is `todd_tool(toolset=...)`, defaulting to the plugin file's name.
   * MCP toolsets: one per MCP server configured in Settings ("mcp_<server>").
@@ -31,6 +31,7 @@ from .tools.browser_tools import BROWSER_TOOLS
 from .tools.cli_login import CLI_LOGIN_TOOLS
 from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
+from .tools.mobile import MOBILE_TOOLS
 from .tools.sandbox_tools import SANDBOX_TOOLS
 from .tools.web import WEB_TOOLS
 
@@ -50,6 +51,29 @@ class Toolset:
         return {"name": self.name, "description": self.description, "source": self.source,
                 "tools": [t.name for t in self.tools]}
 
+
+MOBILE_GUIDE = """\
+Build with Expo (React Native + TypeScript) unless told otherwise: `npx create-expo-app@latest app --yes`. In app.json set
+`name`, `slug`, a reverse-DNS `ios.bundleIdentifier` and `android.package`, and `version`.
+Check it early and often on the web (most bugs show up there in minutes): `npx expo export --platform web`, deploy `dist`
+as a preview (e.g. cli("vercel", "deploy dist")) and open it in the browser. Then build on EAS:
+- `eas("init --non-interactive --force")` links the project. eas.json build profiles: `preview` with
+  `"distribution": "internal"` and `"android": {"buildType": "apk"}` (installable test builds), `simulator` with
+  `"ios": {"simulator": true}` (no Apple membership needed), `production` for the stores.
+- Start builds with `--non-interactive --no-wait`, then poll `build:view <id> --json` every few minutes (10–30 min;
+  the free plan queues them). Report the install/artifact URL it gives when finished.
+- Android signing is automatic. Signed iOS builds need the human's paid Apple Developer membership and the App Store
+  Connect key in the vault. The very first one also needs an Apple distribution certificate, which EAS only creates
+  interactively: if the result has `next_step`, pass that to the human (ask_human) and retry after.
+- Submitting: the app must already exist in App Store Connect / Play Console. Creating it is browser-only (the human
+  signs in to Apple Developer / Google). app_store_connect GET /v1/apps gives the `ascAppId`. In eas.json `submit`:
+  iOS `"ascAppId": "…", "ascApiKeyPath": "$EXPO_ASC_API_KEY_PATH", "ascApiKeyId": "$EXPO_ASC_KEY_ID",
+  "ascApiKeyIssuerId": "$EXPO_ASC_ISSUER_ID"`; Android `"serviceAccountKeyPath": "$TODD_PLAY_KEY_PATH",
+  "track": "internal"` (plus `"releaseStatus": "draft"` while the Play app is still a draft). Todd fills those paths in
+  per command; never write keys into the project.
+- New personal Play accounts must run a closed test (12+ testers for 14 days) before production: say so in your summary.
+There's no phone or simulator in Todd yet: give the human the install link (Android APK, iOS internal build) or
+TestFlight and ask them to try it. Submissions and over-the-air updates ask the human first."""
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
     "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase CLIs) with a "
@@ -81,6 +105,12 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",
                         ACCOUNT_TOOLS),
+    "mobile": Toolset("mobile", "iOS and Android apps without a Mac: Expo's EAS CLI (`eas`: cloud builds for both "
+                      "platforms, signing, TestFlight/Play submissions, over-the-air updates), signed in with the "
+                      "human's Expo account, plus the App Store Connect and Google Play APIs with their keys. Give it "
+                      "together with `sandbox` (the app's code) and, for store consoles, `browser`.",
+                      MOBILE_TOOLS,
+                      guide=MOBILE_GUIDE),
 }
 # Under the Claude Code engine the agent drives the browser itself (every model call goes through the human's plan).
 from .tools.browser_direct import DIRECT_BROWSER_TOOLS  # noqa: E402

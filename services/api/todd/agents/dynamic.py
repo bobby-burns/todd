@@ -128,7 +128,8 @@ async def spawn(ctx: RunContext, *, name: str, instructions: str, task: str, too
     system = prompts.compose(
         "worker", agent_name=row.name, instructions=instructions,
         toolsets="\n".join(f"- **{ts}**: {available[ts].description}"
-                            + (f"\n  Tips: {available[ts].guide}" if getattr(available[ts], "guide", "") else "")
+                            + ("\n  Tips: " + available[ts].guide.replace("\n", "\n  ")
+                               if getattr(available[ts], "guide", "") else "")
                             for ts in toolsets) or "- (none)",
         run_goal=(run.prompt if run else "")[:1500],
     )
