@@ -1,11 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { api, type Account } from "@/lib/api";
 import { fadeUp, softSpring, spring, stagger } from "@/lib/motion";
-import { AccountCard, Favicon, SignInQueue, StatusChip, useAccounts } from "@/components/accounts";
+import { AccountCard, Favicon, SignInQueue, StatusChip, signInTargets, useAccounts } from "@/components/accounts";
 import { LiveBrowser } from "@/components/LiveBrowser";
 import { PageHeader, ProgressRing, Segmented } from "@/components/ui";
 
@@ -15,10 +15,11 @@ export default function AccountsPage() {
   const [q, setQ] = useState("");
   const [queue, setQueue] = useState<Account[] | null>(null);
   const [checking, setChecking] = useState(false);
+  const queueRef = useRef<HTMLDivElement>(null);
 
   const accounts = data?.accounts ?? [];
   const mine = accounts.filter((a) => a.selected);
-  const missing = mine.filter((a) => a.status !== "signed_in" && !a.via);
+  const missing = signInTargets(mine, accounts);
   const shown = useMemo(() => {
     const base = tab === "mine" ? mine : accounts;
     const needle = q.trim().toLowerCase();
@@ -32,10 +33,25 @@ export default function AccountsPage() {
 
   async function toggle(a: Account) {
     const ids = new Set(mine.map((m) => m.id));
-    ids.has(a.id) ? ids.delete(a.id) : ids.add(a.id);
+    const adding = !ids.has(a.id);
+    adding ? ids.add(a.id) : ids.delete(a.id);
     await api("/accounts-selection", { method: "PUT", json: { ids: [...ids] } });
     reload();
+    if (adding) signIn(a); // adding an account starts its sign-in right away
   }
+
+  /** Sign in to these accounts (linked ones through their parent's login), after any already in the queue. */
+  function signIn(...list: Account[]) {
+    const targets = signInTargets(list, accounts);
+    if (targets.length) setQueue((cur) => [...(cur ?? []), ...targets.filter((t) => !cur?.some((c) => c.id === t.id))]);
+  }
+
+  useEffect(() => {
+    if (!queue?.length) return;
+    // after the panel opens: a smooth scroll that starts while it's still growing gets cancelled
+    const t = setTimeout(() => queueRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 450);
+    return () => clearTimeout(t);
+  }, [queue?.length]);
 
   async function checkAll() {
     setChecking(true);
@@ -80,7 +96,7 @@ export default function AccountsPage() {
             <button className="btn btn-glass" disabled={checking || !mine.length} onClick={checkAll}>
               <RefreshCw size={13} className={checking ? "animate-spin" : ""} /> Check unknown
             </button>
-            <button className="btn btn-accent" disabled={!missing.length} onClick={() => setQueue(missing)}>
+            <button className="btn btn-accent" disabled={!missing.length} onClick={() => signIn(...mine)}>
               Sign in to {missing.length} missing
             </button>
           </motion.div>
@@ -103,6 +119,7 @@ export default function AccountsPage() {
         </div>
         {err && <p className="mt-3 text-[13px] text-red">{err}</p>}
 
+        <div ref={queueRef} className="scroll-mt-4" />
         <AnimatePresence>
           {queue && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={softSpring} className="overflow-hidden">
@@ -134,7 +151,7 @@ export default function AccountsPage() {
                 <motion.div initial="hidden" animate="show" variants={stagger(0.03)} className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
                   {list.map((a) => (
                     <motion.div key={a.id} variants={fadeUp} className="group relative">
-                      <AccountCard a={a} onChange={reload} onSignIn={(x) => setQueue([x])} />
+                      <AccountCard a={a} onChange={reload} onSignIn={(x) => signIn(x)} />
                       {a.custom && (
                         <button
                           className="absolute top-3 right-3 text-fg-3 opacity-0 transition-opacity group-hover:opacity-100 hover:text-red"

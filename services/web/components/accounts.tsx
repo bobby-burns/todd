@@ -75,6 +75,21 @@ export function Favicon({ a, size = 20 }: { a: Account; size?: number }) {
   );
 }
 
+/**
+ * The logins a person actually has to do for these accounts. Linked accounts (`via`: App Store Connect → Apple
+ * Developer, Play Console / Firebase → Google) sign in with their parent's login, so the parent takes their place.
+ * Accounts that are already signed in are left out.
+ */
+export function signInTargets(picked: Account[], all: Account[]): Account[] {
+  const byId = new Map(all.map((a) => [a.id, a]));
+  const out = new Map<string, Account>();
+  for (const a of picked) {
+    const t = (a.via && byId.get(a.via)) || a;
+    if (t.status !== "signed_in" && !t.via) out.set(t.id, t);
+  }
+  return [...out.values()];
+}
+
 export function expiresLabel(a: Account): string | null {
   if (!a.expires) return null;
   const days = Math.round((a.expires * 1000 - Date.now()) / 86400000);
@@ -154,7 +169,14 @@ export function CliRow({ a, onChange }: { a: Account; onChange?: () => void }) {
  */
 export function SignInQueue({ accounts, onDone, onChange }: { accounts: Account[]; onDone: () => void; onChange?: () => void }) {
   const queue = useMemo(() => accounts.filter((a) => a.status !== "signed_in" && !a.via), [accounts]);
-  const [ids] = useState(() => queue.map((a) => a.id));
+  const [ids, setIds] = useState(() => queue.map((a) => a.id));
+  useEffect(() => {
+    // accounts added while the queue is open go to the end of it
+    setIds((cur) => {
+      const add = queue.map((a) => a.id).filter((i) => !cur.includes(i));
+      return add.length ? [...cur, ...add] : cur;
+    });
+  }, [queue]);
   const [idx, setIdx] = useState(0);
   const [current, setCurrent] = useState<Account | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -325,6 +347,13 @@ export function AccountCard({ a, onChange, onSignIn }: { a: Account; onChange: (
         </div>
         <StatusChip a={a} />
       </div>
+      {a.via && a.status !== "signed_in" && (
+        <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
+          <button className="btn btn-accent btn-sm" onClick={() => onSignIn(a)} title="Signs in with the linked account's login">
+            <LogIn size={12} /> Sign in
+          </button>
+        </div>
+      )}
       {!a.via && (
         <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
           {a.status !== "signed_in" && (

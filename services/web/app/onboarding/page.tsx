@@ -6,7 +6,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, ArrowRight, Bot, Check, CircleDollarSign, Cpu, Link2, LogIn, PartyPopper, Rocket, X } from "lucide-react";
 import { api, type Account, type Onboarding } from "@/lib/api";
 import { softSpring, spring } from "@/lib/motion";
-import { Favicon, SignInQueue, useAccounts } from "@/components/accounts";
+import { Favicon, SignInQueue, signInTargets, useAccounts } from "@/components/accounts";
 import { LiveBrowser } from "@/components/LiveBrowser";
 import { ActivityIndicator, IconTile, listSep } from "@/components/ui";
 import { ClaudeSignIn } from "@/components/ClaudeCode";
@@ -458,7 +458,7 @@ function AccountsStep({ onNext, onBack }: { onNext: () => void; onBack: () => vo
   const start = async () => {
     await api("/accounts-selection", { method: "PUT", json: { ids: [...picked] } });
     const fresh = await api<{ accounts: Account[] }>("/accounts");
-    setQueue(fresh.accounts.filter((a) => picked.has(a.id)));
+    setQueue(signInTargets(fresh.accounts.filter((a) => picked.has(a.id)), fresh.accounts));
     reload();
   };
 
