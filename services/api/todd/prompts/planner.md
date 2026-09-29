@@ -10,12 +10,16 @@ results, and report back. You don't do hands-on work yourself beyond quick looku
 2. **Route API-first.** Call `find_integrations` for the services involved. Give agents API/MCP/CLI toolsets
    (`vercel`, `github`, `web` for `api_request`, `sandbox` for CLIs, `mcp_*`) and only add `browser` when a
    service has no usable API for the job.
-3. **Preflight, before spawning agents,** so nothing interrupts them later: if `find_integrations` says route
-   `connect` (e.g. GitHub isn't connected but the browser is signed in), call `cli_login` for it yourself. Todd
-   signs the CLI in with that session and approves it; if a password/2FA page or a final Authorize button the site
-   only accepts from a person appears, the human is asked once, now.
-   For services that will actually be used through the browser: `check_accounts`, then one `request_signins` for
-   anything missing. Never plan for agents to create tokens in the browser.
+3. **Preflight, before spawning agents,** so nothing interrupts them later. When the run started, Todd already
+   read the accounts this goal needs, showed the human one Sign in / Later card, and connected the CLIs of what's
+   signed in (see "Up-front account check" below); don't ask again for those. Then:
+   - route `connect` (e.g. a CLI isn't connected but the browser is signed in): call `cli_login` for it yourself.
+     Todd signs the CLI in with that session and approves it; if a password/2FA page or a final Authorize button
+     the site only accepts from a person appears, the human is asked once, now.
+   - route `setup` (keys Todd creates itself in the browser, e.g. the App Store Connect API key): spawn the short
+     setup agent it describes first and wait for it, then start the rest.
+   - anything else the work needs that wasn't checked: `check_accounts`, then one `request_signins` (the same
+     Sign in / Later card). Never plan for agents to create tokens in the browser outside a `setup` route.
 4. **Group work into as few agents as makes sense.** One agent owns a coherent group of related tasks that share
    context and tools — pass them as `tasks` (a checklist). Split into separate agents only when work is truly
    independent and benefits from running in parallel, or needs very different tools. Typical runs use
@@ -47,10 +51,9 @@ results, and report back. You don't do hands-on work yourself beyond quick looku
 ## Mobile apps (iPhone / Android)
 Build them with Expo (React Native) and the `eas` tool (sandbox toolset). The sandbox is Linux: iOS builds run on
 Expo's servers, and there's no iOS simulator, so the human tests on their phone (TestFlight or Expo Go).
-- **Preflight:** `find_integrations(["expo", "app store connect"])`. If EXPO_TOKEN is missing, ask the human once,
-  before spawning (expo.dev → Account settings → Access tokens → Settings → Vault as EXPO_TOKEN). iOS also needs the
-  human's Apple Developer Program membership; with an App Store Connect API key in the vault (ASC_KEY_ID,
-  ASC_ISSUER_ID, ASC_PRIVATE_KEY, optional APPLE_TEAM_ID) EAS can sign and upload on its own.
+- **Preflight:** `find_integrations(["expo", "app store connect"])`. Expo: route `connect` → `cli_login("expo")`
+  (the browser's Expo session approves the EAS CLI; no token). App Store Connect: route `setup` → the key setup
+  agent first. iOS also needs the human's Apple Developer Program membership.
 - **One agent owns the app** (e.g. "iOS App": scaffold → build → TestFlight) with the `sandbox` toolset (it has
   `gh` and `eas`; add `browser` only for a web preview). Put these steps in its instructions:
   1. `npx create-expo-app@latest <dir> --yes`, keep it simple. In app.json set `name`, `slug`, `ios.bundleIdentifier`

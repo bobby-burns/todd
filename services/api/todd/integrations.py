@@ -30,7 +30,25 @@ class Integration:
     mcp_docs: str | None = None
     browser_note: str | None = None  # when the browser is still the practical route
     tool: str | None = None  # a sandbox tool that signs in with api_secrets itself (e.g. eas with EXPO_TOKEN)
+    setup: str | None = None  # how an agent creates the api_secrets in the browser once the human is signed in
 
+
+# One-time key setup in the browser (the human only signs in). Written for both browser engines: the direct tools'
+# names first, the browse() agent's actions in parentheses.
+ASC_SETUP = """\
+Needs the human signed in to App Store Connect as Account Holder or Admin (check_accounts / request_signins).
+1. Open https://appstoreconnect.apple.com/access/integrations/api (browser_start with why_not_api="Apple's API can't
+   create its own keys", or browse with that start_url).
+2. If it asks to Request Access to the App Store Connect API (a team's first time), that accepts Apple's terms:
+   request_approval first, then click Request Access and accept.
+3. On Team Keys, click Generate API Key (or +). Name: Todd. Access: App Manager. Generate.
+4. Save the Issuer ID (above the keys table) as ASC_ISSUER_ID and the new key's Key ID as ASC_KEY_ID with
+   browser_save_secret (browse: save_to_vault). Point at the value or its Copy button.
+5. Click Download on the new key's row and, in the confirmation, use browser_save_download (browse:
+   save_download_to_vault) on the final Download button with name ASC_PRIVATE_KEY. Apple allows one download per key:
+   if it's gone, generate another key instead of asking the human.
+6. Optional: on https://developer.apple.com/account (Membership details), save the Team ID as APPLE_TEAM_ID.
+7. Finish (browser_done). Never read, copy or repeat the key yourself."""
 
 I = Integration
 CATALOG: list[Integration] = [
@@ -74,16 +92,16 @@ CATALOG: list[Integration] = [
     I("expo", "Expo (EAS)", ["eas", "expo application services", "react native", "expo go", "ios", "iphone",
                              "mobile app"],
       api_docs="https://docs.expo.dev/eas/", api_secrets=["EXPO_TOKEN"], tool="eas",
-      cli="the EAS CLI (sandbox: eas(…), signed in with EXPO_TOKEN; builds run on Expo's servers, macOS included)",
-      browser_note="EXPO_TOKEN comes from expo.dev → Account settings → Access tokens. Ask the human to add it in "
-                   "Settings → Vault; don't create it in the browser."),
+      cli="the EAS CLI (sandbox: eas(…), signed in with your Expo account; builds run on Expo's servers, macOS included)",
+      browser_note="Connect it with cli_login(\"expo\") (the browser's Expo session approves the EAS CLI sign-in)."),
     I("app_store_connect", "App Store Connect", ["apple", "app store", "testflight", "asc"],
       api_docs="https://developer.apple.com/documentation/appstoreconnectapi",
       api_secrets=["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"],
       cli="eas(\"submit -p ios …\") uploads builds with this key; for other API calls, a JWT script in the sandbox",
       browser_note="Without an App Store Connect API key, use the browser (the human is signed in). The API can't "
                    "create a new app record: the human's first interactive `npx eas-cli build -p ios --auto-submit` "
-                   "does it, or one form in the browser (My Apps → + → New App)."),
+                   "does it, or one form in the browser (My Apps → + → New App).",
+      setup=ASC_SETUP),
     I("google_play", "Google Play Console", ["play console", "android"],
       api_docs="https://developers.google.com/android-publisher", api_secrets=["GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"],
       browser_note="Without a service account, use the browser. Google requires the very first .aab of a new app "
@@ -158,11 +176,16 @@ def assess(query: str, available_toolsets: set[str] | None = None,
     elif mcp_ts and mcp_ts in toolsets:
         rec = f"Use the `{mcp_ts}` toolset (MCP server, ready)."
         route = "mcp"
-    elif it.tool and api_ready:
-        rec = (f"Use `{it.tool}(…)` in the sandbox toolset: it signs in with {', '.join(it.api_secrets)} from the "
-               f"vault itself (no login step, never pass the token yourself). Docs: {it.api_docs}")
+    elif it.tool and (api_ready or (conn is not None and connect.is_connected(it.id))):
+        rec = (f"Use `{it.tool}(…)` in the sandbox toolset: it's signed in with the human's account already (no login "
+               f"step, never pass a token yourself). Docs: {it.api_docs}")
         route = "cli"
-    elif it.tool:
+    elif it.setup and it.api_secrets and not api_ready:
+        rec = (f"{it.name}'s keys ({', '.join(it.api_secrets)}) aren't in the vault yet, and Todd sets them up itself: "
+               "before other work, spawn one short agent (e.g. \"Setup: " + it.name + " key\") with the `browser` "
+               "and `accounts` toolsets and these steps as its task, then wait for it:\n" + it.setup)
+        route = "setup"
+    elif it.tool and not _needs_connect(it):
         missing = [s for s in it.api_secrets if not vault.has_secret(s)]
         rec = (f"`{it.tool}(…)` in the sandbox toolset needs {', '.join(missing)} in the vault. Ask the human "
                "(ask_human) to add it in Settings → Vault, then continue. " + (it.browser_note or ""))
@@ -178,7 +201,7 @@ def assess(query: str, available_toolsets: set[str] | None = None,
     elif _needs_connect(it):
         signed_in = (browser_status or {}).get(it.id) == "signed_in"
         after = (f"the `{it.toolset}` toolset, gh and git_push work" if conn and conn.secret
-                 else f"use cli(\"{it.id}\", …)")
+                 else f"use {it.tool}(…)" if it.tool else f"use cli(\"{it.id}\", …)")
         rec = (f"{it.name} isn't connected to Todd yet" + (", but the browser is signed in to it. " if signed_in else ". ")
                + f"Call cli_login(\"{it.id}\"): Todd signs the {conn.name if conn else 'CLI'} in with "
                f"{'that' if signed_in else 'the browser'} session and approves it itself (the human only steps in "
@@ -238,3 +261,13 @@ async def find_integrations(services: list[str]) -> dict:
         except Exception:  # noqa: BLE001  (browser offline: the recommendation still works)
             pass
     return {"services": [assess(s, available, status) for s in services]}
+
+
+def setup_pending(ids: list[str]) -> list[Integration]:
+    """Integrations among these service ids whose keys Todd still has to create in the browser."""
+    out = []
+    for sid in ids:
+        it = _find(sid)
+        if it and it.id == sid and it.setup and not all(vault.has_secret(s) for s in it.api_secrets):
+            out.append(it)
+    return out

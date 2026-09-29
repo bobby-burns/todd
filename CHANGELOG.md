@@ -9,6 +9,19 @@ changes).
 
 ### Added
 
+- Accounts up-front: when a run starts, Todd reads which accounts the goal needs (services you name, plus what
+  the work implies, e.g. an iPhone app → Expo, App Store Connect, Apple Developer, GitHub), skips those it can
+  already use through a key or connected CLI, and pauses on one **Sign in to continue** card: a Sign in button per
+  service (opens the login page in the live browser), live status, and Later / Continue. The card closes itself
+  once everything is signed in; Todd then connects those CLIs and tells the planner what was left for later.
+  `request_signins` shows the same card.
+- Expo signs in once: `cli_login("expo")` (and signing in to Expo on the Accounts page) approves `eas login --browser`
+  with the browser session; the `eas` tool uses it, with `EXPO_TOKEN` as a fallback.
+- Keys Todd sets up itself: `find_integrations` has a `setup` route with the steps for services whose keys are
+  created in the browser. App Store Connect: generate a Team API key and save the Issuer ID, Key ID and `.p8`
+  straight into the vault.
+- `browser_save_download` (and `save_download_to_vault` / `save_to_vault` for the browse() agent): click a Download
+  button and put the file's contents in the vault without the model seeing it or it landing in Downloads.
 - iPhone and Android apps: an `eas` tool runs the Expo EAS CLI in the sandbox, signed in with `EXPO_TOKEN` from the
   vault. When the vault has an App Store Connect API key, EAS gets it for one command at a time (written to a
   private file and removed afterwards) so it can sign iOS builds and upload to TestFlight. `cli("expo", …)` routes

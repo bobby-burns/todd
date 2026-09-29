@@ -381,29 +381,36 @@ async def check_accounts(services: list[str] | None = None, verify_unknown: bool
 
 @todd_tool(toolset="accounts", planner=True)
 async def request_signins(services: list[str], reason: str = "") -> dict:
-    """Ask the human to sign in to several services at once (opens each login page in the live browser), wait
-    for them, then re-check. Use right after check_accounts, before starting work that needs those accounts.
+    """Ask the human to sign in to services that aren't signed in: shows one card with a Sign in button per service
+    (it opens the login page in the live browser) and Later, then waits until they're signed in or the human taps
+    Continue / Later. CLIs of newly signed-in services are connected with that session. Returns what's signed in and
+    what the human left for later (plan around those). The accounts the goal obviously needs were already checked
+    when the run started.
 
     Args:
         services: service ids/names that need a sign-in
         reason: one line on why these accounts are needed
     """
+    from . import signin
+
     ctx = get_ctx()
     cat = catalog()
     svcs = [s for s in (_find(q, cat) for q in services) if s]
     if not svcs:
         raise ToolError("none of those services are in the catalog; ask_human instead")
-    for s in svcs[:6]:
-        try:
-            await open_login(s.id)
-        except Exception:
-            pass
-    names = ", ".join(s.name for s in svcs)
-    await ctx.ask_human(
-        f"Please sign in to: {names}. Login pages are open in the live browser (or use the Accounts page). "
-        f"Reply 'done' when finished." + (f"\nWhy: {reason}" if reason else ""),
-        agent=get_agent_id(), data={"services": [s.id for s in svcs], "kind_hint": "signin"})
-    return await check_accounts.ainvoke({"services": [s.id for s in svcs]})
+    res = await signin.gate(ctx, [{"id": s.id, "name": s.name, "why": reason} for s in svcs[:8]],
+                            reason=reason, agent=get_agent_id())
+    if res["offline"]:
+        return {"browser_online": False, "note": "The browser is offline; account status unknown."}
+    connected = await signin.connect_clis(ctx, res["signed_in"])
+    out: dict[str, Any] = {"signed_in": [cat[i].name for i in res["signed_in"]],
+                           "not_signed_in": [cat[i].name for i in res["later"]]}
+    if connected:
+        out["clis_connected"] = [cat[i].name for i in connected]
+    if res["later"]:
+        out["note"] = ("The human chose Later for these. " if res.get("choice") == "later" else
+                       "These still aren't signed in. ") + "Work around them or report what's blocked in your summary."
+    return out
 
 
 ACCOUNT_TOOLS = [check_accounts, request_signins]

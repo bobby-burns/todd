@@ -6,6 +6,7 @@ import { Check, CreditCard, Hand, MessageCircleQuestion, ShieldCheck, X } from "
 import { api, usd, type Interaction } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
 import { openLiveBrowser } from "./LiveBrowser";
+import { SigninCard } from "./SigninCard";
 import { AgentAvatar, IconTile } from "./ui";
 
 const KIND = {
@@ -31,6 +32,10 @@ export function InteractionCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const k = KIND[it.kind];
+
+  if (it.kind === "approval" && it.data?.kind_hint === "signin" && Array.isArray(it.data.services)) {
+    return <SigninCard it={it} agentName={agentName} agentColor={agentColor} planner={planner} onDone={onDone} />;
+  }
 
   async function send(decision: "approve" | "deny" | null) {
     setBusy(true);

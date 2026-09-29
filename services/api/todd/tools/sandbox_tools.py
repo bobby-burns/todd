@@ -195,15 +195,33 @@ async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600)
 
 
 # ------------------------------------------------------------------------------------------ Expo / EAS (mobile apps)
-NO_EXPO_TOKEN = ("EXPO_TOKEN is not in the vault. Ask the human (ask_human) to create an access token at "
-                 "expo.dev → Account settings → Access tokens and add it in Settings → Vault as EXPO_TOKEN.")
-# Where the App Store Connect key is written for one eas command (outside the project, so it can't be committed).
+NO_EXPO = ("Expo isn't connected. Call cli_login(\"expo\"): Todd signs the EAS CLI in with the browser's Expo "
+           "session (request_signins([\"expo\"]) first if the browser isn't signed in). An EXPO_TOKEN in the vault "
+           "works too.")
+# Where the App Store Connect key is written for one eas command: the sandbox user's real home (not the project, so it
+# can't be committed; not the CLI's private sign-in dir, so it isn't saved with it).
 ASC_KEY_FILE = ".todd-asc/AuthKey.p8"
-# Subcommands that sign in or out (Todd handles that with EXPO_TOKEN) or only work with a person at a terminal.
+ASC_KEY_PATH = "/home/agent/" + ASC_KEY_FILE  # what eas.json's submit `ascApiKeyPath` should say
+# Subcommands that sign in or out (Todd handles that) or only work with a person at a terminal.
 _EAS_BLOCKED = {"login", "logout", "account:login", "account:logout"}
 _EAS_INTERACTIVE = {"credentials", "credentials:configure-build", "build:configure", "device:create"}
 _eas_lock = asyncio.Lock()
 _PEM = re.compile(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", re.S)
+_KEY_PRE = "\n".join([
+    'KEYHOME="${REAL_HOME:-$HOME}"',
+    # never leave the key behind: not from an earlier command that was killed, not after this one however it ends
+    f'rm -f "$KEYHOME/{ASC_KEY_FILE}"',
+    f"trap 'rm -f \"$KEYHOME/{ASC_KEY_FILE}\"' EXIT INT TERM HUP",
+    'if [ -n "$TODD_ASC_KEY" ]; then',
+    '  mkdir -p "$KEYHOME/.todd-asc" && chmod 700 "$KEYHOME/.todd-asc"',
+    f'  export EXPO_ASC_API_KEY_PATH="$KEYHOME/{ASC_KEY_FILE}"',
+    '  (umask 077 && printf %s "$TODD_ASC_KEY" > "$EXPO_ASC_API_KEY_PATH")',
+    "fi",
+    "unset TODD_ASC_KEY",
+    # plain settings go in the script: env values are redacted from the output
+    "export EXPO_NO_TELEMETRY=1 EAS_BUILD_NO_EXPO_GO_WARNING=true CI=1",
+])
+_KEY_POST = f'rm -f "$KEYHOME/{ASC_KEY_FILE}"'
 
 
 def normalize_pem(raw: str) -> str:
@@ -219,8 +237,8 @@ def normalize_pem(raw: str) -> str:
     label, body = (m.group(1), m.group(2)) if m else ("PRIVATE KEY", s)
     body = re.sub(r"\s+", "", body)
     if not body or not re.fullmatch(r"[A-Za-z0-9+/=]+", body):
-        raise ToolError("ASC_PRIVATE_KEY doesn't look like an App Store Connect .p8 key. Ask the human to paste the "
-                        "whole AuthKey_XXXX.p8 file contents into Settings → Vault again.")
+        raise ToolError("ASC_PRIVATE_KEY doesn't look like an App Store Connect .p8 key. Set it up again with "
+                        "find_integrations([\"app store connect\"]) or ask the human to re-add it in Settings → Vault.")
     lines = [body[i:i + 64] for i in range(0, len(body), 64)]
     return f"-----BEGIN {label}-----\n" + "\n".join(lines) + f"\n-----END {label}-----\n"
 
@@ -229,23 +247,27 @@ def _apple_env() -> tuple[dict[str, str], str]:
     """EAS's App Store Connect API key settings (when the key is in the vault) and a note for the agent."""
     key_id, issuer, key = (vault.get_secret(n) for n in ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"))
     if not (key_id and issuer and key):
-        return {}, ("No App Store Connect API key in the vault (ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY), so iOS "
-                    "credentials and submissions need the human.")
-    env = {"TODD_ASC_KEY": normalize_pem(key), "EXPO_ASC_KEY_ID": key_id.strip(), "EXPO_ASC_ISSUER_ID": issuer.strip()}
+        return {}, ("No App Store Connect API key in the vault (ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY): set it "
+                    "up in the browser first, see find_integrations([\"app store connect\"]).")
+    pem = normalize_pem(key)
+    if pem.strip() != key.strip():  # store it as EAS sees it, so the vault's output scrubbing matches it exactly
+        vault.set_secret("ASC_PRIVATE_KEY", pem.strip())
+    env = {"TODD_ASC_KEY": pem, "EXPO_ASC_KEY_ID": key_id.strip(), "EXPO_ASC_ISSUER_ID": issuer.strip()}
     team = vault.get_secret("APPLE_TEAM_ID")
     if team:
         env["EXPO_APPLE_TEAM_ID"] = team.strip()
         env["EXPO_APPLE_TEAM_TYPE"] = (vault.get_secret("APPLE_TEAM_TYPE") or "INDIVIDUAL").strip().upper()
-    return env, "App Store Connect API key passed to EAS (EXPO_ASC_* and $EXPO_ASC_API_KEY_PATH)."
+    return env, f"App Store Connect API key passed to EAS (EXPO_ASC_*; key file at {ASC_KEY_PATH} during the command)."
 
 
 @todd_tool(toolset="sandbox")
 async def eas(command: str, path: str = ".", timeout_s: int = 900) -> dict:
     """Run the Expo EAS CLI (iPhone/Android apps built with Expo / React Native) in a project directory, signed in
-    with the vault's EXPO_TOKEN. When the vault has an App Store Connect API key (ASC_KEY_ID, ASC_ISSUER_ID,
-    ASC_PRIVATE_KEY, optional APPLE_TEAM_ID), EAS gets it too, so it can manage iOS signing and upload to TestFlight;
-    during the command the key file is at $HOME/.todd-asc/AuthKey.p8 (for eas.json's submit `ascApiKeyPath`, use
-    "/home/agent/.todd-asc/AuthKey.p8"). There's no TTY: always pass --non-interactive where the command takes it.
+    with the human's Expo account (connected once with cli_login("expo") from the browser session, or an EXPO_TOKEN
+    in the vault). When the vault has the App Store Connect API key (ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY,
+    optional APPLE_TEAM_ID), EAS gets it too, so it can manage iOS signing and upload to TestFlight; during the command
+    the key file is at /home/agent/.todd-asc/AuthKey.p8 (use that for eas.json's submit `ascApiKeyPath`).
+    There's no TTY: always pass --non-interactive where the command takes it.
     Examples: eas("init --non-interactive --force"), eas("build -p ios --profile production --non-interactive
     --no-wait"), eas("build:list -p ios --limit 1 --json --non-interactive"), eas("build:view <id> --json"),
     eas("submit -p ios --latest --profile production --non-interactive"), eas("whoami").
@@ -255,39 +277,38 @@ async def eas(command: str, path: str = ".", timeout_s: int = 900) -> dict:
         path: the Expo project directory relative to the project root (default .)
         timeout_s: timeout in seconds (default 900, max 1800). Start builds with --no-wait and poll build:view.
     """
+    from .. import connect
+
     try:
         argv = shlex.split(command)
     except ValueError as e:
         raise ToolError(f"couldn't parse the arguments: {e}") from e
     sub = argv[0] if argv else ""
     if not argv or sub in _EAS_BLOCKED:
-        raise ToolError(f"`eas {sub}` isn't available here: Todd signs EAS in with EXPO_TOKEN from the vault.")
+        raise ToolError(f"`eas {sub}` isn't available here: Todd signs EAS in (cli_login(\"expo\")).")
     if sub in _EAS_INTERACTIVE:
         raise ToolError(f"`eas {sub}` only works with a person at a terminal. Ask the human (ask_human) to run "
                         f"`npx eas-cli {shlex.join(argv)}` in the project on their computer, then continue.")
     token = vault.get_secret("EXPO_TOKEN")
-    if not token:
-        raise ToolError(NO_EXPO_TOKEN)
+    if not token and not connect.is_connected("expo"):
+        raise ToolError(NO_EXPO)
     apple, note = _apple_env()
-    env = {"EXPO_TOKEN": token, **apple}
-    script = "\n".join([
-        # plain settings go in the script: env values are redacted from the output
-        "export EXPO_NO_TELEMETRY=1 EAS_BUILD_NO_EXPO_GO_WARNING=true CI=1",
-        'if [ -n "$TODD_ASC_KEY" ]; then',
-        '  mkdir -p "$HOME/.todd-asc" && chmod 700 "$HOME/.todd-asc"',
-        f'  export EXPO_ASC_API_KEY_PATH="$HOME/{ASC_KEY_FILE}"',
-        '  (umask 077 && printf %s "$TODD_ASC_KEY" > "$EXPO_ASC_API_KEY_PATH")',
-        "fi",
-        "unset TODD_ASC_KEY",
-        'if command -v eas >/dev/null 2>&1; then EAS=eas; else EAS="npx -y eas-cli@latest"; fi',
-        f"$EAS {shlex.join(argv)} < /dev/null 2>&1; rc=$?",
-        f'rm -f "$HOME/{ASC_KEY_FILE}"',
-        "exit $rc",
-    ])
+    timeout = int(min(max(timeout_s, 10), 1800))
     async with _eas_lock:  # the key file is shared by every eas command, so one at a time
-        r = await sandbox.exec_(script, cwd=_abs(path), timeout=int(min(max(timeout_s, 10), 1800)), env=env)
+        if token:
+            script = "\n".join([
+                _KEY_PRE,
+                'if command -v eas >/dev/null 2>&1; then EAS=eas; else EAS="npx -y eas-cli@latest"; fi',
+                f"$EAS {shlex.join(argv)} < /dev/null 2>&1; rc=$?",
+                _KEY_POST,
+                "exit $rc",
+            ])
+            r = await sandbox.exec_(script, cwd=_abs(path), timeout=timeout, env={"EXPO_TOKEN": token, **apple})
+        else:
+            r = await connect.run("expo", shlex.join(argv), cwd=_abs(path), timeout=timeout, env=apple,
+                                  pre=_KEY_PRE, post=_KEY_POST)
     out = r.get("output") or ""
-    for v in (token, apple.get("TODD_ASC_KEY", "")):
+    for v in (token or "", apple.get("TODD_ASC_KEY", "")):
         if v:
             out = out.replace(v, "***")
     if r.get("timed_out"):
