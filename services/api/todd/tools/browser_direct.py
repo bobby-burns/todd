@@ -26,6 +26,7 @@ from ..agents.browser import _card_secrets, cdp_url
 from ..config import config
 from ..policy import authorize_spend, settle
 from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
+from . import page_capture
 from .browser_tools import clean_domain
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
@@ -316,77 +317,11 @@ async def browser_search(pattern: str) -> str:
 # Text of an element (or the page) as a person would copy it: walks the composed tree (open shadow roots, slotted
 # content), keeps form field values, and never reads password or hidden inputs. mode "value" returns what a Copy
 # button would copy (a field's value, a <clipboard-copy> value or its target) for browser_save_secret.
-_TEXT_JS = """function(mode) {
-  const root = (this && this.nodeType) ? this : document.body;
-  const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
-  const block = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BR|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TR|UL)$/;
-  const field = (el) => {
-    if (el.tagName === 'TEXTAREA') return el.value;
-    if (el.tagName !== 'INPUT') return null;
-    const t = (el.type || 'text').toLowerCase();
-    return ['password', 'hidden', 'checkbox', 'radio', 'file', 'submit', 'button', 'image'].includes(t) ? '' : el.value;
-  };
-  if (mode === 'value') {
-    const v = field(root);
-    if (v !== null) return v;
-    if (root.tagName === 'CLIPBOARD-COPY') {
-      if (root.getAttribute('value')) return root.getAttribute('value');
-      const id = root.getAttribute('for');
-      const target = id && ((root.getRootNode().getElementById && root.getRootNode().getElementById(id)) || document.getElementById(id));
-      if (target) return field(target) ?? target.textContent;
-    }
-  }
-  const out = [];
-  const push = (t) => {  // collapsed text: no space at the start of a line or after another space
-    const last = out.length ? out[out.length - 1] : '\\n';
-    if (last.endsWith('\\n') || last.endsWith(' ')) t = t.replace(/^ +/, '');
-    if (t) out.push(t);
-  };
-  const walk = (n) => {
-    if (n.nodeType === 3) {
-      if (n.parentElement && n.parentElement.closest('pre, textarea')) out.push(n.nodeValue);
-      else push(n.nodeValue.replace(/\\s+/g, ' '));
-      return;
-    }
-    if (n.nodeType !== 1 && n.nodeType !== 11) return;
-    if (n.nodeType === 1) {
-      if (skip.has(n.tagName) || n.hidden) return;
-      const st = getComputedStyle(n);
-      if (st.display === 'none' || st.visibility === 'hidden') return;
-      const v = field(n);
-      if (v !== null) { if (v) push(' ' + v + ' '); return; }
-      if (n.tagName === 'TD' || n.tagName === 'TH') out.push('\\t');
-    }
-    const kids = n.shadowRoot ? [n.shadowRoot]
-      : n.tagName === 'SLOT' && n.assignedNodes({flatten: true}).length ? n.assignedNodes({flatten: true})
-      : [...n.childNodes];
-    for (const c of kids) walk(c);
-    if (n.nodeType === 1 && block.test(n.tagName)) out.push('\\n');
-  };
-  walk(root);
-  return out.join('').split('\\n').map(l => l.replace(/[ \\t]+$/, '')).join('\\n')
-    .replace(/\\n{3,}/g, '\\n\\n').trim();
-}"""
+_TEXT_JS = page_capture.TEXT_JS
 
 
 async def _text(h: _Handle, index: int | None, mode: str = "text") -> str:
-    b = h.browser
-    if index is None:
-        s = await b.get_or_create_cdp_session(focus=False)
-        doc = await s.cdp_client.send.Runtime.evaluate(params={"expression": "document.body"}, session_id=s.session_id)
-        object_id = doc["result"]["objectId"]
-    else:
-        node = await b.get_element_by_index(int(index))
-        if node is None:
-            raise ToolError(f"No element [{index}] on the current page. Call browser_state to refresh the indexes.")
-        s = await b.cdp_client_for_node(node)
-        res = await s.cdp_client.send.DOM.resolveNode(params={"backendNodeId": node.backend_node_id},
-                                                      session_id=s.session_id)
-        object_id = res["object"]["objectId"]
-    r = await s.cdp_client.send.Runtime.callFunctionOn(
-        params={"objectId": object_id, "functionDeclaration": _TEXT_JS, "arguments": [{"value": mode}],
-                "returnByValue": True}, session_id=s.session_id)
-    return str(r.get("result", {}).get("value") or "")
+    return await page_capture.element_text(h.browser, index, mode)
 
 
 @todd_tool(toolset="browser")
@@ -423,11 +358,7 @@ async def browser_save_secret(index: int, name: str, what: str = "") -> str:
     from .. import vault
 
     ctx, agent_id, h = _get()
-    if not re.fullmatch(r"[A-Z0-9_]{2,64}", name):
-        raise ToolError("Secret names must be UPPER_SNAKE_CASE")
-    if vault.is_protected(name):
-        raise ToolError(f"{name} is an integration token, model key or card field: agents can't set it. Connect the "
-                        "service with cli_login, or ask the human to add it in Settings.")
+    page_capture.check_name(name)
     if h.sensitive is not None:
         raise ToolError("browser_save_secret is off during a checkout.")
     value = (await _text(h, index, mode="value")).strip()
@@ -439,6 +370,28 @@ async def browser_save_secret(index: int, name: str, what: str = "") -> str:
     vault.set_secret(name, value)
     ctx.emit(agent_id, "status", f"Saved {what or 'a value from the page'} to the vault as {name}")
     return f"Saved {name} ({len(value)} characters) without showing it to you. Reference it as {{{{secret:{name}}}}}."
+
+
+@todd_tool(toolset="browser")
+async def browser_save_download(index: int, name: str, what: str = "") -> str:
+    """Click a Download button or link and save the downloaded file's contents straight into the vault as NAME,
+    without it passing through you or landing in the browser's Downloads folder. For key files a site lets you
+    download once (e.g. an App Store Connect AuthKey_XXXX.p8 → ASC_PRIVATE_KEY). Text files up to 64 KB.
+
+    Args:
+        index: element index of the Download button or link (the final one, if a confirmation dialog comes first)
+        name: UPPER_SNAKE_CASE vault name, e.g. ASC_PRIVATE_KEY
+        what: a few words on what it is (shown to the human)
+    """
+    ctx, agent_id, h = _get()
+    page_capture.check_name(name)
+    if h.sensitive is not None:
+        raise ToolError("browser_save_download is off during a checkout.")
+    file_name, text = await page_capture.capture_download(h.browser, index)
+    msg = page_capture.save_file(name, file_name, text)
+    ctx.emit(agent_id, "status", f"Saved {what or file_name} to the vault as {name}")
+    state = await _state(ctx, agent_id, h, f"Saved download {file_name}")
+    return f"{msg}\n\n{state}"
 
 
 # Records JS errors and console errors/warnings from page load on, for browser_console.
@@ -548,4 +501,5 @@ async def release(ctx, agent_id: str, *, success: bool = False, result: str = ""
 
 DIRECT_BROWSER_TOOLS = [browser_start, browser_state, browser_navigate, browser_click, browser_type, browser_keys,
                         browser_select, browser_scroll, browser_back, browser_switch_tab, browser_search,
-                        browser_read_text, browser_save_secret, browser_console, browser_wait, browser_done]
+                        browser_read_text, browser_save_secret, browser_save_download, browser_console, browser_wait,
+                        browser_done]

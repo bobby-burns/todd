@@ -17,6 +17,7 @@ Flow, all without anyone copying a token:
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 import os
 import re
@@ -49,10 +50,13 @@ class Connector:
     token: str | None = None  # ...printed by these arguments; otherwise the sign-in files are snapshotted
     complete: str | None = None  # arguments that finish the login after approval ({code}: code from the page)
     page_code_re: str | None = None  # a code the page shows after approval, for `complete`
-    callback: str | None = None  # the CLI waits for the browser to open this localhost URL
+    callback: str | None = None  # the CLI waits for the browser to open this localhost URL (`*` = any port/text)
     blocked: tuple[str, ...] = ("login", "logout", "auth", "config", "token", "tokens")
     example: str = ""
 
+
+# The image has eas-cli installed; older sandbox images fall back to npx.
+EAS_RUN = '$(command -v eas >/dev/null 2>&1 && echo eas || echo "npx -y eas-cli@latest")'
 
 CONNECTORS: dict[str, Connector] = {c.service: c for c in [
     Connector("github", "GitHub CLI", "gh", "auth login --web --hostname github.com --git-protocol https --scopes workflow",
@@ -76,6 +80,11 @@ CONNECTORS: dict[str, Connector] = {c.service: c for c in [
               r"https://access\.stripe\.com/stripecli/oauth2/device[^\s\"',]*", ("stripe.com",),
               code_re=r"\"verification_code\":\s*\"([A-Z0-9-]+)\"", complete="login --complete-device",
               example="products list --limit 5"),
+    # eas-cli's browser login waits on a random localhost port; Todd catches the redirect and replays it there.
+    Connector("expo", "Expo EAS CLI", EAS_RUN, "login --browser", r"https://expo\.dev/login\?\S+", ("expo.dev",),
+              callback="http://localhost:*/auth/callback",
+              blocked=("login", "logout", "account:login", "account:logout"),
+              example="build:list --limit 1 --non-interactive"),
     Connector("firebase", "Firebase CLI", "firebase", "login --no-localhost",
               r"https://auth\.firebase\.tools/login\?\S+", ("firebase.tools", "google.com"),
               complete="login {code}", page_code_re=r"\b(4/[0-9A-Za-z_\-]{20,})",
@@ -269,7 +278,7 @@ async def _flow(c: Connector, conn: Connection, on_change: Any, browser_lock: as
         if res["state"] != "approved":
             raise ToolError("The approval wasn't finished in time. Try again from the Accounts page.")
         if res.get("callback"):  # the browser can't reach the CLI's localhost; replay the redirect where it runs
-            if not res["callback"].startswith(c.callback or "\0"):
+            if not callback_ok(c, conn.url or "", res["callback"]):
                 raise ToolError("Unexpected redirect; not forwarding it.")
             await _sh(f"curl -fsS --max-time 30 -o /dev/null {q(res['callback'])}")
         if res.get("page_code"):
@@ -292,6 +301,33 @@ async def _flow(c: Connector, conn: Connection, on_change: Any, browser_lock: as
         if tab and conn.state == "connected":
             await cdp.close_tab(tab)
         conn.done.set()
+
+
+def callback_ok(c: Connector, login_url: str, caught: str) -> bool:
+    """Only replay the CLI's own sign-in redirect in the sandbox: plain http to localhost on a port, no user info or
+    fragment, matching the connector's pattern, and (when the login link says where it wants the redirect and with
+    which state) exactly that port, path and state."""
+    from urllib.parse import parse_qs, urlsplit
+
+    if not c.callback:
+        return False
+    try:
+        u = urlsplit(caught)
+        port = u.port
+    except ValueError:
+        return False
+    if u.scheme != "http" or u.hostname != "localhost" or u.username or u.password or u.fragment or not port:
+        return False
+    if not fnmatch.fnmatchcase(f"http://localhost:{port}{u.path}", c.callback + ("" if "*" in c.callback else "*")):
+        return False
+    want = parse_qs(urlsplit(login_url).query)
+    if want.get("redirect_uri"):
+        r = urlsplit(want["redirect_uri"][0])
+        if (r.hostname, r.port, r.path) != ("localhost", port, u.path):
+            return False
+    if want.get("state") and parse_qs(u.query).get("state") != want["state"]:
+        return False
+    return True
 
 
 async def _watch(state: str, logname: str, done: asyncio.Event) -> int:
@@ -339,9 +375,11 @@ async def _store(c: Connector, state: str) -> None:
 _run_locks: dict[str, asyncio.Lock] = {}
 
 
-async def run(service: str, command: str, cwd: str, timeout: int = 600) -> dict[str, Any]:
+async def run(service: str, command: str, cwd: str, timeout: int = 600, env: dict[str, str] | None = None,
+              pre: str = "", post: str = "") -> dict[str, Any]:
     """Run a connected CLI (not GitHub: that's the `gh` tool) with its saved sign-in. The snapshot is unpacked into a
-    private dir for this command only; refreshed tokens are saved back; the dir is removed."""
+    private dir for this command only; refreshed tokens are saved back; the dir is removed. `env`, `pre` and `post`
+    let a tool add settings and shell lines around the command (e.g. the `eas` tool's App Store Connect key)."""
     c = connector(service)
     blob = vault.get_secret(state_name(c.service))
     if not blob:
@@ -359,10 +397,10 @@ async def run(service: str, command: str, cwd: str, timeout: int = 600) -> dict[
         r = await sandbox.exec_(
             'STATE=$(mktemp -d /tmp/todd-cli-XXXXXX) && chmod 700 "$STATE" && mkdir -p "$STATE/home"\n'
             'printf %s "$TODD_CLI_STATE" | base64 -d | tar xzf - -C "$STATE/home"\n'
-            'unset TODD_CLI_STATE\n' + _ENV
-            + f"cd {q(cwd)} && {c.run} {shlex.join(argv)} < /dev/null 2>&1; rc=$?\n" + _SNAPSHOT
-            + 'echo; echo "__TODD_RC__ $rc $STATE"',
-            cwd=cwd, timeout=int(min(max(timeout, 10), 1800)) + 30, env={"TODD_CLI_STATE": blob})
+            'unset TODD_CLI_STATE\n' + _ENV + (pre + "\n" if pre else "")
+            + f"cd {q(cwd)} && {c.run} {shlex.join(argv)} < /dev/null 2>&1; rc=$?\n" + (post + "\n" if post else "")
+            + _SNAPSHOT + 'echo; echo "__TODD_RC__ $rc $STATE"',
+            cwd=cwd, timeout=int(min(max(timeout, 10), 1800)) + 30, env={**(env or {}), "TODD_CLI_STATE": blob})
         out = r.get("output") or ""
         m = re.search(r"__TODD_RC__ (\d+) (\S+)", out)
         text = out[:m.start()].rstrip() if m else out

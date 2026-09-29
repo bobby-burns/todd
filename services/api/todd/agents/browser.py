@@ -113,6 +113,40 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
     async def wait_for_human(question_id: str) -> ActionResult:
         return await _await_human(question_id, "(continued)")
 
+    if sensitive is None:  # never while card details may be on the page
+        from ..sdk import ToolError
+        from ..tools import page_capture
+
+        # browser_session is injected by browser-use (left unannotated: this module uses postponed annotations).
+        @tools.action("Save a value the page shows (an API key or ID shown once) straight into Todd's vault as NAME "
+                      "(UPPER_SNAKE_CASE) without reading it yourself. index = the element showing it or its Copy "
+                      "button.")
+        async def save_to_vault(index: int, name: str, browser_session=None) -> ActionResult:  # noqa: ANN001
+            try:
+                page_capture.check_name(name)
+                value = (await page_capture.element_text(browser_session, index, mode="value")).strip()
+                if not value or any(c.isspace() for c in value):
+                    raise ToolError(f"Element [{index}] doesn't hold a single key. Point at the key or its Copy button.")
+                vault.set_secret(name, value)
+            except ToolError as e:
+                return ActionResult(error=str(e))
+            ctx.emit(agent_id, "status", f"Saved a value from the page to the vault as {name}")
+            return ActionResult(extracted_content=f"Saved {name} ({len(value)} characters) to the vault.",
+                                long_term_memory=f"Saved {name} to the vault")
+
+        @tools.action("Click a Download button or link and save the downloaded file (a key or config file, e.g. an "
+                      "App Store Connect AuthKey .p8) straight into Todd's vault as NAME, without reading it and "
+                      "without it landing in Downloads. index = the final Download button.")
+        async def save_download_to_vault(index: int, name: str, browser_session=None) -> ActionResult:  # noqa: ANN001
+            try:
+                page_capture.check_name(name)
+                file_name, text = await page_capture.capture_download(browser_session, index)
+                msg = page_capture.save_file(name, file_name, text)
+            except ToolError as e:
+                return ActionResult(error=str(e))
+            ctx.emit(agent_id, "status", f"Saved {file_name} to the vault as {name}")
+            return ActionResult(extracted_content=msg, long_term_memory=f"Saved {file_name} to the vault as {name}")
+
     card_mode = sensitive is not None  # never screenshot or send images while card details may be on screen
     shots_dir = config.data_dir / "screens" / ctx.run_id
     shots_dir.mkdir(parents=True, exist_ok=True)

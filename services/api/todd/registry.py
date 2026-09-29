@@ -52,10 +52,11 @@ class Toolset:
 
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
-    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase CLIs) with a "
+    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "
                        "workspace shared by all agents in this run: shell, read/write/list files, git_push, the "
                        "GitHub CLI (`gh`) and `cli` for Vercel/Netlify/Railway/Cloudflare/Stripe/Firebase, all "
-                       "signed in with the human's account (connect with cli_login).",
+                       "signed in with the human's account (connect with cli_login), and `eas` for iPhone/Android "
+                       "apps with Expo (cloud builds, TestFlight/Play uploads; connect with cli_login(\"expo\")).",
                        SANDBOX_TOOLS,
                        guide="Commands have no TTY: always pass non-interactive flags (e.g. `npx create-next-app@latest "
                              "app --ts --tailwind --eslint --app --use-npm --yes`). Verify with a real build before "
@@ -97,7 +98,8 @@ DIRECT_BROWSER_TOOLSET = Toolset(
           "after each action and use element [index] numbers. Don't create new accounts; the human is usually signed "
           "in already. On captchas/2FA, ask_human (they can take over the live browser). Always call browser_done "
           "when finished. Copy exact text (code, IDs, URLs) with browser_read_text. Credentials never pass through you: "
-          "connect services with cli_login, and if the task needs a key the page shows, browser_save_secret it.")
+          "connect services with cli_login, and if the task needs a key the page shows, browser_save_secret it "
+          "(browser_save_download for a key file).")
 
 for _ts in [*BUILTIN_TOOLSETS.values(), DIRECT_BROWSER_TOOLSET]:
     for _t in _ts.tools:

@@ -10,8 +10,8 @@ need is below or in your task.
 ## Your tools
 {{toolsets}}
 - `find_integrations` — the best API/MCP/CLI route for a service. Use it before any browser work.
-- `cli_login` — connect a service's CLI (GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe, Firebase) with the
-  human's browser session; then use `gh` / `cli` (sandbox).
+- `cli_login` — connect a service's CLI (GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe, Firebase, Expo) with
+  the human's browser session; then use `gh` / `cli` / `eas` (sandbox).
 - `ask_human` / `request_approval` — for things only the human can decide or do.
 - `finish` — when you're done.
 

@@ -67,10 +67,14 @@ Open source and self-hosted: `docker compose up` and it's yours.
   summary from what it actually did.
 - **Sign in once.** The setup wizard and the **Accounts** page cover about 70 services (dev and deploy,
   domains, cloud, payments, Google, socials, launch communities, productivity, app stores, AI platforms). Todd
-  detects logins in the agents' browser and shows each session's status. The planner checks the accounts it
-  needs before starting, so agents don't stall on login screens.
-- **Sign in once: web and CLI.** When you sign in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe or
-  Firebase, Todd signs in that service's CLI with the same session automatically. It approves the CLI's sign-in in
+  detects logins in the agents' browser and shows each session's status.
+- **Asks for accounts up-front.** The moment you send a goal, Todd reads which accounts it needs ("an iPhone app on
+  TestFlight" → Expo, App Store Connect, Apple Developer, GitHub; plus any service you name) and skips the ones it
+  can already use. If any aren't signed in, the run pauses on one card with a **Sign in** button per service
+  (it opens the login page in the live browser) and **Later**. The card closes by itself once you're signed in, and
+  Todd sets up those CLIs and keys before any agent starts, so nothing stops for a login halfway through.
+- **Sign in once: web and CLI.** When you sign in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe,
+  Firebase or Expo, Todd signs in that service's CLI with the same session automatically. It approves the CLI's sign-in in
   the browser itself; you only step in for a password or 2FA page, or for the one final Authorize/Allow click some
   sites only accept from a person (Todd scrolls to it and highlights it), and only then, while you're there.
   Credentials go straight into the encrypted vault; nobody copies tokens, and runs never stop for a login.
@@ -84,6 +88,9 @@ Open source and self-hosted: `docker compose up` and it's yours.
   REST API via `api_request` with a vault key, a CLI in the sandbox, and only then the browser. `browse`
   requires a `why_not_api` reason, which is shown in the agent's window. Settings suggests official MCP
   servers (GitHub, Vercel, Stripe, Supabase, Neon, Linear, Notion, Sentry, Figma) with one-click add.
+- **iPhone and Android apps.** Agents build Expo (React Native) apps and use the `eas` tool to run cloud builds
+  on Expo's servers (macOS included) and upload to TestFlight or Google Play. See
+  [iPhone and Android apps](#iphone-and-android-apps).
 - **Agents check their own work.** Agents that build or deploy a site open it in the browser, look at the
   screenshot, click through, and read JavaScript errors and failed requests with `browser_console`.
 - **Spending rules the model can't override.** An auto-approve limit, per-run budgets and approval prompts,
@@ -135,6 +142,37 @@ docker compose exec ollama ollama pull qwen3:14b
 
 Then set a role to `ollama_chat/qwen3:14b` in Settings.
 
+### iPhone and Android apps
+
+Agents build mobile apps with [Expo](https://expo.dev) and the `eas` tool, which runs the EAS CLI in the sandbox.
+Builds run on Expo's servers, so iOS works even though the sandbox is Linux. There's no iOS simulator: you test on
+your phone with TestFlight (or Expo Go).
+
+What you need: an [Expo account](https://expo.dev), and for iOS an
+[Apple Developer Program](https://developer.apple.com/programs/) membership ($99/yr) where you're Account Holder or
+Admin. For Android, a Google Play developer account ($25 once); Google requires the first upload of a new app to be
+done by hand in the Play Console.
+
+You only sign in, when the run's Sign in card asks (or on the Accounts page). Todd does the rest:
+
+- **Expo:** Todd signs the EAS CLI in with your browser session, like GitHub or Vercel. No token to copy.
+- **App Store Connect:** a short setup agent generates an API key (Team Keys, *App Manager*) in the browser and
+  saves the Issuer ID, Key ID and the `.p8` file straight into the vault (`browser_save_download`), without the model
+  seeing the key. If your team has never used the App Store Connect API, it asks you before accepting Apple's terms.
+- The `eas` tool hands the key to EAS for one command at a time and removes it afterwards.
+
+Adding them yourself still works: `EXPO_TOKEN`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_PRIVATE_KEY` (the whole `.p8`;
+pasting it into the one-line field is fine) and optionally `APPLE_TEAM_ID` in **Settings → Vault**.
+
+The first iOS build of a new app needs you once: EAS can't create the Apple distribution certificate without a
+person, so Todd asks you to run `npx eas-cli build -p ios --profile production --auto-submit` in the app's repo on
+your computer. That signs in to Apple, creates the certificate, profile and App Store Connect app, and uploads to
+TestFlight. After that, Todd builds and uploads new versions on its own. It stops at TestFlight unless you ask it
+to submit for App Store review, and asks you before it does.
+
+Example goal: *"Build a simple Expo iPhone app that tracks my water intake with a daily goal and a reset button,
+and put it on TestFlight."*
+
 ## Configuration
 
 Everything in [`.env.example`](.env.example) is optional. Keys can also be added in the dashboard
@@ -185,7 +223,7 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
 | `web`      | Next.js dashboard; proxies `/api/*` (including SSE) to the API              | `127.0.0.1:3000` |
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token) |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, checkpoints               | internal         |
-| `sandbox`  | Node 22 / pnpm / git / Python / deploy CLIs, with a small exec API          | internal         |
+| `sandbox`  | Node 22 / pnpm / git / Python / deploy CLIs (incl. EAS), with a small exec API | internal      |
 | `browser`  | Headful Chromium on Xvfb; CDP + noVNC live view                             | `127.0.0.1:6080` |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal         |
 

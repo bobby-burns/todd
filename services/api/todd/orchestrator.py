@@ -13,7 +13,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from . import accounts, connect, prompts, registry, settings, vault
+from . import accounts, connect, prompts, registry, settings, signin, vault
 from .agents import claude_code, dynamic
 from .agents.graph import build_agent, recursion_limit
 from .config import config
@@ -241,9 +241,12 @@ class RunManager:
             for e in mcp_errors:
                 ctx.emit("system", "error", f"MCP server {e['server']} failed to load: {e['error']}")
             ctx.toolsets = registry.all_toolsets(mcp_toolsets, engine=engine)  # type: ignore[attr-defined]
+            # Sign in once, up-front: ask for the accounts this goal needs before any agent starts.
+            preflight = "" if (resume or followup) else await signin.preflight(ctx, run.prompt)
             system = prompts.compose(
                 "planner", budget_usd=f"{run.budget_usd:.2f}",
-                integrations=integrations_summary() + "\n" + await accounts_summary(),
+                integrations=integrations_summary() + "\n" + await accounts_summary()
+                + (f"\n{preflight}" if preflight else ""),
                 toolsets=registry.toolsets_prompt(ctx.toolsets))  # type: ignore[attr-defined]
             planner_tools = registry.planner_tools(ctx.toolsets)  # type: ignore[attr-defined]
             if engine == "claude_code":
