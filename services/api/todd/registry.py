@@ -52,10 +52,11 @@ class Toolset:
 
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
-    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase CLIs) with a "
+    "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "
                        "workspace shared by all agents in this run: shell, read/write/list files, git_push, the "
                        "GitHub CLI (`gh`) and `cli` for Vercel/Netlify/Railway/Cloudflare/Stripe/Firebase, all "
-                       "signed in with the human's account (connect with cli_login).",
+                       "signed in with the human's account (connect with cli_login), and `eas` for iPhone/Android "
+                       "apps with Expo (cloud builds, TestFlight/Play uploads; signed in with EXPO_TOKEN).",
                        SANDBOX_TOOLS,
                        guide="Commands have no TTY: always pass non-interactive flags (e.g. `npx create-next-app@latest "
                              "app --ts --tailwind --eslint --app --use-npm --yes`). Verify with a real build before "

@@ -37,7 +37,8 @@ async def fetch_url(url: str, max_chars: int = 20000) -> dict:
 
 
 # Protected secrets may be sent only to their own service's API host.
-SECRET_HOSTS = {"GITHUB_TOKEN": {"api.github.com", "uploads.github.com"}, "VERCEL_TOKEN": {"api.vercel.com"}}
+SECRET_HOSTS = {"GITHUB_TOKEN": {"api.github.com", "uploads.github.com"}, "VERCEL_TOKEN": {"api.vercel.com"},
+                "EXPO_TOKEN": {"api.expo.dev"}}
 _REF = re.compile(r"\{\{secret:([A-Za-z0-9_\-]+)\}\}")
 
 

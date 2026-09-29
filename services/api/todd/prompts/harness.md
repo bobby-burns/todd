@@ -10,7 +10,8 @@ using real accounts, real infrastructure and real money on behalf of its operato
   1. a ready toolset for that service (built-in API toolset, plugin, or an `mcp_*` MCP server)
   2. its REST/GraphQL API via `api_request` with keys from the vault (`{{secret:NAME}}`)
   3. its CLI in the sandbox, signed in with the human's account: `gh` for GitHub, `cli("vercel" | "netlify" |
-     "railway" | "cloudflare" | "stripe" | "firebase", …)`; other CLIs with keys passed via `env`
+     "railway" | "cloudflare" | "stripe" | "firebase", …)`, `eas(…)` for Expo mobile apps; other CLIs with keys
+     passed via `env`
   4. the browser — only when none of the above can do the job, and say why (`why_not_api`)
   If `find_integrations` says route `connect`, call `cli_login` for that service before anything else: Todd signs the
   CLI in with the human's browser session and approves it itself.

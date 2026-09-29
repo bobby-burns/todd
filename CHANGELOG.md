@@ -9,6 +9,12 @@ changes).
 
 ### Added
 
+- iPhone and Android apps: an `eas` tool runs the Expo EAS CLI in the sandbox, signed in with `EXPO_TOKEN` from the
+  vault. When the vault has an App Store Connect API key, EAS gets it for one command at a time (written to a
+  private file and removed afterwards) so it can sign iOS builds and upload to TestFlight. `cli("expo", …)` routes
+  to it. The sandbox image now includes `eas-cli`; `find_integrations` knows Expo (and "iphone", "react native")
+  and asks for the token when it's missing; the planner prompt has a mobile playbook. `EXPO_TOKEN` is protected
+  like `GITHUB_TOKEN`.
 - Sign in once: signing in to GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe or Firebase (Accounts page,
   Setup) also signs in that service's CLI with the same session. Todd approves it in the browser itself and only
   asks you for a password/2FA page. Agents can do the same with `cli_login`.

@@ -84,6 +84,9 @@ Open source and self-hosted: `docker compose up` and it's yours.
   REST API via `api_request` with a vault key, a CLI in the sandbox, and only then the browser. `browse`
   requires a `why_not_api` reason, which is shown in the agent's window. Settings suggests official MCP
   servers (GitHub, Vercel, Stripe, Supabase, Neon, Linear, Notion, Sentry, Figma) with one-click add.
+- **iPhone and Android apps.** Agents build Expo (React Native) apps and use the `eas` tool to run cloud builds
+  on Expo's servers (macOS included) and upload to TestFlight or Google Play. See
+  [iPhone and Android apps](#iphone-and-android-apps).
 - **Agents check their own work.** Agents that build or deploy a site open it in the browser, look at the
   screenshot, click through, and read JavaScript errors and failed requests with `browser_console`.
 - **Spending rules the model can't override.** An auto-approve limit, per-run budgets and approval prompts,
@@ -135,6 +138,33 @@ docker compose exec ollama ollama pull qwen3:14b
 
 Then set a role to `ollama_chat/qwen3:14b` in Settings.
 
+### iPhone and Android apps
+
+Agents build mobile apps with [Expo](https://expo.dev) and the `eas` tool, which runs the EAS CLI in the sandbox.
+Builds run on Expo's servers, so iOS works even though the sandbox is Linux. There's no iOS simulator: you test on
+your phone with TestFlight (or Expo Go).
+
+What you need:
+
+1. An [Expo account](https://expo.dev) and an access token (Account settings → Access tokens). Add it in
+   **Settings → Vault** as `EXPO_TOKEN`.
+2. For iOS: an [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/yr) and an App
+   Store Connect API key (App Store Connect → Users and Access → Integrations → Team Keys, role *App Manager*).
+   Add `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_PRIVATE_KEY` (the whole `AuthKey_XXXX.p8` file; pasting it into the
+   one-line field is fine) and, optionally, `APPLE_TEAM_ID`. The `eas` tool hands the key to EAS for one command at
+   a time and removes it afterwards.
+3. For Android: a Google Play developer account ($25 once). Google requires the first upload of a new app to be
+   done by hand in the Play Console.
+
+The first iOS build of a new app needs you once: EAS can't create the Apple distribution certificate without a
+person, so Todd asks you to run `npx eas-cli build -p ios --profile production --auto-submit` in the app's repo on
+your computer. That signs in to Apple, creates the certificate, profile and App Store Connect app, and uploads to
+TestFlight. After that, Todd builds and uploads new versions on its own. It stops at TestFlight unless you ask it
+to submit for App Store review, and asks you before it does.
+
+Example goal: *"Build a simple Expo iPhone app that tracks my water intake with a daily goal and a reset button,
+and put it on TestFlight."*
+
 ## Configuration
 
 Everything in [`.env.example`](.env.example) is optional. Keys can also be added in the dashboard
@@ -185,7 +215,7 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
 | `web`      | Next.js dashboard; proxies `/api/*` (including SSE) to the API              | `127.0.0.1:3000` |
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token) |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, checkpoints               | internal         |
-| `sandbox`  | Node 22 / pnpm / git / Python / deploy CLIs, with a small exec API          | internal         |
+| `sandbox`  | Node 22 / pnpm / git / Python / deploy CLIs (incl. EAS), with a small exec API | internal      |
 | `browser`  | Headful Chromium on Xvfb; CDP + noVNC live view                             | `127.0.0.1:6080` |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal         |
 

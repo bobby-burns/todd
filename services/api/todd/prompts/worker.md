@@ -11,7 +11,8 @@ need is below or in your task.
 {{toolsets}}
 - `find_integrations` — the best API/MCP/CLI route for a service. Use it before any browser work.
 - `cli_login` — connect a service's CLI (GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe, Firebase) with the
-  human's browser session; then use `gh` / `cli` (sandbox).
+  human's browser session; then use `gh` / `cli` (sandbox). Expo mobile apps use `eas` (sandbox), signed in with
+  EXPO_TOKEN from the vault.
 - `ask_human` / `request_approval` — for things only the human can decide or do.
 - `finish` — when you're done.
 

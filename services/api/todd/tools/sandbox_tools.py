@@ -1,8 +1,9 @@
-"""The `sandbox` toolset: a Linux box (node 22, pnpm, git, gh, python, vercel + firebase CLIs) with a workspace
-shared by every agent in the run, plus an authenticated git_push and GitHub CLI (`gh`)."""
+"""The `sandbox` toolset: a Linux box (node 22, pnpm, git, gh, python, vercel + firebase + eas CLIs) with a workspace
+shared by every agent in the run, plus an authenticated git_push, GitHub CLI (`gh`) and Expo EAS CLI (`eas`)."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import posixpath
 import re
@@ -175,7 +176,7 @@ async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600)
     page), in a project directory. No tokens or login steps needed. Examples: cli("vercel", "deploy --prod --yes"),
     cli("netlify", "deploy --prod --dir dist"), cli("cloudflare", "pages deploy dist --project-name site"),
     cli("railway", "up --detach"), cli("firebase", "deploy --only hosting"), cli("stripe", "products list").
-    For GitHub use `gh`.
+    For GitHub use `gh`; for Expo / EAS (mobile apps) use `eas`.
 
     Args:
         service: vercel, netlify, railway, cloudflare (wrangler), stripe or firebase
@@ -185,13 +186,117 @@ async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600)
     """
     from .. import connect
 
-    if service.strip().lower() == "github":
+    svc = service.strip().lower()
+    if svc == "github":
         return await gh.ainvoke({"command": command, "timeout_s": timeout_s})
+    if svc in ("expo", "eas"):
+        return await eas.ainvoke({"command": command, "path": path, "timeout_s": timeout_s})
     return await connect.run(service, command, cwd=_abs(path), timeout=timeout_s)
+
+
+# ------------------------------------------------------------------------------------------ Expo / EAS (mobile apps)
+NO_EXPO_TOKEN = ("EXPO_TOKEN is not in the vault. Ask the human (ask_human) to create an access token at "
+                 "expo.dev → Account settings → Access tokens and add it in Settings → Vault as EXPO_TOKEN.")
+# Where the App Store Connect key is written for one eas command (outside the project, so it can't be committed).
+ASC_KEY_FILE = ".todd-asc/AuthKey.p8"
+# Subcommands that sign in or out (Todd handles that with EXPO_TOKEN) or only work with a person at a terminal.
+_EAS_BLOCKED = {"login", "logout", "account:login", "account:logout"}
+_EAS_INTERACTIVE = {"credentials", "credentials:configure-build", "build:configure", "device:create"}
+_eas_lock = asyncio.Lock()
+_PEM = re.compile(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", re.S)
+
+
+def normalize_pem(raw: str) -> str:
+    """The .p8 key as a well-formed PEM, however it was pasted: whole file, newlines lost by a one-line input
+    (spaces instead), just the base64 body, or the whole file base64-encoded."""
+    s = (raw or "").strip()
+    if s.startswith("LS0tLS1CRUdJTi"):  # base64 of "-----BEGIN"
+        try:
+            s = base64.b64decode(s).decode().strip()
+        except Exception:  # noqa: BLE001
+            pass
+    m = _PEM.search(s)
+    label, body = (m.group(1), m.group(2)) if m else ("PRIVATE KEY", s)
+    body = re.sub(r"\s+", "", body)
+    if not body or not re.fullmatch(r"[A-Za-z0-9+/=]+", body):
+        raise ToolError("ASC_PRIVATE_KEY doesn't look like an App Store Connect .p8 key. Ask the human to paste the "
+                        "whole AuthKey_XXXX.p8 file contents into Settings → Vault again.")
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return f"-----BEGIN {label}-----\n" + "\n".join(lines) + f"\n-----END {label}-----\n"
+
+
+def _apple_env() -> tuple[dict[str, str], str]:
+    """EAS's App Store Connect API key settings (when the key is in the vault) and a note for the agent."""
+    key_id, issuer, key = (vault.get_secret(n) for n in ("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"))
+    if not (key_id and issuer and key):
+        return {}, ("No App Store Connect API key in the vault (ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY), so iOS "
+                    "credentials and submissions need the human.")
+    env = {"TODD_ASC_KEY": normalize_pem(key), "EXPO_ASC_KEY_ID": key_id.strip(), "EXPO_ASC_ISSUER_ID": issuer.strip()}
+    team = vault.get_secret("APPLE_TEAM_ID")
+    if team:
+        env["EXPO_APPLE_TEAM_ID"] = team.strip()
+        env["EXPO_APPLE_TEAM_TYPE"] = (vault.get_secret("APPLE_TEAM_TYPE") or "INDIVIDUAL").strip().upper()
+    return env, "App Store Connect API key passed to EAS (EXPO_ASC_* and $EXPO_ASC_API_KEY_PATH)."
+
+
+@todd_tool(toolset="sandbox")
+async def eas(command: str, path: str = ".", timeout_s: int = 900) -> dict:
+    """Run the Expo EAS CLI (iPhone/Android apps built with Expo / React Native) in a project directory, signed in
+    with the vault's EXPO_TOKEN. When the vault has an App Store Connect API key (ASC_KEY_ID, ASC_ISSUER_ID,
+    ASC_PRIVATE_KEY, optional APPLE_TEAM_ID), EAS gets it too, so it can manage iOS signing and upload to TestFlight;
+    during the command the key file is at $HOME/.todd-asc/AuthKey.p8 (for eas.json's submit `ascApiKeyPath`, use
+    "/home/agent/.todd-asc/AuthKey.p8"). There's no TTY: always pass --non-interactive where the command takes it.
+    Examples: eas("init --non-interactive --force"), eas("build -p ios --profile production --non-interactive
+    --no-wait"), eas("build:list -p ios --limit 1 --json --non-interactive"), eas("build:view <id> --json"),
+    eas("submit -p ios --latest --profile production --non-interactive"), eas("whoami").
+
+    Args:
+        command: everything after `eas`, e.g. "build -p ios --profile production --non-interactive --no-wait"
+        path: the Expo project directory relative to the project root (default .)
+        timeout_s: timeout in seconds (default 900, max 1800). Start builds with --no-wait and poll build:view.
+    """
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        raise ToolError(f"couldn't parse the arguments: {e}") from e
+    sub = argv[0] if argv else ""
+    if not argv or sub in _EAS_BLOCKED:
+        raise ToolError(f"`eas {sub}` isn't available here: Todd signs EAS in with EXPO_TOKEN from the vault.")
+    if sub in _EAS_INTERACTIVE:
+        raise ToolError(f"`eas {sub}` only works with a person at a terminal. Ask the human (ask_human) to run "
+                        f"`npx eas-cli {shlex.join(argv)}` in the project on their computer, then continue.")
+    token = vault.get_secret("EXPO_TOKEN")
+    if not token:
+        raise ToolError(NO_EXPO_TOKEN)
+    apple, note = _apple_env()
+    env = {"EXPO_TOKEN": token, **apple}
+    script = "\n".join([
+        # plain settings go in the script: env values are redacted from the output
+        "export EXPO_NO_TELEMETRY=1 EAS_BUILD_NO_EXPO_GO_WARNING=true CI=1",
+        'if [ -n "$TODD_ASC_KEY" ]; then',
+        '  mkdir -p "$HOME/.todd-asc" && chmod 700 "$HOME/.todd-asc"',
+        f'  export EXPO_ASC_API_KEY_PATH="$HOME/{ASC_KEY_FILE}"',
+        '  (umask 077 && printf %s "$TODD_ASC_KEY" > "$EXPO_ASC_API_KEY_PATH")',
+        "fi",
+        "unset TODD_ASC_KEY",
+        'if command -v eas >/dev/null 2>&1; then EAS=eas; else EAS="npx -y eas-cli@latest"; fi',
+        f"$EAS {shlex.join(argv)} < /dev/null 2>&1; rc=$?",
+        f'rm -f "$HOME/{ASC_KEY_FILE}"',
+        "exit $rc",
+    ])
+    async with _eas_lock:  # the key file is shared by every eas command, so one at a time
+        r = await sandbox.exec_(script, cwd=_abs(path), timeout=int(min(max(timeout_s, 10), 1800)), env=env)
+    out = r.get("output") or ""
+    for v in (token, apple.get("TODD_ASC_KEY", "")):
+        if v:
+            out = out.replace(v, "***")
+    if r.get("timed_out"):
+        out += "\n[timed out: start long builds with --no-wait and poll `build:view <id> --json`]"
+    return {"exit_code": r.get("exit_code"), "output": out, "apple": note}
 
 
 async def ensure_workspace() -> None:
     await sandbox.exec_("mkdir -p " + shlex.quote(_root()), cwd=config.workspace_root, timeout=30)
 
 
-SANDBOX_TOOLS = [shell, write_file, read_file, list_files, git_push, gh, cli]
+SANDBOX_TOOLS = [shell, write_file, read_file, list_files, git_push, gh, cli, eas]

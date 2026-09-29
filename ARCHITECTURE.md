@@ -7,7 +7,7 @@
 | `web`      | Next.js 16 dashboard. Proxies `/api/*` to the API, including SSE streams    | 127.0.0.1:3000     |
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token)   |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, LangGraph checkpoints     | internal           |
-| `sandbox`  | node 22 / pnpm / git / python / vercel + firebase CLIs, with a small exec API | internal         |
+| `sandbox`  | node 22 / pnpm / git / python / vercel + firebase + eas CLIs, with a small exec API | internal   |
 | `browser`  | Headful Chromium on Xvfb; CDP (via socat :9223) + noVNC live view           | 127.0.0.1:6080     |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal           |
 
@@ -26,7 +26,7 @@ agents/claude_code.py  Claude Code engine: headless `claude` sessions, the /mcp 
 agents/browser.py  browser-use over CDP (used by the browse tool); ask_human in bounded waits; screenshots;
                    card placeholders only after approval
 registry.py        Toolsets: built-in, plugin files (./plugins), MCP servers; planner tool selection
-tools/sandbox_tools.py  `sandbox` toolset: shell, files, git_push, gh and cli (signed in per command)
+tools/sandbox_tools.py  `sandbox` toolset: shell, files, git_push, gh, cli and eas (signed in per command)
 connect.py         Sign in once: connect a service's CLI with the browser session (7 CLIs), run connected CLIs
 tools/cli_login.py cli_login: the agent side of connect.py
 tools/browser_tools.py  `browser` toolset (API engine): browse(task, why_not_api, payment…) — last resort

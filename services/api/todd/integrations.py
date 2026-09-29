@@ -29,6 +29,7 @@ class Integration:
     mcp_url: str | None = None  # official remote MCP server
     mcp_docs: str | None = None
     browser_note: str | None = None  # when the browser is still the practical route
+    tool: str | None = None  # a sandbox tool that signs in with api_secrets itself (e.g. eas with EXPO_TOKEN)
 
 
 I = Integration
@@ -70,13 +71,23 @@ CATALOG: list[Integration] = [
       api_secrets=["PORKBUN_API_KEY", "PORKBUN_SECRET_KEY"]),
     I("namecheap", "Namecheap", [], api_docs="https://www.namecheap.com/support/api/intro/",
       api_secrets=["NAMECHEAP_API_KEY"], browser_note="The API needs your IP allow-listed; the browser is fine for one-offs."),
+    I("expo", "Expo (EAS)", ["eas", "expo application services", "react native", "expo go", "ios", "iphone",
+                             "mobile app"],
+      api_docs="https://docs.expo.dev/eas/", api_secrets=["EXPO_TOKEN"], tool="eas",
+      cli="the EAS CLI (sandbox: eas(…), signed in with EXPO_TOKEN; builds run on Expo's servers, macOS included)",
+      browser_note="EXPO_TOKEN comes from expo.dev → Account settings → Access tokens. Ask the human to add it in "
+                   "Settings → Vault; don't create it in the browser."),
     I("app_store_connect", "App Store Connect", ["apple", "app store", "testflight", "asc"],
       api_docs="https://developer.apple.com/documentation/appstoreconnectapi",
-      api_secrets=["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"], cli="fastlane / a JWT script in the sandbox",
-      browser_note="Without an App Store Connect API key, use the browser (the human is signed in)."),
+      api_secrets=["ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_PRIVATE_KEY"],
+      cli="eas(\"submit -p ios …\") uploads builds with this key; for other API calls, a JWT script in the sandbox",
+      browser_note="Without an App Store Connect API key, use the browser (the human is signed in). The API can't "
+                   "create a new app record: the human's first interactive `npx eas-cli build -p ios --auto-submit` "
+                   "does it, or one form in the browser (My Apps → + → New App)."),
     I("google_play", "Google Play Console", ["play console", "android"],
       api_docs="https://developers.google.com/android-publisher", api_secrets=["GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"],
-      browser_note="Without a service account, use the browser."),
+      browser_note="Without a service account, use the browser. Google requires the very first .aab of a new app "
+                   "to be uploaded by hand in the Play Console; eas submit works for later ones."),
     I("x", "X (Twitter)", ["twitter"], api_docs="https://docs.x.com/x-api", api_secrets=["X_BEARER_TOKEN"],
       browser_note="Posting via API needs a paid tier; otherwise post through the browser (with approval)."),
     I("linkedin", "LinkedIn", [], api_docs="https://learn.microsoft.com/linkedin/",
@@ -147,6 +158,15 @@ def assess(query: str, available_toolsets: set[str] | None = None,
     elif mcp_ts and mcp_ts in toolsets:
         rec = f"Use the `{mcp_ts}` toolset (MCP server, ready)."
         route = "mcp"
+    elif it.tool and api_ready:
+        rec = (f"Use `{it.tool}(…)` in the sandbox toolset: it signs in with {', '.join(it.api_secrets)} from the "
+               f"vault itself (no login step, never pass the token yourself). Docs: {it.api_docs}")
+        route = "cli"
+    elif it.tool:
+        missing = [s for s in it.api_secrets if not vault.has_secret(s)]
+        rec = (f"`{it.tool}(…)` in the sandbox toolset needs {', '.join(missing)} in the vault. Ask the human "
+               "(ask_human) to add it in Settings → Vault, then continue. " + (it.browser_note or ""))
+        route = "needs_key"
     elif api_ready:
         rec = ("Use `api_request` against its REST API with " + ", ".join(f"{{{{secret:{s}}}}}" for s in it.api_secrets)
                + (f", or `{it.cli}` in the sandbox" if it.cli else "") + f". Docs: {it.api_docs}")

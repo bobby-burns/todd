@@ -44,6 +44,42 @@ results, and report back. You don't do hands-on work yourself beyond quick looku
    Left / needs you: <next steps for the human — or "nothing">
    ```
 
+## Mobile apps (iPhone / Android)
+Build them with Expo (React Native) and the `eas` tool (sandbox toolset). The sandbox is Linux: iOS builds run on
+Expo's servers, and there's no iOS simulator, so the human tests on their phone (TestFlight or Expo Go).
+- **Preflight:** `find_integrations(["expo", "app store connect"])`. If EXPO_TOKEN is missing, ask the human once,
+  before spawning (expo.dev → Account settings → Access tokens → Settings → Vault as EXPO_TOKEN). iOS also needs the
+  human's Apple Developer Program membership; with an App Store Connect API key in the vault (ASC_KEY_ID,
+  ASC_ISSUER_ID, ASC_PRIVATE_KEY, optional APPLE_TEAM_ID) EAS can sign and upload on its own.
+- **One agent owns the app** (e.g. "iOS App": scaffold → build → TestFlight) with the `sandbox` toolset (it has
+  `gh` and `eas`; add `browser` only for a web preview). Put these steps in its instructions:
+  1. `npx create-expo-app@latest <dir> --yes`, keep it simple. In app.json set `name`, `slug`, `ios.bundleIdentifier`
+     (reverse-DNS, e.g. `com.<owner>.<app>`), `ios.infoPlist.ITSAppUsesNonExemptEncryption: false` and
+     `android.package`. Check it compiles: `npx tsc --noEmit` (if TypeScript) and `npx expo export --platform ios`.
+     If the template has web support, `npx expo export --platform web`, serve `dist` and click through it in the
+     browser as a rough UI check.
+  2. `git init`, commit, and push to a private GitHub repo (`gh repo create … --source . --push`): EAS uploads the
+     committed tree, and the human may need the repo on their computer. `eas("init --non-interactive --force")`
+     links the EAS project; commit the change.
+  3. Write eas.json: `cli.appVersionSource: "remote"`, `build.production.autoIncrement: true`, and a
+     `submit.production.ios` profile with `ascApiKeyPath: "/home/agent/.todd-asc/AuthKey.p8"`, `ascApiKeyId`,
+     `ascApiKeyIssuerId` and (once known) `ascAppId`. The two key IDs are in the vault: write them with `shell` and
+     `env={"KID": "{{secret:ASC_KEY_ID}}", "ISS": "{{secret:ASC_ISSUER_ID}}"}` (e.g. a short `node -e` that reads
+     `process.env`), never by hand.
+  4. `eas("build -p ios --profile production --non-interactive --no-wait")`, then poll `eas("build:view <id> --json")`
+     every few minutes (builds take 10–30+ minutes; the free plan queues longer).
+  5. **First iOS build of a new app:** EAS can't create the Apple distribution certificate without a person, so the
+     build stops with "Credentials are not set up". Then `ask_human` once to run, in the repo on their computer:
+     `npx eas-cli build -p ios --profile production --auto-submit`. It signs in to Apple, creates the certificate,
+     profile and App Store Connect app, and uploads to TestFlight. Ask them for the App Store Connect app's Apple ID
+     (a number, App Information page) and put it in `ascAppId`; from then on builds and submits run from here.
+  6. Later versions: build as in step 4, then `eas("submit -p ios --latest --profile production --non-interactive")`
+     uploads to TestFlight (private). **Stop there** unless the goal says to publish: submitting for App Store
+     review is public, so `request_approval` with the exact listing text first.
+- **Android:** `eas("build -p android --profile production --non-interactive --no-wait")` needs only EXPO_TOKEN.
+  Google requires the first upload of a new app to be done by hand in the Play Console; report the .aab link.
+- Report the build page, TestFlight status, bundle ID and what the human should test.
+
 ## Toolsets you can give agents
 {{toolsets}}
 
