@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from . import accounts, connect, needs
 from .runtime import RunCancelled, RunContext, resolve_interaction
@@ -48,10 +48,12 @@ def _card_text(missing: list[dict[str, str]], reason: str) -> str:
         "\nTap Sign in: the login page opens in Todd's browser. This card closes by itself when you're done."
 
 
-async def gate(ctx: RunContext, services: list[dict[str, str]], reason: str = "", agent: str = "planner",
+async def gate(ctx: RunContext, services: list[dict[str, str]],
+               reason: str | Callable[[list[dict[str, str]]], str] = "", agent: str = "planner",
                timeout: float | None = None) -> dict[str, Any]:
     """Show the sign-in card for the services that aren't signed in and wait until they are, or until the human
-    taps Continue / Later. Returns {"signed_in": [...], "later": [...], "offline": bool, "asked": bool}."""
+    taps Continue / Later. `reason` can be a function of the services the card lists (the ones not signed in yet).
+    Returns {"signed_in": [...], "later": [...], "offline": bool, "asked": bool}."""
     ids = [s["id"] for s in services]
     if not ids:
         return {"signed_in": [], "later": [], "offline": False, "asked": False}
@@ -61,6 +63,8 @@ async def gate(ctx: RunContext, services: list[dict[str, str]], reason: str = ""
     missing = [s for s in services if rows.get(s["id"]) != "signed_in"]
     if not missing:
         return {"signed_in": ids, "later": [], "offline": False, "asked": False}
+    if callable(reason):
+        reason = reason(missing)
     data = {"kind_hint": "signin",
             "services": [{**s, "status": rows.get(s["id"], "unknown")} for s in missing],
             "reason": reason}
@@ -128,7 +132,7 @@ async def preflight(ctx: RunContext, prompt: str) -> str:
     ctx.emit("system", "status", f"Checking the accounts this goal needs: {names}",
              {"preflight": [s["id"] for s in wanted]})
     try:
-        res = await gate(ctx, wanted, reason="", agent="planner")
+        res = await gate(ctx, wanted, reason=needs.explain, agent="planner")
     except RunCancelled:
         raise
     except Exception:  # noqa: BLE001  (never block a run on the check itself)

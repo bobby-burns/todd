@@ -366,7 +366,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                 </div>
               </motion.div>
             )}
-            <div className="grid gap-3 md:gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 440px), 1fr))" }}>
+            <div className="grid gap-3 md:gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 480px), 1fr))" }}>
               {windows.map((a) => (
                 <AgentWindow
                   key={a.id}

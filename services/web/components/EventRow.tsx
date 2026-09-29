@@ -128,7 +128,7 @@ function Disclosure({ open, children }: { open: boolean; children: React.ReactNo
 }
 
 const Code = ({ children, max = "max-h-72" }: { children: React.ReactNode; max?: string }) => (
-  <pre className={`well scrollbar-thin mt-1.5 ${max} overflow-auto rounded-[10px] p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg-2`}>
+  <pre className={`well scrollbar-thin mt-1.5 ${max} overflow-auto rounded-[10px] p-2.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-fg-2`}>
     {children}
   </pre>
 );
@@ -196,17 +196,17 @@ function Body({
     case "message":
     case "thought":
       if (ev.kind === "thought" && !showThinking) return null;
-      return <p className="text-[13.5px] leading-[1.55] whitespace-pre-wrap text-fg">{ev.text}</p>;
+      return <p className="text-[14.5px] leading-[1.55] whitespace-pre-wrap text-fg">{ev.text}</p>;
 
     case "thinking":
       if (!showThinking) return null;
       return (
         <button onClick={() => setOpen(!open)} className="block w-full text-left">
-          <span className="mb-1 flex items-center gap-1.5 text-[11.5px] font-medium text-fg-3">
+          <span className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-fg-3">
             <Brain size={12} /> Reasoning
             <ChevronDown size={12} className={`transition-transform duration-300 ${open ? "rotate-180" : ""}`} />
           </span>
-          <span className={`block border-l-2 border-sep pl-3 text-[12.5px] leading-relaxed text-fg-2 ${open ? "whitespace-pre-wrap" : "line-clamp-2"}`}>
+          <span className={`block border-l-2 border-sep pl-3 text-[13.5px] leading-relaxed text-fg-2 ${open ? "whitespace-pre-wrap" : "line-clamp-2"}`}>
             {ev.text}
           </span>
         </button>
@@ -227,17 +227,17 @@ function Body({
             }`}
           >
             <span
-              className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-[7px]"
+              className="grid h-[24px] w-[24px] shrink-0 place-items-center rounded-[7px]"
               style={
                 look.color
                   ? { background: `color-mix(in oklab, ${look.color} 16%, transparent)`, color: look.color }
                   : { background: "var(--fill-2)", color: "var(--fg-2)" }
               }
             >
-              <look.icon size={12.5} strokeWidth={2.2} />
+              <look.icon size={13.5} strokeWidth={2.2} />
             </span>
-            <span className="shrink-0 text-[12.5px] font-semibold tracking-[-0.01em] text-fg">{tool}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-2">{detail}</span>
+            <span className="shrink-0 text-[13.5px] font-semibold tracking-[-0.01em] text-fg">{tool}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2">{detail}</span>
             {ok === null ? (
               live ? <ActivityIndicator size={12} className="text-fg-3" /> : null
             ) : ok ? (
@@ -259,7 +259,7 @@ function Body({
     case "tool_result": {
       const ok = ev.data?.ok !== false;
       return (
-        <button onClick={() => setOpen(!open)} className={`flex max-w-full items-center gap-1.5 pl-1.5 text-left font-mono text-[11px] ${ok ? "text-fg-2" : "text-red"}`}>
+        <button onClick={() => setOpen(!open)} className={`flex max-w-full items-center gap-1.5 pl-1.5 text-left font-mono text-[12px] ${ok ? "text-fg-2" : "text-red"}`}>
           {ok ? <Check size={12} className="shrink-0 text-green" /> : <X size={12} className="shrink-0" />}
           <span className={open ? "whitespace-pre-wrap" : "truncate"}>{ev.text}</span>
         </button>
@@ -281,11 +281,11 @@ function Body({
             </span>
           )}
           <div className="min-w-0 flex-1 py-0.5">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-accent">
+            <div className="flex items-center gap-1.5 text-[11.5px] font-semibold text-accent">
               <Globe size={11} /> Browser
             </div>
-            <div className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-fg">{ev.text}</div>
-            {ev.data?.url && <div className="mt-0.5 truncate font-mono text-[10.5px] text-fg-3">{ev.data.url}</div>}
+            <div className="mt-0.5 line-clamp-2 text-[14px] leading-snug text-fg">{ev.text}</div>
+            {ev.data?.url && <div className="mt-0.5 truncate font-mono text-[11px] text-fg-3">{ev.data.url}</div>}
           </div>
         </div>
       );
@@ -308,25 +308,25 @@ function Body({
           <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-3 text-left">
             <AgentAvatar name={d.name ?? "?"} color={color} size={32} />
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium text-fg-3">{d.background ? "Spawned in background" : "Spawned"}</div>
-              <div className="truncate text-[14px] font-semibold tracking-[-0.015em]">{d.name}</div>
+              <div className="text-[11.5px] font-medium text-fg-3">{d.background ? "Spawned in background" : "Spawned"}</div>
+              <div className="truncate text-[15px] font-semibold tracking-[-0.015em]">{d.name}</div>
             </div>
             <ChevronDown size={14} className={`shrink-0 text-fg-3 transition-transform duration-300 ${open ? "rotate-180" : ""}`} />
           </button>
           <div className="mt-2.5 flex flex-wrap gap-1">
             {(d.toolsets ?? []).map((t: string) => (
-              <span key={t} className="rounded-full bg-fill px-2 py-0.5 text-[10.5px] font-medium text-fg-2">
+              <span key={t} className="rounded-full bg-fill px-2 py-0.5 text-[11px] font-medium text-fg-2">
                 {t}
               </span>
             ))}
             {d.tier && d.tier !== "default" && (
-              <span className="rounded-full px-2 py-0.5 text-[10.5px] font-semibold" style={{ color, background: `color-mix(in oklab, ${color} 16%, transparent)` }}>
+              <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ color, background: `color-mix(in oklab, ${color} 16%, transparent)` }}>
                 {d.tier}
               </span>
             )}
           </div>
           <Disclosure open={open}>
-            <div className="mt-3 space-y-3 text-[12.5px] leading-relaxed">
+            <div className="mt-3 space-y-3 text-[13.5px] leading-relaxed">
               <div>
                 <div className="eyebrow mb-1">Role</div>
                 <div className="whitespace-pre-wrap text-fg-2">{d.instructions}</div>
@@ -345,7 +345,7 @@ function Body({
                   </ul>
                 )}
               </div>
-              <div className="font-mono text-[11px] text-fg-3">{d.model}</div>
+              <div className="font-mono text-[11.5px] text-fg-3">{d.model}</div>
             </div>
           </Disclosure>
         </div>
@@ -363,10 +363,10 @@ function Body({
             boxShadow: `inset 0 0 0 0.5px color-mix(in oklab, ${color} 35%, transparent)`,
           }}
         >
-          <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold" style={{ color }}>
+          <div className="mb-3 flex items-center gap-2 text-[12.5px] font-semibold" style={{ color }}>
             <ClipboardCheck size={14} /> {ev.data?.run ? "Run summary" : "Summary"}
           </div>
-          <SummaryText text={ev.text} className="text-[13px]" compact />
+          <SummaryText text={ev.text} className="text-[14px]" compact />
         </div>
       );
     }
@@ -376,9 +376,9 @@ function Body({
       return (
         <div className={`flex ${fromPlanner ? "justify-start" : "justify-end"}`}>
           <div className="max-w-[85%]">
-            <div className={`mb-1 text-[10.5px] font-medium text-fg-3 ${fromPlanner ? "" : "text-right"}`}>{fromPlanner ? "Planner" : "You"}</div>
+            <div className={`mb-1 text-[11px] font-medium text-fg-3 ${fromPlanner ? "" : "text-right"}`}>{fromPlanner ? "Planner" : "You"}</div>
             <div
-              className={`rounded-[18px] px-3.5 py-2 text-[13.5px] leading-snug ${
+              className={`rounded-[18px] px-3.5 py-2 text-[14.5px] leading-snug ${
                 fromPlanner ? "rounded-bl-[6px] bg-fill-2 text-fg" : "rounded-br-[6px] text-white"
               }`}
               style={fromPlanner ? undefined : { background: "linear-gradient(180deg, color-mix(in oklab, var(--accent) 85%, white), var(--accent))" }}
@@ -396,7 +396,7 @@ function Body({
       return (
         <div className="flex justify-end">
           <div
-            className="flex max-w-[85%] items-center gap-1.5 rounded-[18px] rounded-br-[6px] px-3.5 py-2 text-[13.5px] leading-snug text-white"
+            className="flex max-w-[85%] items-center gap-1.5 rounded-[18px] rounded-br-[6px] px-3.5 py-2 text-[14.5px] leading-snug text-white"
             style={{
               background: denied
                 ? "linear-gradient(180deg, color-mix(in oklab, var(--red) 85%, white), var(--red))"
@@ -419,8 +419,8 @@ function Body({
       return (
         <div className="flex gap-2.5 rounded-[14px] bg-orange/12 px-3 py-2.5">
           <Hand size={15} className="mt-0.5 shrink-0 text-orange" />
-          <div className="min-w-0 text-[13px] leading-snug">
-            <div className="text-[11.5px] font-semibold text-orange">{label}</div>
+          <div className="min-w-0 text-[14px] leading-snug">
+            <div className="text-[12px] font-semibold text-orange">{label}</div>
             <div className="mt-0.5 text-fg">{ev.text}</div>
           </div>
         </div>
@@ -430,7 +430,7 @@ function Body({
     default: {
       if (ev.kind === "status" && ev.data?.browser_reason) {
         return (
-          <div className="flex gap-2 rounded-[12px] bg-accent/8 px-2.5 py-2 text-[12px] leading-snug text-fg-2">
+          <div className="flex gap-2 rounded-[12px] bg-accent/8 px-2.5 py-2 text-[13px] leading-snug text-fg-2">
             <Globe size={13} className="mt-px shrink-0 text-accent" />
             <span>
               <b className="font-semibold text-fg">Using the browser.</b>{" "}
@@ -441,14 +441,14 @@ function Body({
       }
       if (ev.kind === "error") {
         return (
-          <div className="rounded-[12px] bg-red/10 px-3 py-2 text-[12.5px] text-red">
+          <div className="rounded-[12px] bg-red/10 px-3 py-2 text-[13.5px] text-red">
             <div className="flex items-start gap-2">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               <span className="whitespace-pre-wrap">{ev.text}</span>
             </div>
             {ev.data?.traceback && (
               <>
-                <button className="mt-1 text-[11px] underline" onClick={() => setOpen(!open)}>
+                <button className="mt-1 text-[11.5px] underline" onClick={() => setOpen(!open)}>
                   {open ? "Hide details" : "Details"}
                 </button>
                 <Disclosure open={open}>
@@ -468,14 +468,14 @@ function Body({
       if (text.length <= 64) {
         return (
           <div className="flex justify-center py-0.5">
-            <span className={`inline-flex items-center gap-1.5 rounded-full bg-fill px-2.5 py-1 text-[11px] font-medium ${tone}`}>
+            <span className={`inline-flex items-center gap-1.5 rounded-full bg-fill px-2.5 py-1 text-[11.5px] font-medium ${tone}`}>
               {Icon && <Icon size={11} strokeWidth={2.4} />} {text}
             </span>
           </div>
         );
       }
       return (
-        <div className={`flex gap-2 text-[12px] leading-snug ${tone}`}>
+        <div className={`flex gap-2 text-[13px] leading-snug ${tone}`}>
           {Icon && <Icon size={12} className="mt-0.5 shrink-0" />}
           <span className="whitespace-pre-wrap">{text}</span>
         </div>

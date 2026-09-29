@@ -52,6 +52,18 @@ def test_detect_reads_the_accounts_a_goal_needs(clean_vault):
         assert ids(prompt) == [], prompt
 
 
+def test_the_card_says_why_it_needs_each_account(clean_vault):
+    got = needs.detect("Build an iPhone app, on GitHub")
+    use = {s["id"]: s["use"] for s in got}
+    assert use["expo"] == "Builds the app in the cloud" and "TestFlight" in use["app_store_connect"]
+    why = needs.explain(got)
+    assert why.startswith("You're making an iPhone app") and why.endswith("You mentioned GitHub in your goal.")
+    assert why.count("iPhone") == 1  # one sentence per reason, not per account
+    assert needs.explain(needs.detect("Deploy it to Render and Railway")) == \
+        "You mentioned Railway and Render in your goal."  # catalog order
+    assert needs.explain([]) == ""
+
+
 def test_detect_skips_what_todd_can_already_use(clean_vault):
     vault.set_secret("GITHUB_TOKEN", "gho_already")
     for n in ASC:
@@ -153,6 +165,13 @@ def test_preflight_tells_the_planner_and_connects_clis(loop, browser, clean_vaul
         task = asyncio.create_task(signin.preflight(ctx, "Launch a waitlist site with a launch post"))
         it = await _card(ctx.run_id)
         assert {s["id"] for s in it.data["services"]} == {"vercel", "x"}
+        # why these accounts: the goal's reasons up top, what each account is for on its row
+        assert it.data["reason"] == ("You're making a website, so Todd needs somewhere to keep the code and to put "
+                                     "the site online. Your goal includes a launch post, so Todd needs the account "
+                                     "to post it from.")
+        assert "Why: You're making a website" in it.prompt
+        assert {s["id"]: s["use"] for s in it.data["services"]} == {"vercel": "Puts the site online",
+                                                                    "x": "Posts the launch"}
         resolve_interaction(it.id, decision="deny", answer="Later")
         note = await asyncio.wait_for(task, 5)
         assert connected == [["github"]]

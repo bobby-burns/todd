@@ -391,15 +391,15 @@ async def request_signins(services: list[str], reason: str = "") -> dict:
         services: service ids/names that need a sign-in
         reason: one line on why these accounts are needed
     """
-    from . import signin
+    from . import needs, signin
 
     ctx = get_ctx()
     cat = catalog()
     svcs = [s for s in (_find(q, cat) for q in services) if s]
     if not svcs:
         raise ToolError("none of those services are in the catalog; ask_human instead")
-    res = await signin.gate(ctx, [{"id": s.id, "name": s.name, "why": reason} for s in svcs[:8]],
-                            reason=reason, agent=get_agent_id())
+    res = await signin.gate(ctx, [{"id": s.id, "name": s.name, "why": reason, "use": needs.USES.get(s.id, "")}
+                                  for s in svcs[:8]], reason=reason, agent=get_agent_id())
     if res["offline"]:
         return {"browser_online": False, "note": "The browser is offline; account status unknown."}
     connected = await signin.connect_clis(ctx, res["signed_in"])

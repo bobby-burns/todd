@@ -2,14 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { ArrowRight, Check, Clock, KeyRound, LogIn, RefreshCw, TerminalSquare } from "lucide-react";
+import { ArrowRight, Check, Clock, Info, KeyRound, LogIn, RefreshCw, TerminalSquare } from "lucide-react";
 import { api, type Account, type Interaction } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
 import { Favicon, StatusChip } from "./accounts";
 import { openLiveBrowser } from "./LiveBrowser";
 import { ActivityIndicator, AgentAvatar, IconTile } from "./ui";
 
-type Wanted = { id: string; name: string; why?: string; status?: Account["status"] };
+/** `use`: what Todd does with the account; `why`: what in the goal asked for it. */
+type Wanted = { id: string; name: string; why?: string; use?: string; status?: Account["status"] };
 
 /** "Sign in once": the accounts a run needs, each with a Sign in button, plus Continue / Later. The run waits here;
  *  Todd closes the card by itself once every service is signed in (and then connects their CLIs). */
@@ -126,8 +127,15 @@ export function SigninCard({
 
       <p className="mt-4 text-[14px] leading-snug text-fg-2">
         Sign in once and Todd sets up the keys and command-line tools itself. Nothing else will stop for a login.
-        {it.data.reason ? <span className="mt-1 block text-fg">{it.data.reason}</span> : null}
       </p>
+      {it.data.reason ? (
+        <div className="mt-3 flex gap-2.5 rounded-[14px] bg-accent/8 px-3 py-2.5 text-[13.5px] leading-snug">
+          <Info size={15} className="mt-px shrink-0 text-accent" />
+          <span className="text-fg-2">
+            <b className="font-semibold text-fg">Why these accounts:</b> {it.data.reason}
+          </span>
+        </div>
+      ) : null}
 
       <div className="mt-4 flex flex-col gap-1.5">
         {wanted.map((w) => {
@@ -149,7 +157,9 @@ export function SigninCard({
                       <span className="truncate">{cli.connected ? `${cli.name} connected` : cli.message || `${cli.name} connects next`}</span>
                     </>
                   ) : (
-                    <span className="truncate">{w.why}</span>
+                    <span className="truncate" title={w.use || w.why}>
+                      {w.use || w.why}
+                    </span>
                   )}
                 </div>
               </div>

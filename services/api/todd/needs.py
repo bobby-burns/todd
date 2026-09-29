@@ -45,6 +45,7 @@ class Rule:
     pattern: str
     services: tuple[str, ...]
     why: str
+    blurb: str  # the sign-in card's "why these accounts", in the human's terms
     needs_make: bool = True  # only when the goal is to make or ship something
 
 
@@ -54,17 +55,46 @@ MAKE = re.compile(r"\b(build|make|create|develop|code|ship|launch|release|publis
 
 RULES: list[Rule] = [
     Rule(r"\b(iphone|ios|ipad|app ?store|testflight|swiftui)\b",
-         ("expo", "apple_dev", "app_store_connect", "github"), "iPhone app: build, sign and upload"),
-    Rule(r"\b(android|google play|play store)\b", ("expo", "play_console", "github"), "Android app: build and upload"),
-    Rule(r"\b(mobile app|react native|expo app|native app)\b", ("expo", "github"), "mobile app builds"),
+         ("expo", "apple_dev", "app_store_connect", "github"), "iPhone app: build, sign and upload",
+         "You're making an iPhone app, so Todd needs to build it, sign it and upload it to the App Store."),
+    Rule(r"\b(android|google play|play store)\b", ("expo", "play_console", "github"), "Android app: build and upload",
+         "You're making an Android app, so Todd needs to build it and upload it to Google Play."),
+    Rule(r"\b(mobile app|react native|expo app|native app)\b", ("expo", "github"), "mobile app builds",
+         "You're making a mobile app, so Todd needs somewhere to keep the code and to build the app."),
     Rule(r"\b(web ?site|web ?app|landing page|waitlist|web ?page|homepage|saas|put it online)\b",
-         ("github", "vercel"), "code and hosting for the site"),
+         ("github", "vercel"), "code and hosting for the site",
+         "You're making a website, so Todd needs somewhere to keep the code and to put the site online."),
     Rule(r"\b(buy|register|purchase)\b[^.\n]{0,40}\bdomain\b", ("vercel",), "buying the domain",
-         needs_make=False),
+         "You want a domain, so Todd needs an account to buy it through.", needs_make=False),
     Rule(r"\b(takes?|taking|accepts?|accepting|collects?|collecting) (payments?|money)|\b(paid subscriptions?|paywall|charge (users|customers))\b|"
-         r"\bsubscriptions? (with|through|via) stripe\b", ("stripe",), "payments"),
-    Rule(r"\b(launch (post|thread|tweet)|tweet|post (it )?on x)\b", ("x",), "posting the launch"),
+         r"\bsubscriptions? (with|through|via) stripe\b", ("stripe",), "payments",
+         "Your goal takes payments, so Todd needs a payments account to set them up."),
+    Rule(r"\b(launch (post|thread|tweet)|tweet|post (it )?on x)\b", ("x",), "posting the launch",
+         "Your goal includes a launch post, so Todd needs the account to post it from."),
 ]
+NAMED = "named in your goal"
+
+# What Todd does with each account, shown on its row of the sign-in card.
+USES: dict[str, str] = {
+    "github": "Keeps the code and its history",
+    "vercel": "Puts the site online",
+    "netlify": "Puts the site online",
+    "cloudflare": "Hosts the site and its DNS",
+    "railway": "Runs the app's server",
+    "render": "Runs the app's server",
+    "fly": "Runs the app's server",
+    "heroku": "Runs the app's server",
+    "digitalocean": "Runs the app's server",
+    "firebase": "Database, sign-in and hosting",
+    "supabase": "Database and sign-in",
+    "expo": "Builds the app in the cloud",
+    "apple_dev": "Signs the app so iPhones will run it",
+    "app_store_connect": "Uploads builds to TestFlight and the App Store",
+    "play_console": "Uploads the app to Google Play",
+    "stripe": "Takes the payments",
+    "x": "Posts the launch",
+    "producthunt": "Lists the launch",
+}
 
 
 def _names(sid: str, svc: accounts.Service) -> list[tuple[str, bool]]:
@@ -120,7 +150,7 @@ def detect(prompt: str, skip_usable: bool = True) -> list[dict[str, str]]:
         if svc.custom:
             continue
         if any(_mentions(prompt, term, cs) for term, cs in _names(sid, svc)):
-            found.setdefault(sid, "named in your goal")
+            found.setdefault(sid, NAMED)
             if sid in HOSTS:
                 named_hosts.add(sid)
     making = MAKE.search(prompt) is not None
@@ -134,5 +164,20 @@ def detect(prompt: str, skip_usable: bool = True) -> list[dict[str, str]]:
     for sid, why in found.items():
         if sid not in cat or (skip_usable and usable_without_browser(sid)):
             continue
-        out.append({"id": sid, "name": cat[sid].name, "why": why})
+        out.append({"id": sid, "name": cat[sid].name, "why": why, "use": USES.get(sid, "")})
     return out[:10]
+
+
+def explain(wanted: list[dict[str, str]]) -> str:
+    """A sentence or two for the sign-in card: why the goal needs these accounts (from what detect found)."""
+    blurbs = {r.why: r.blurb for r in RULES}
+    out: list[str] = []
+    for w in wanted:
+        b = blurbs.get(w.get("why", ""))
+        if b and b not in out:
+            out.append(b)
+    named = [w["name"] for w in wanted if w.get("why") == NAMED]
+    if named:
+        names = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+        out.append(f"You mentioned {names} in your goal.")
+    return " ".join(out[:3])

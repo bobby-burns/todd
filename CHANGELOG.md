@@ -49,6 +49,10 @@ changes).
 
 ### Changed
 
+- The **Sign in to continue** card says why: a short "Why these accounts" line from the goal (e.g. "You're making
+  an iPhone app, so Todd needs to build it, sign it and upload it to the App Store."), and each account's row says
+  what Todd uses it for ("Builds the app in the cloud").
+- Agent windows are a little bigger (taller, wider minimum) with slightly larger text.
 - `spawn_agent` runs agents in the background by default, and `wait_for_agents` ends early when you message the
   planner, so it can act on the message while agents keep working.
 - Sending a message to a paused agent (or the planner) resumes it.
