@@ -129,6 +129,35 @@ changes).
 - Vercel's device-code field (`autocomplete="one-time-code"`) was mistaken for a 2FA prompt, so the Vercel CLI
   sign-in stopped for you right away.
 
+### Security
+
+From an outside review of spending and public-action controls, plus what checking it turned up:
+
+- **The live view had no password,** so any website you visited could connect to `localhost:6080` (browsers don't
+  limit WebSockets to the page's own site) and use the signed-in browser. It now always has one: random unless
+  you set `VNC_PASSWORD`, shared with the API and put in the dashboard's live-view URL. The raw VNC port listens only
+  inside the browser container, and Chromium no longer accepts debugging connections from web pages.
+- **The dashboard only serves its own pages.** Its API route checks the Host (localhost, or `TODD_ALLOWED_HOSTS`),
+  which stops DNS rebinding and Todd's own containers calling `http://web:3000`, and refuses requests a browser marks
+  as coming from another site or origin (CSRF, including "simple" GETs and body-less POSTs like sign-out). Signing
+  in a CLI after an account is signed in moved from `GET /api/accounts` to `POST /api/accounts/auto-connect`.
+- **Purchases and public actions are checked in code** (`gates.py`), not only by instructions: purchase-looking
+  clicks, payment and billing pages, and known purchase APIs and commands need `authorize_purchase` (new, every
+  agent; human-approved, in the Ledger); posting/messaging/email sites need `request_approval(sites=[…])`; known
+  posting APIs and publishing commands (npm publish, docker push, eas submit, public GitHub repos, releases and
+  gists, live-mode Stripe changes) show the exact request and wait. Scripts can't click or submit on websites.
+- **Card checkouts:** card details only on the exact approved sites (no subdomains); a shared payment page such as
+  checkout.stripe.com must be approved together with the merchant and gets the card only when the tab came from the
+  merchant; the page's total must fit the approved amount.
+- **Signed-in commands run in their own container** (`signedin`, same image and workspace): git push/pull, `gh`,
+  deploy CLIs, EAS and CLI sign-ins. Code running in the sandbox can't read their tokens or sign-in files anymore.
+  npm-based CLIs run from the runner's own install, not the project's `node_modules` (`npx` picks the project's).
+- **One browser lock for every run** and the Accounts page's CLI sign-ins (it was per run, so two runs could drive
+  the browser at once).
+- **Web tools check the address again when connecting,** so DNS rebinding can't reach internal services.
+- Docs: SECURITY.md's "What needs a person, enforced in code" and known limits (recognition-based gates, a
+  deploy running the project's own code with a sign-in, the GitHub sign-in's scope).
+
 ## [0.4.0] - 2026-09-25
 
 First public release.

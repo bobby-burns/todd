@@ -19,12 +19,35 @@ class Config:
     sandbox_url = _env("SANDBOX_URL", "http://sandbox:7000")
     sandbox_token = _env("SANDBOX_TOKEN", "change-me-sandbox-token")
     workspace_root = _env("SANDBOX_WORKSPACE", "/workspace")
+    # Commands that use your sign-ins (git push/pull, gh, deploy CLIs, EAS, CLI sign-ins) run in their own container
+    # with the same workspace, so nothing else running in the sandbox can read their tokens. Empty: the sandbox.
+    signedin_url = _env("SIGNEDIN_URL", "")
+    signedin_token = _env("SIGNEDIN_TOKEN", "")
+    signedin_token_file = _env("SIGNEDIN_TOKEN_FILE", "")  # generated on first start if missing (shared with it)
 
     browser_cdp_host = _env("BROWSER_CDP_HOST", "browser")
     browser_cdp_port = int(_env("BROWSER_CDP_PORT", "9223"))
     browser_live_url = _env(
         "BROWSER_LIVE_URL", "http://localhost:6080/vnc_lite.html?scale=true"
     )
+    # The live view's password (the browser container makes a random one unless VNC_PASSWORD is set)
+    browser_live_password = _env("VNC_PASSWORD", "")
+    browser_live_password_file = _env("VNC_PASSWORD_FILE", "")
+
+    def live_url(self) -> str:
+        """The dashboard's live-view URL, with the password so the frame connects without asking."""
+        from urllib.parse import quote
+
+        pw = self.browser_live_password
+        if not pw and self.browser_live_password_file:
+            try:
+                pw = Path(self.browser_live_password_file).read_text().strip()
+            except OSError:
+                pw = ""
+        if not pw or "password=" in self.browser_live_url:
+            return self.browser_live_url
+        sep = "&" if "?" in self.browser_live_url else "?"
+        return f"{self.browser_live_url}{sep}password={quote(pw)}"
 
     # Shared secret between web and api. When set, every /api route except /api/health requires it, so other
     # containers (sandbox, browser) can't call the API even though they share a Docker network.
@@ -51,16 +74,22 @@ class Config:
         except OSError:
             pass
         if not self.api_token and self.api_token_file:
-            path = Path(self.api_token_file)
-            if not path.exists() or not path.read_text().strip():
-                import secrets
-
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(secrets.token_urlsafe(32))
-                os.chmod(path, 0o644)  # readable by the web container's user
-            self.api_token = path.read_text().strip()
+            self.api_token = _token_file(Path(self.api_token_file))
+        if self.signedin_url and not self.signedin_token and self.signedin_token_file:
+            self.signedin_token = _token_file(Path(self.signedin_token_file))
         if not self.database_url:
             self.database_url = f"sqlite:///{(self.data_dir / 'todd.db').resolve()}"
+
+
+def _token_file(path: Path) -> str:
+    """A random token kept in a file (made on first start), readable by the container it's shared with."""
+    if not path.exists() or not path.read_text().strip():
+        import secrets
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(secrets.token_urlsafe(32))
+        os.chmod(path, 0o644)  # readable by the other container's user
+    return path.read_text().strip()
 
 
 config = Config()

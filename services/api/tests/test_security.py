@@ -174,6 +174,7 @@ def test_cli_blocklist_sees_past_global_flags():
 
     assert _blocked(["--color", "off", "config", "--list"], "config")
     assert _blocked(["whoami", "--token"], "whoami --token")
+    assert _blocked(["whoami", "--token=abc"], "whoami --token")
     assert not _blocked(["whoami"], "whoami --token")
     assert _blocked(["env:list", "--plain"], "env:list")
     assert not _blocked(["deploy", "--prod", "--yes"], "login")

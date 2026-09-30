@@ -25,6 +25,8 @@ async def cli_login(service: str, reconnect: bool = False) -> dict:
     if connect.is_connected(c.service) and not reconnect:
         return {"service": c.service, "connected": True, "note": f"Already connected. {_usage(c)}"}
     ctx, agent_id = get_ctx(), get_agent_id()
+    if agent_id in getattr(ctx, "_browser_handles", {}):
+        raise ToolError("Signing in the CLI needs the browser, and you have it: call browser_done first, then cli_login.")
     try:
         acct = next(iter((await accounts.statuses([c.service]))["accounts"]), None)
     except Exception:  # noqa: BLE001
@@ -32,8 +34,7 @@ async def cli_login(service: str, reconnect: bool = False) -> dict:
     if acct and acct["status"] == "signed_out":
         raise ToolError(f"The browser isn't signed in to {acct['name']}. Call request_signins([\"{c.service}\"]) first "
                         "(when the human signs in on the Accounts page, the CLI is connected at the same time).")
-    conn = connect.start(c.service, on_change=lambda cn: ctx.emit(agent_id, "status", f"{c.name}: {cn.message}"),
-                         browser_lock=ctx.browser_lock)
+    conn = connect.start(c.service, on_change=lambda cn: ctx.emit(agent_id, "status", f"{c.name}: {cn.message}"))
     asked: str | None = None
     while not conn.done.is_set():
         if conn.state == "needs_you" and asked is None:

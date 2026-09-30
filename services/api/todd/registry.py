@@ -96,7 +96,9 @@ DIRECT_BROWSER_TOOLSET = Toolset(
           "browser_start. To check a site you built or deployed, just open it: look at the screenshot, click through, "
           "and run browser_console (reload=true catches load errors). Read the page state "
           "after each action and use element [index] numbers. Don't create new accounts; the human is usually signed "
-          "in already. On captchas/2FA, ask_human (they can take over the live browser). Always call browser_done "
+          "in already. On captchas/2FA, ask_human (they can take over the live browser). Purchases need "
+          "authorize_purchase first, and posting/messaging sites request_approval(sites=...): Todd holds those clicks "
+          "back until the human approves. Always call browser_done "
           "when finished. Copy exact text (code, IDs, URLs) with browser_read_text. Credentials never pass through you: "
           "connect services with cli_login, and if the task needs a key the page shows, browser_save_secret it "
           "(browser_save_download for a key file).")

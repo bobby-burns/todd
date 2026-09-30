@@ -11,7 +11,7 @@ import shlex
 
 from .. import vault
 from ..config import config
-from ..sdk import ToolError, get_ctx, todd_tool
+from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 from . import sandbox
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -55,8 +55,12 @@ async def shell(cmd: str, timeout_s: int = 300, env: dict[str, str] | None = Non
         save_to_vault: {"NAME": "regex"}: the first match (its first group, if it has one) is stored as NAME and shown
             to you as {{secret:NAME}}, e.g. {"STRIPE_WEBHOOK_SECRET": "(whsec_[A-Za-z0-9]+)"}
     """
+    from .. import gates
     from .infra import resolve_secrets
 
+    publish = gates.check_shell(cmd)
+    if publish:
+        await gates.hold(get_ctx(), get_agent_id(), "public", publish, f"$ {cmd}")
     resolved = {k: resolve_secrets(str(v)) for k, v in (env or {}).items()}
     r = await sandbox.exec_(cmd, cwd=_root(), timeout=int(min(max(timeout_s, 5), 1800)), env=resolved)
     if save_to_vault:
@@ -191,7 +195,7 @@ async def _git_run(argv: list[str], path: str, timeout: int, pre: str = "", tail
         lines.append(pre)
     lines.append((tail or shlex.join(["git", *argv])) + " 2>&1")
     r = await sandbox.exec_(" && ".join(lines), cwd=_abs(path), timeout=timeout,
-                            env={"GH_TOKEN": token} if token else None)
+                            env={"GH_TOKEN": token} if token else None, signed_in=bool(token))
     out = r.get("output") or ""
     if token:
         for v in (token, base64.b64encode(f"x-access-token:{token}".encode()).decode()):
@@ -277,6 +281,7 @@ async def gh(command: str, timeout_s: int = 300) -> dict:
     token = vault.get_secret("GITHUB_TOKEN")
     if not token:
         raise ToolError(NO_TOKEN)
+    await _hold("github", argv, "gh", site="github.com")
     # git operations inside gh (e.g. `repo create --push`) authenticate through gh for github.com only; hooks off.
     script = " && ".join([
         f"(! git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {{ {_GIT_GUARD}; }})",
@@ -288,7 +293,7 @@ async def gh(command: str, timeout_s: int = 300) -> dict:
         shlex.join(["gh", *argv]) + " 2>&1",
     ])
     r = await sandbox.exec_(script, cwd=_root(), timeout=int(min(max(timeout_s, 5), 1800)),
-                            env={"GH_TOKEN": token})
+                            env={"GH_TOKEN": token}, signed_in=True)
     return {"exit_code": r.get("exit_code"), "output": (r.get("output") or "").replace(token, "***")}
 
 
@@ -313,7 +318,23 @@ async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600)
         return await gh.ainvoke({"command": command, "timeout_s": timeout_s})
     if svc in ("expo", "eas"):
         return await eas.ainvoke({"command": command, "path": path, "timeout_s": timeout_s})
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        raise ToolError(f"couldn't parse the command: {e}") from e
+    c = connect.connector(svc)
+    await _hold(c.service, argv, c.service, site=c.hosts[0])
     return await connect.run(service, command, cwd=_abs(path), timeout=timeout_s)
+
+
+async def _hold(service: str, argv: list[str], program: str, site: str) -> None:
+    """Commands that buy something or publish (a domain purchase, a live Stripe change, a public repo or release,
+    sending an app to the stores) wait for the human (see gates)."""
+    from .. import gates
+
+    hit = gates.check_command(service, argv)
+    if hit:
+        await gates.hold(get_ctx(), get_agent_id(), hit[0], hit[1], f"$ {program} {shlex.join(argv)}", site=site)
 
 
 # ------------------------------------------------------------------------------------------ Expo / EAS (mobile apps)
@@ -414,6 +435,7 @@ async def eas(command: str, path: str = ".", timeout_s: int = 900) -> dict:
     token = vault.get_secret("EXPO_TOKEN")
     if not token and not connect.is_connected("expo"):
         raise ToolError(NO_EXPO)
+    await _hold("eas", argv, "eas", site="expo.dev")
     apple, note = _apple_env()
     timeout = int(min(max(timeout_s, 10), 1800))
     async with _eas_lock:  # the key file is shared by every eas command, so one at a time
@@ -425,7 +447,8 @@ async def eas(command: str, path: str = ".", timeout_s: int = 900) -> dict:
                 _KEY_POST,
                 "exit $rc",
             ])
-            r = await sandbox.exec_(script, cwd=_abs(path), timeout=timeout, env={"EXPO_TOKEN": token, **apple})
+            r = await sandbox.exec_(script, cwd=_abs(path), timeout=timeout, env={"EXPO_TOKEN": token, **apple},
+                                    signed_in=True)
         else:
             r = await connect.run("expo", shlex.join(argv), cwd=_abs(path), timeout=timeout, env=apple,
                                   pre=_KEY_PRE, post=_KEY_POST)

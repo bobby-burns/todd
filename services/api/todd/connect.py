@@ -58,6 +58,12 @@ class Connector:
 # The image has eas-cli installed; older sandbox images fall back to npx.
 EAS_RUN = '$(command -v eas >/dev/null 2>&1 && echo eas || echo "npx -y eas-cli@latest")'
 
+
+def _npm_cli(package: str, binary: str) -> str:
+    """A CLI from npm, run from Todd's own install (todd-cli), never the project's node_modules; older images: npx."""
+    return f'$(command -v todd-cli >/dev/null 2>&1 && echo "todd-cli {package} {binary}" || echo "npx -y {package}")'
+
+
 CONNECTORS: dict[str, Connector] = {c.service: c for c in [
     Connector("github", "GitHub CLI", "gh", "auth login --web --hostname github.com --git-protocol https --scopes workflow",
               r"https://github\.com/login/device\S*", ("github.com",),
@@ -68,16 +74,16 @@ CONNECTORS: dict[str, Connector] = {c.service: c for c in [
     Connector("vercel", "Vercel CLI", "vercel", "login", r"https://vercel\.com/oauth/device\?user_code=[A-Z0-9-]+",
               ("vercel.com",), code_re=r"user_code=([A-Z0-9]{4}-[A-Z0-9]{4})",
               blocked=("login", "logout", "switch", "whoami --token"), example="deploy --prod --yes"),
-    Connector("netlify", "Netlify CLI", "npx -y netlify-cli", "login", r"https://app\.netlify\.com/authorize\?\S+",
-              ("netlify.com",), blocked=("login", "logout", "switch", "env:get", "env:list"),
-              example="deploy --prod --dir dist"),
-    Connector("railway", "Railway CLI", "npx -y @railway/cli", "login --browserless",
+    Connector("netlify", "Netlify CLI", _npm_cli("netlify-cli", "netlify"), "login",
+              r"https://app\.netlify\.com/authorize\?\S+", ("netlify.com",),
+              blocked=("login", "logout", "switch", "env:get", "env:list"), example="deploy --prod --dir dist"),
+    Connector("railway", "Railway CLI", _npm_cli("@railway/cli", "railway"), "login --browserless",
               r"https://railway\.com/activate\?user_code=[A-Z0-9-]+", ("railway.com",),
               code_re=r"user_code=([A-Z0-9]{4}-[A-Z0-9]{4})", blocked=("login", "logout"), example="up --detach"),
-    Connector("cloudflare", "Cloudflare Wrangler", "npx -y wrangler", "login --browser=false",
+    Connector("cloudflare", "Cloudflare Wrangler", _npm_cli("wrangler", "wrangler"), "login --browser=false",
               r"https://dash\.cloudflare\.com/oauth2/auth\?\S+", ("cloudflare.com",),
               callback="http://localhost:8976/", example="pages deploy dist --project-name my-site"),
-    Connector("stripe", "Stripe CLI", "npx -y @stripe/cli", "login",
+    Connector("stripe", "Stripe CLI", _npm_cli("@stripe/cli", "stripe"), "login",
               r"https://access\.stripe\.com/stripecli/oauth2/device[^\s\"',]*", ("stripe.com",),
               code_re=r"\"verification_code\":\s*\"([A-Z0-9-]+)\"", complete="login --complete-device",
               example="products list --limit 5"),
@@ -132,7 +138,8 @@ _KILL = '[ -f "$STATE/pid" ] && for p in $(cat "$STATE/pid"); do kill -- -"$p" |
 
 
 async def _sh(script: str, timeout: int = 60, env: dict[str, str] | None = None) -> dict:
-    return await sandbox.exec_(script, cwd=config.workspace_root, timeout=timeout, env=env)
+    """Everything here handles a sign-in, so it runs in the signed-in runner (when there is one)."""
+    return await sandbox.exec_(script, cwd=config.workspace_root, timeout=timeout, env=env, signed_in=True)
 
 
 def _exit_code(text: str) -> int | None:
@@ -195,16 +202,16 @@ def status(service: str) -> dict[str, Any]:
             "message": "", "code": None, "url": None, "connected": is_connected(service)}
 
 
-def start(service: str, on_change: Callable[[Connection], None] | None = None,
-          browser_lock: asyncio.Lock | None = None) -> Connection:
-    """Start connecting (or return the connection already in progress)."""
+def start(service: str, on_change: Callable[[Connection], None] | None = None) -> Connection:
+    """Start connecting (or return the connection already in progress). The approval waits its turn for the browser
+    (the one lock every run and sign-in shares)."""
     c = connector(service)
     conn = _CONNECTIONS.get(c.service)
     if conn is not None and conn.task is not None and not conn.task.done():
         return conn
     conn = Connection(c.service)
     _CONNECTIONS[c.service] = conn
-    conn.task = asyncio.create_task(_flow(c, conn, on_change, browser_lock), name=f"connect-{c.service}")
+    conn.task = asyncio.create_task(_flow(c, conn, on_change), name=f"connect-{c.service}")
     return conn
 
 
@@ -238,7 +245,7 @@ def _set(conn: Connection, on_change: Any, state: str, message: str = "") -> Non
             log.exception("on_change failed")
 
 
-async def _flow(c: Connector, conn: Connection, on_change: Any, browser_lock: asyncio.Lock | None) -> None:
+async def _flow(c: Connector, conn: Connection, on_change: Any) -> None:
     state = f"{_root()}/{c.service}"
     q = shlex.quote
     tab = watcher = None
@@ -270,11 +277,16 @@ async def _flow(c: Connector, conn: Connection, on_change: Any, browser_lock: as
                                      page_code_re=c.page_code_re, done=cli_done.is_set,
                                      on_state=lambda s, m: _set(conn, on_change, s, m))
 
-        if browser_lock is not None:
-            async with browser_lock:
-                res = await approve()
-        else:
+        from .runtime import browser_lock
+
+        lock = browser_lock()
+        if lock.locked():
+            _set(conn, on_change, "starting", "Waiting for the browser: an agent is using it")
+        await lock.acquire(f"sign-in:{c.service}")
+        try:
             res = await approve()
+        finally:
+            lock.release(f"sign-in:{c.service}")
         tab = res.get("tab")
         if res["state"] != "approved":
             raise ToolError("The approval wasn't finished in time. Try again from the Accounts page.")
@@ -381,7 +393,8 @@ def _blocked(argv: list[str], rule: str) -> bool:
     (`stripe --color off config --list`) don't get around it. Rules with a flag need every part present."""
     parts = rule.split()
     if any(p.startswith("-") for p in parts):
-        return all(p in argv for p in parts)
+        given = set(argv) | {a.split("=", 1)[0] for a in argv if a.startswith("-")}  # --token=x counts as --token
+        return all(p in given for p in parts)
     words = [a for a in argv if not a.startswith("-")]
     return any(words[i:i + len(parts)] == parts for i in range(len(words)))
 
@@ -410,7 +423,8 @@ async def run(service: str, command: str, cwd: str, timeout: int = 600, env: dic
             'unset TODD_CLI_STATE\n' + _ENV + (pre + "\n" if pre else "")
             + f"cd {q(cwd)} && {c.run} {shlex.join(argv)} < /dev/null 2>&1; rc=$?\n" + (post + "\n" if post else "")
             + _SNAPSHOT + 'echo; echo "__TODD_RC__ $rc $STATE"',
-            cwd=cwd, timeout=int(min(max(timeout, 10), 1800)) + 30, env={**(env or {}), "TODD_CLI_STATE": blob})
+            cwd=cwd, timeout=int(min(max(timeout, 10), 1800)) + 30, env={**(env or {}), "TODD_CLI_STATE": blob},
+            signed_in=True)
         out = r.get("output") or ""
         m = re.search(r"__TODD_RC__ (\d+) (\S+)", out)
         text = out[:m.start()].rstrip() if m else out

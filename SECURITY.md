@@ -50,8 +50,9 @@ Out of scope:
 - A model making a poor decision that a code-level control then correctly blocks
 - Vulnerabilities in third-party services or dependencies with no Todd-specific impact (please report those
   upstream)
-- Code already running in the sandbox *during* a `git_push` reading that process's environment. This is a
-  documented limit (see [ARCHITECTURE.md](ARCHITECTURE.md#security-model)).
+- A signed-in command running the project's own code: a deploy that runs the project's build, `firebase.json`
+  predeploy hooks, Expo's `app.config.js`. The project is agent-written, so this is a documented limit (see
+  [Known limits](#known-limits)).
 
 ## How secrets stay out of the models' context
 
@@ -85,22 +86,68 @@ Reviewed September 2026 (a code audit of every path from a tool, page or person 
   after the repo's config is checked for anything that could redirect the push or run code. Blocked CLI
   subcommands are recognized anywhere in the command, not only first.
 
-Known limits:
+## What needs a person, enforced in code
 
-- The sandbox runs every command as one user. Code already running there while a signed-in command runs (a
-  `git push`, a `cli(...)` deploy) could read that command's environment or its temporary sign-in files. Their
-  output is scrubbed of those tokens, but the next step is a separate user (or a credential proxy) for signed-in
-  commands.
+Reviewed September 2026, after an outside review found that spending and public actions outside three tools were
+held back only by the agents' instructions. Now (`todd/gates.py`):
+
+- **Purchases.** In the browser, a click on something labelled like a purchase (Buy, Upgrade to Pro, Subscribe,
+  Pay $12, Place order, Start trial…), and anything done on a payment page (Stripe Checkout, PayPal, Paddle…) or a
+  billing page (`…/billing`, `…/checkout`, `…/upgrade`), is held back until the agent has an approved purchase for
+  that site: `authorize_purchase` (the human approves the amount; it goes in the Ledger) or a card checkout started
+  with `payment_*`. Scripts can't click or submit on websites. Known purchase APIs (domain registrars, paid servers,
+  phone numbers) and commands (`vercel domains buy`) need the same approval.
+- **The amount.** Before a card is typed or a Pay button is clicked, the page's total must fit the approved amount
+  (with 3% or $1 of room for rounding and tax).
+- **Card details** are typed only on the exact approved sites (and their `www.`), never their subdomains. On a
+  payment page every merchant shares (checkout.stripe.com, paypal.com…) the card is filled in only when the tab
+  got there from the approved merchant's own site, and approving the shared page alone is refused.
+- **Public actions.** Doing anything on a site where the human's account posts, messages or emails people (x.com,
+  LinkedIn, Reddit, Discord, Gmail, Outlook…) needs their OK for that site (`request_approval(…, sites=[…])`), for
+  30 minutes, for that agent. Reading and scrolling don't. Known posting and email APIs (X, LinkedIn, Meta,
+  Reddit, Bluesky, Mastodon, Slack, Discord, Telegram, Gmail, SendGrid, Resend, Postmark, Mailgun, Twilio, GitHub
+  issues and releases) and publishing commands (`npm publish`, `docker push`, `eas submit`, a public GitHub repo,
+  release or gist, a live-mode Stripe change) show the human the exact request and wait for them.
+- **The dashboard only serves your own browser tabs.** It answers only to `localhost` (or names in
+  `TODD_ALLOWED_HOSTS`), which stops DNS rebinding and Todd's own containers from calling it, and refuses any
+  request a browser marks as coming from another site or another localhost port (CSRF). Nothing happens on a GET.
+- **The live view has a password.** Unless you set `VNC_PASSWORD`, the browser container makes a random one and the
+  dashboard's live view uses it. Without one, any website you visit could connect to `localhost:6080` and use the
+  signed-in browser. The raw VNC port only listens inside the browser container, and Chromium no longer accepts
+  debugging connections from web pages.
+- **Web tools check the address when they connect,** not only before, so a name that turns into 127.0.0.1 between
+  the check and the request (DNS rebinding) can't reach Todd's services.
+- **Signed-in commands run in their own container** (`signedin`): git push/pull, `gh`, the deploy CLIs, EAS and CLI
+  sign-ins. It shares the workspace with the sandbox but nothing else, so a dev server or an npm install script
+  running in the sandbox can't read their tokens or sign-in files. npm-based CLIs run from the runner's own install,
+  never from the project's `node_modules` (which the project's code could replace).
+- **One browser, one driver.** The browser lock covers every run and the Accounts page's CLI sign-ins, not just
+  one run.
+
+### Known limits
+
+- The gates recognize purchases and posting by label, page and endpoint. A purchase with an unusual label on an
+  ordinary page, or a posting API Todd doesn't know, gets through. The real limits on money are the run budget,
+  the auto-approve limit and a virtual card with its own limit. Keep saved cards out of the agents' browser if you
+  don't want agents near them.
+- A signed-in command still runs the project's own code when the tool does: a deploy that builds locally, Firebase
+  predeploy hooks, Expo's `app.config.js`. That code comes from agents, so it could read the token of the command
+  running it. Use deploy tokens scoped to one project where the service offers them.
+- The GitHub sign-in is broad (all your repositories, plus `workflow` so agents can set up CI). GitHub's CLI
+  sign-in can't ask for less. To limit it, put a fine-grained token for chosen repositories in the vault as
+  `GITHUB_TOKEN` instead of signing in.
 - Format-based redaction can't recognize every secret: an ordinary-looking password shown on a page is only
   hidden if it's in the vault.
 - Screenshots and Claude Code session transcripts are kept on disk until you delete the run.
+- There's still no dashboard login: anyone who can use your computer's browser can use Todd.
 
 ## Hardening your deployment
 
 - Keep the published ports bound to `127.0.0.1`. For remote access, use an SSH tunnel or a private network
   such as Tailscale, never a public port.
-- Change `SANDBOX_TOKEN` and `POSTGRES_PASSWORD` in `.env`, and set `VNC_PASSWORD` if other people can reach
-  the machine.
+- Change `SANDBOX_TOKEN` and `POSTGRES_PASSWORD` in `.env`. The live view gets a random password by default; set
+  `VNC_PASSWORD` to choose your own.
+- Reaching the dashboard by another name (a Tailscale name, say)? Add it to `TODD_ALLOWED_HOSTS`.
 - Use a virtual card with a low limit for browser checkouts, and keep the auto-approve limit small.
 - Only store vault keys you're comfortable letting agents use. See the notes on `api_request` in the README.
 - Rebuild regularly (`docker compose build --pull`) to pick up base-image and dependency fixes.

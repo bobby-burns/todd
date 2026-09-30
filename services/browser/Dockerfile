@@ -1,6 +1,7 @@
 # A real (headful) Chromium on a virtual display.
 #  - CDP on :9223 (internal network only) for browser-use
-#  - noVNC on :6080 for the dashboard's Live Browser panel (watch + take over for logins/captchas/2FA)
+#  - noVNC on :6080 for the dashboard's Live Browser panel (watch + take over for logins/captchas/2FA), with a
+#    password (random unless VNC_PASSWORD is set; shared with the API through /secret)
 #  - profile persisted in /data/profile, so you sign in to services once
 FROM debian:bookworm-slim
 
@@ -9,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-liberation fonts-noto-color-emoji fonts-noto-cjk ca-certificates dbus-x11 procps \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -s /bin/bash browser && mkdir -p /data && chown browser:browser /data
+RUN useradd -m -s /bin/bash browser && mkdir -p /data /secret && chown browser:browser /data /secret
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 

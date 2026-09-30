@@ -46,7 +46,7 @@ def eas_sandbox(tmp_path, monkeypatch):
     f.chmod(f.stat().st_mode | stat.S_IEXEC)
     calls: list[dict] = []
 
-    async def exec_(cmd, cwd, timeout=300, env=None):
+    async def exec_(cmd, cwd, timeout=300, env=None, signed_in=False):
         calls.append({"cmd": cmd, "cwd": cwd, "env": dict(env or {})})
         os.makedirs(cwd, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
@@ -116,7 +116,7 @@ def test_eas_gets_the_app_store_connect_key_only_for_the_command(loop, eas_sandb
         vault.set_secret("ASC_ISSUER_ID", "69a6de70-aaaa-bbbb-cccc-123456789012")
         vault.set_secret("ASC_PRIVATE_KEY", PEM.replace("\n", " "))  # pasted into the one-line field
         vault.set_secret("APPLE_TEAM_ID", "TEAM12345")
-        r = await sandbox_tools.eas.ainvoke({"command": "submit -p ios --latest --non-interactive"})
+        r = await sandbox_tools.eas.ainvoke({"command": "build -p ios --non-interactive --no-wait"})
         out = r["output"]
         assert r["exit_code"] == 0 and "passed to EAS" in r["apple"]
         assert "raw=unset" in out  # the key itself isn't left in the CLI's environment

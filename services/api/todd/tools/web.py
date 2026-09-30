@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import re
 
+import httpcore
 import httpx
 
 from ..sdk import ToolError, todd_tool
@@ -18,12 +19,33 @@ INTERNAL_HOSTS = {"localhost", "sandbox", "browser", "postgres", "api", "web", "
                   "metadata", "host.docker.internal"}
 
 
-async def check_url(url: str) -> str:
-    """The URL's host, or ToolError if it points at Todd's internal services or a local/metadata address."""
-    import asyncio
+def _refuse_ip(host: str, ip_text: str) -> None:
     import ipaddress
     import os
+
+    ip = ipaddress.ip_address(ip_text.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or \
+            (not ip.is_global and os.getenv("TODD_ALLOW_PRIVATE_URLS") != "1"):
+        raise ToolError(f"{host} resolves to a private address ({ip}); the web tools only reach the public internet "
+                        "(set TODD_ALLOW_PRIVATE_URLS=1 to allow your own network)")
+
+
+async def _public_addresses(host: str) -> list[str]:
+    """Every address `host` resolves to, or ToolError if any of them is internal."""
+    import asyncio
     import socket
+
+    infos = await asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM)
+    ips = list(dict.fromkeys(str(i[4][0]) for i in infos))
+    for ip in ips:
+        _refuse_ip(host, ip)
+    return ips
+
+
+async def check_url(url: str) -> str:
+    """The URL's host, or ToolError if it points at Todd's internal services or a local/metadata address."""
     from urllib.parse import urlparse
 
     if not url.startswith(("http://", "https://")):
@@ -33,18 +55,49 @@ async def check_url(url: str) -> str:
         raise ToolError("url has no host")
     if host in INTERNAL_HOSTS or host.endswith(".localhost") or host.endswith(".internal"):
         raise ToolError(f"{host} is an internal address; the web tools only reach the public internet")
-    allow_private = os.getenv("TODD_ALLOW_PRIVATE_URLS") == "1"
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        await _public_addresses(host)
     except OSError:
-        return host  # doesn't resolve: the request itself will fail
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or \
-                (ip.is_private and not allow_private):
-            raise ToolError(f"{host} resolves to a private address ({ip}); the web tools only reach the public "
-                            "internet (set TODD_ALLOW_PRIVATE_URLS=1 to allow your own network)")
+        pass  # doesn't resolve: the request itself will fail
     return host
+
+
+class _PublicOnly(httpcore.AsyncNetworkBackend):
+    """Resolves and checks the host again at the moment of connecting, and connects to exactly the address it checked:
+    a name that resolves to a public address for the check and to 127.0.0.1 a moment later (DNS rebinding) can't
+    reach Todd's own services."""
+
+    def __init__(self) -> None:
+        self._inner = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):  # noqa: ANN001
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        try:
+            ips = await _public_addresses(name.strip("[]"))
+        except OSError as e:
+            raise httpcore.ConnectError(str(e)) from e
+        error: Exception | None = None
+        for ip in ips:  # each checked address in turn (an IPv6 one may be unreachable from here)
+            try:
+                return await self._inner.connect_tcp(ip, port, timeout=timeout, local_address=local_address,
+                                                     socket_options=socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout, OSError) as e:
+                error = e
+        raise error or httpcore.ConnectError(f"{name} has no address")
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):  # noqa: ANN001
+        raise ToolError("unix sockets aren't reachable from the web tools")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def client(**kw) -> httpx.AsyncClient:
+    """An httpx client for agent-chosen URLs (see _PublicOnly). A proxy from the environment, if any, still applies."""
+    transport = httpx.AsyncHTTPTransport()
+    transport._pool = httpcore.AsyncConnectionPool(ssl_context=httpx.create_ssl_context(),  # type: ignore[attr-defined]
+                                                  network_backend=_PublicOnly())
+    return httpx.AsyncClient(transport=transport, **kw)
 
 
 async def _send(c: httpx.AsyncClient, method: str, url: str, *, follow: bool, **kw) -> httpx.Response:
@@ -71,7 +124,7 @@ async def fetch_url(url: str, max_chars: int = 20000) -> dict:
         max_chars: maximum characters of text to return (default 20000)
     """
     await check_url(url)
-    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "Mozilla/5.0 (Todd agent)"}) as c:
+    async with client(timeout=30, headers={"User-Agent": "Mozilla/5.0 (Todd agent)"}) as c:
         r = await _send(c, "GET", url, follow=True)
     ctype = r.headers.get("content-type", "")
     text = r.text
@@ -130,11 +183,12 @@ async def api_request(method: str, url: str, headers: dict[str, str] | None = No
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ToolError("method must be GET, POST, PUT, PATCH or DELETE")
     host = await check_url(url)
+    await _hold(method, url, host, headers, json_body, form)
     hdrs = {k: _inject(str(v), host) for k, v in (headers or {}).items()}
     body = _json.loads(_inject(_json.dumps(json_body), host)) if json_body is not None else None
     data = {k: _inject(str(v), host) for k, v in form.items()} if form else None
     injected = bool(_REF.search(_json.dumps([headers, json_body, form])))
-    async with httpx.AsyncClient(timeout=60) as c:
+    async with client(timeout=60) as c:
         r = await _send(c, method, url, follow=not injected, headers=hdrs, json=body, data=data)
     try:
         payload: object = r.json()
@@ -148,6 +202,26 @@ async def api_request(method: str, url: str, headers: dict[str, str] | None = No
     if saved:
         out["saved_to_vault"] = saved
     return out
+
+
+async def _hold(method: str, url: str, host: str, headers: dict | None, json_body: object, form: dict | None) -> None:
+    """Calls that buy something or speak for the human (post, message, email) wait for the human (see gates)."""
+    import json as _json
+
+    from .. import gates, vault
+    from ..sdk import get_agent_id, get_ctx
+
+    body = _json.dumps(json_body if json_body is not None else form or "", indent=1)
+    hit = gates.check_request(method, url, body)
+    if not hit:
+        return
+    kind, label = hit
+    if kind == "live-stripe":  # only with a live key: test mode moves no real money
+        keys = [vault.get_secret(n) or "" for n in _REF.findall(_json.dumps(headers or {}))]
+        if not any(k.startswith(("sk_live_", "rk_live_")) for k in keys):
+            return
+        kind = "public"
+    await gates.hold(get_ctx(), get_agent_id(), kind, label, f"{method} {url}\n\n{body}"[:4000], site=host)
 
 
 def _save_fields(payload: object, fields: dict[str, str]) -> list[str]:

@@ -8,6 +8,7 @@
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token)   |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, LangGraph checkpoints     | internal           |
 | `sandbox`  | node 22 / pnpm / git / python / vercel + firebase + eas CLIs, with a small exec API | internal   |
+| `signedin` | Same image and workspace; runs only the commands that use your sign-ins     | internal (token)   |
 | `browser`  | Headful Chromium on Xvfb; CDP (via socat :9223) + noVNC live view           | 127.0.0.1:6080     |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal           |
 
@@ -34,7 +35,8 @@ tools/browser_direct.py `browser` toolset (Claude Code engine): browser_start �
 tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
-tools/human.py     ask_human, request_approval (every agent)
+tools/human.py     ask_human, request_approval, authorize_purchase (every agent)
+gates.py           what needs a person, checked in code: purchases, card entry, public actions (browser, APIs, CLIs)
 accounts.py        Account catalog (~70 services), status detection, sign in/out, `accounts` toolset
 cdp.py             Minimal CDP client: cookies, open tab, sign out, probe a page
 sdk.py             Public plugin API: todd_tool(toolset=, planner=), get_ctx, get_agent_id, ToolError, …
@@ -119,8 +121,8 @@ plan the CLI is signed in with (`docker compose exec -it api claude auth login`;
   continues the same conversation with `--resume`.
 - **Browser:** the `browser` toolset becomes `tools/browser_direct.py`: `browser_start(why_not_api, …)`,
   `browser_navigate/click/type/keys/select/scroll/back/switch_tab/search/wait/state`, `browser_done`, built on
-  browser-use's primitives over CDP (indexed elements, screenshots returned to the model as images). Same run-wide
-  lock, spend approval and card placeholders (`<secret>card_number</secret>`, filled in only on approved domains,
+  browser-use's primitives over CDP (indexed elements, screenshots returned to the model as images). Same browser
+  lock, gates, spend approval and card placeholders (`<secret>card_number</secret>`, filled in only on approved domains,
   screenshots off) as `browse`.
 - **Tests:** `tests/test_claude_code.py` runs the real CLI against `tests/fake_anthropic.py`, a scripted Messages
   API (`TODD_TEST_ANTHROPIC_BASE_URL`), end to end.
@@ -158,13 +160,26 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
 - Spends are recorded as `authorized`, then settled `completed` / `failed` (refunded to the budget) /
   `needs_review` (the outcome is unknown, e.g. a timeout or 5xx after a purchase request; a human checks).
 - Browser card payments **always** need a human. The planner must pass `payment_amount_usd` +
-  `payment_domains` (exact domains, no wildcards). Only after approval does the browser agent get
-  `sensitive_data` scoped to those domains; browser-use swaps placeholders for the real values at typing
-  time. While card details are in use, screenshots and vision are off.
+  `payment_domains` (exact sites: no wildcards, no subdomains, `www.` counts as the site). Only after approval does
+  the browser agent get `sensitive_data` scoped to those sites; browser-use swaps placeholders for the real values
+  at typing time. While card details are in use, screenshots and vision are off. A shared payment page
+  (checkout.stripe.com, paypal.com…) must come with the merchant's own site, and gets the card only when the tab
+  came from that site (its history, or the tab that opened it). The page's total must fit the approved amount.
+- **Gates** (`gates.py`) sit in front of every browser action (`gates.install` wraps browser-use's
+  `execute_action`, so both engines go through them), `api_request`, `cli`, `gh`, `eas` and `shell`: purchase-looking
+  clicks, payment and billing pages, and known purchase APIs and commands need `authorize_purchase` (human-approved,
+  in the Ledger, 30 minutes, that agent and site); posting/messaging/email sites need `request_approval(sites=…)`;
+  known posting APIs and publishing commands open an approval with the exact request. Recognition is by label,
+  page and endpoint, so these are backstops to the budget and a limited card, not a proof.
 
 ## Security model
 
-- **Single-tenant and local:** the dashboard and live view bind to 127.0.0.1. The dashboard has no login yet.
+- **Single-tenant and local:** the dashboard and live view bind to 127.0.0.1. The dashboard has no login yet, so
+  its API route only serves the dashboard's own pages: Host must be localhost (or `TODD_ALLOWED_HOSTS`), and
+  requests a browser marks as cross-site or from another origin are refused (`web/lib/guard.ts`). No GET starts
+  anything. The live view has a password (random unless `VNC_PASSWORD`), shared with the API through a volume and put
+  in the dashboard's live-view URL; x11vnc listens only inside the browser container, and Chromium accepts no
+  debugging connections from web pages (no `--remote-allow-origins`).
 - **Network isolation:** `postgres` and `web` sit only on `core`. `sandbox` (agent-run code) and `browser`
   (untrusted web pages) each share a network only with `api`, so they can't reach the DB, the dashboard or
   each other (no CDP cookie theft from the sandbox).
@@ -183,9 +198,14 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   command's environment), only for network subcommands, with hooks off and after refusing repos whose local config
   could redirect the push or run code (`url.*`, `credential.*`, `core.hooksPath`, `alias.*`, `filter.*`, `http.*`,
   `include.*`…). Global options (`-c`, `-C`), `git config` and program-running options (`--upload-pack`…) are
-  refused. The token (and its base64 form) is scrubbed from output. Known limit: the sandbox runs as a single user,
-  so code already running in the sandbox *during* a push could read the push process's environment. A per-push user
-  or a credential proxy is the next step.
+  refused. The token (and its base64 form) is scrubbed from output.
+- **Signed-in runner:** every command that carries a sign-in (git network commands, `gh`, `cli`, `eas`, CLI
+  sign-in flows) runs in `signedin`, a second container from the sandbox image with the same workspace volume, its
+  own network to the API and a random token the API makes (`SIGNEDIN_URL`; unset, they run in the sandbox). Code
+  running in the sandbox can't see its processes, environment or temp files. npm-based CLIs run through
+  `todd-cli`, which installs them in the runner's home instead of taking the project's `node_modules/.bin`
+  (`npx` would). Known limit: a command that runs the project's own code (a local build, Firebase predeploy hooks,
+  Expo's `app.config.js`) runs it with the sign-in present.
 - **Previews:** the browser's `localhost:PORT` (common dev ports) is relayed through the API to the same port on the
   sandbox's localhost (`preview.py`, relays in the sandbox and browser containers). The sandbox stays off the
   browser's network; only those ports are forwarded, never the sandbox's exec API.
@@ -196,22 +216,26 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   Todd carries on). A device-code field that looks like a 2FA field (sized for or holding the code) is filled, not
   handed over. Final buttons that stay disabled until a person interacts (GitHub's focus check, Vercel's Allow
   Access) aren't worked around: Todd scrolls to the button, outlines it and asks the human for that click. When an
-  account is signed in and its CLI isn't, `GET /api/accounts` starts the connection (one at a time, once per start,
-  never for a CLI the human disconnected). A redirect to the CLI's
+  account is signed in and its CLI isn't, the Accounts page calls `POST /api/accounts/auto-connect`, which starts
+  the connection (one at a time, once per start, never for a CLI the human disconnected). Approving takes the same
+  browser lock as every run. A redirect to the CLI's
   `localhost` callback (Wrangler) is caught before the browser loads it and replayed inside the sandbox, and a code
   the page shows (Firebase) is read by Todd and handed to the CLI. The model never sees any of it. The result goes
   in the vault: the token itself when the CLI prints it (`gh auth token` → `GITHUB_TOKEN`, which also powers the API
   toolset and `git_push`), otherwise an encrypted snapshot of the CLI's sign-in files (`CLI_STATE_<SERVICE>`,
   protected). `cli` unpacks the snapshot into a private temp dir for one command, saves refreshed tokens back and
   deletes the dir; subcommands that sign in/out or print credentials are blocked (`gh`: `auth`, `extension`,
-  `alias`, `config`, `--hostname`). Known limit, as for `git_push`: code already running in the sandbox during a CLI
-  command could read those files. `browser_save_secret` moves a key a page shows into the vault without the model
+  `alias`, `config`, `--hostname`). All of it runs in the signed-in runner (above). `browser_save_secret` moves a key a page shows into the vault without the model
   seeing it.
 - **Human waits:** questions stay open across bounded waits (browser-use caps each action at ~180s, so the
   browser agent calls `wait_for_human` in 150s slices). At startup, interactions left over from a dead
   process are closed.
+- **Browser lock:** one lock for the one browser, across every run and the Accounts page's CLI sign-ins
+  (`runtime.browser_lock()`), released only by its holder.
+- **Web tools** check addresses again when connecting (`web._PublicOnly`), so DNS rebinding can't reach internal
+  services.
 - Prompt injection: the harness prompt tells agents to treat page/tool content as data. More importantly,
-  money and irreversible actions are gated by policy code, not by the model.
+  money and public actions are gated by code (policy and `gates.py`), not by the model.
 
 ## Extending
 

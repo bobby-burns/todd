@@ -26,7 +26,7 @@ from ..agents.browser import _card_secrets, cdp_url
 from ..config import config
 from ..policy import authorize_spend, settle
 from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
-from .. import redact
+from .. import gates, redact
 from . import page_capture, page_guard
 from .browser_tools import clean_domain
 
@@ -151,7 +151,8 @@ async def browser_start(why_not_api: str, start_url: str | None = None, payment_
         start_url: page to open first
         payment_amount_usd: maximum card payment, if this task must pay by card
         payment_merchant: who is being paid
-        payment_domains: exact domains where card details may be entered, e.g. ["checkout.stripe.com"]
+        payment_domains: exact sites where card details may be entered, e.g. ["namecheap.com"] or, when the merchant
+            sends you to a shared payment page, both: ["vercel.com", "checkout.stripe.com"]
     """
     ctx, agent_id = get_ctx(), get_agent_id()
     if not why_not_api or len(why_not_api.strip()) < 10:
@@ -178,7 +179,10 @@ async def _start(ctx, agent_id: str, why_not_api: str, start_url: str | None, pa
     if payment_amount_usd is not None:
         domains = [clean_domain(d) for d in (payment_domains or [])]
         if not domains or any(not d or "*" in d for d in domains):
-            raise ToolError("payment_domains must be exact site domains like ['checkout.stripe.com'] (no wildcards).")
+            raise ToolError("payment_domains must be exact site domains like ['namecheap.com'] (no wildcards).")
+        problem = gates.check_card_domains(domains)  # type: ignore[arg-type]
+        if problem:
+            raise ToolError(problem)
         sensitive = _card_secrets(domains)
         if sensitive is None:
             raise ToolError("No payment card is stored in the vault (Settings → Payment card).")
@@ -190,7 +194,7 @@ async def _start(ctx, agent_id: str, why_not_api: str, start_url: str | None, pa
     if ctx.browser_lock.locked():
         ctx.emit(agent_id, "status", "Waiting for the browser (another agent is using it)…")
     try:
-        await ctx.browser_lock.acquire()
+        await ctx.browser_lock.acquire(f"{ctx.run_id}:{agent_id}")
     except BaseException:
         if ledger is not None:
             settle(ledger, "failed", {"error": "stopped before the checkout started"})
@@ -202,11 +206,14 @@ async def _start(ctx, agent_id: str, why_not_api: str, start_url: str | None, pa
         await browser.start()
         page_guard.install(browser)  # secret-looking text is blurred before every screenshot
     except BaseException:
-        ctx.browser_lock.release()
+        ctx.browser_lock.release(f"{ctx.run_id}:{agent_id}")
         if ledger is not None:
             settle(ledger, "failed", {"error": "browser unavailable"})
         raise
-    h = _Handle(browser=browser, tools=Tools(), sensitive=sensitive, ledger=ledger, reason=why_not_api.strip())
+    tools = Tools()
+    card = gates.Card(list(ledger.data.get("domains") or []), ledger.amount_usd) if ledger is not None else None
+    gates.install(tools, ctx, agent_id, card)  # purchases, card entry and posting are checked in code
+    h = _Handle(browser=browser, tools=tools, sensitive=sensitive, ledger=ledger, reason=why_not_api.strip())
     handles[agent_id] = h
     await _record_console(h)
     ctx.emit(agent_id, "status", f"Browser task started: {why_not_api.strip()[:200]}", {"browser": "start"})
@@ -509,8 +516,7 @@ async def release(ctx, agent_id: str, *, success: bool = False, result: str = ""
     except BaseException:
         pass
     finally:
-        if ctx.browser_lock.locked():
-            ctx.browser_lock.release()
+        ctx.browser_lock.release(f"{ctx.run_id}:{agent_id}")
         ctx.emit(agent_id, "status", ("Browser task finished" if success else "Browser task stopped")
                  + f" after {h.steps} steps", {"browser": "end"})
 

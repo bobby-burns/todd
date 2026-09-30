@@ -79,6 +79,7 @@ export function InteractionCard({
           <div className="mx-auto mt-1 max-w-md text-[13px] leading-snug text-fg-2">{it.data.description ?? it.prompt}</div>
           <div className="mt-3 flex flex-wrap justify-center gap-1.5">
             {it.data.method && <Chip>{it.data.method}</Chip>}
+            {Array.isArray(it.data.sites) && it.data.sites.length > 0 && <Chip>on {it.data.sites.join(", ")}</Chip>}
             {it.data.why_asking && <Chip>{it.data.why_asking}</Chip>}
           </div>
         </div>
@@ -94,6 +95,11 @@ export function InteractionCard({
 
       {it.data?.details && (
         <div className="well mt-4 rounded-[14px] px-3.5 py-3 text-[12.5px] leading-relaxed whitespace-pre-wrap text-fg-2">{it.data.details}</div>
+      )}
+      {it.kind !== "spend" && Array.isArray(it.data?.sites) && it.data.sites.length > 0 && (
+        <p className="mt-2 text-[12.5px] leading-snug text-fg-2">
+          Approving lets this agent act on {it.data.sites.join(", ")} in the browser for the next 30 minutes, for this only.
+        </p>
       )}
 
       {secretName && (

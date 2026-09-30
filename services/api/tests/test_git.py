@@ -30,8 +30,8 @@ def repo(tmp_path, monkeypatch):
     work.mkdir()
     calls: list[dict] = []
 
-    async def exec_(cmd, cwd, timeout=300, env=None):
-        calls.append({"cmd": cmd, "env": dict(env or {})})
+    async def exec_(cmd, cwd, timeout=300, env=None, signed_in=False):
+        calls.append({"cmd": cmd, "env": dict(env or {}), "signed_in": signed_in})
         proc = await asyncio.create_subprocess_exec(
             "bash", "-c", cmd, cwd=cwd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, env={"PATH": os.environ["PATH"], "HOME": str(home), **(env or {})})
@@ -68,10 +68,12 @@ def test_git_push_is_a_normal_push(loop, repo):
         assert r["exit_code"] == 0
         r = await git.ainvoke({"command": f"remote add origin {repo['bare']}"})
         assert r["exit_code"] == 0
-        assert repo["calls"][-1]["env"] == {}  # local commands never get the token
+        assert repo["calls"][-1]["env"] == {}  # local commands never get the token...
+        assert repo["calls"][-1]["signed_in"] is False  # ...and run in the sandbox
         r = await git_push.ainvoke({"message": "First version"})
         assert r["exit_code"] == 0, r["output"]
         assert repo["calls"][-1]["env"] == {"GH_TOKEN": TOKEN} and TOKEN not in str(r)
+        assert repo["calls"][-1]["signed_in"] is True  # the signed-in runner, when there is one
         assert "First version" in _remote_log(repo["bare"], "main")
         files = subprocess.run(["git", "--git-dir", str(repo["bare"]), "ls-tree", "-r", "--name-only", "main"],
                                capture_output=True, text=True).stdout.split()

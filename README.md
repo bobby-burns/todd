@@ -106,9 +106,12 @@ Open source and self-hosted: `docker compose up` and it's yours.
   screenshot, click through, and read JavaScript errors and failed requests with `browser_console`.
 - **Spending rules the model can't override.** An auto-approve limit, per-run budgets and approval prompts,
   with every charge in a ledger. Card payments always need your approval. Card details reach the browser only
-  as masked placeholders, only on the approved merchant's exact domains, with screenshots turned off.
-- **Public actions need approval.** Agents must show you the exact text before posting, messaging or
-  publishing from your accounts.
+  as masked placeholders, only on the approved merchant's exact sites (a shared page like Stripe Checkout only
+  when opened from that merchant), only up to the approved total, with screenshots turned off. Clicking Buy,
+  Upgrade or Pay on a site with a saved card, and known purchase APIs and commands, wait for your approval too.
+- **Public actions need approval, in code.** Posting, messaging or emailing from your accounts in the browser
+  waits until you OK that site; known posting APIs and publishing commands (npm publish, a public repo or release,
+  sending an app to the stores) show you the exact request first.
 - **Extensible.** Each plugin file in `./plugins` becomes a toolset, each MCP server becomes a toolset, and
   every system and harness prompt can be edited.
 - **Survives restarts.** LangGraph + a Postgres checkpointer save every run, so a crashed run shows a
@@ -195,7 +198,8 @@ environment variables.
 | `POSTGRES_PASSWORD`          | Database password                                                        |
 | `SANDBOX_TOKEN`              | Shared secret between the API and the sandbox. **Change it.**            |
 | `TODD_SECRET_KEY`            | Fernet key for the vault (auto-generated into the data volume if empty)  |
-| `VNC_PASSWORD`               | Password for the live browser view (noVNC)                               |
+| `VNC_PASSWORD`               | Password for the live browser view (noVNC); random if empty              |
+| `TODD_ALLOWED_HOSTS`         | Names besides `localhost` the dashboard answers to, e.g. a Tailscale name |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | Model keys for the **API keys** engine (never passed to Claude Code) |
 | `VERCEL_TOKEN`, `GITHUB_TOKEN` | Integration tokens (fallbacks for the vault)                           |
 | `TODD_PLANNER_MAX_TURNS`, `TODD_CODE_MAX_STEPS`, `TODD_BROWSER_MAX_STEPS` | Step limits                  |
@@ -235,6 +239,7 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
 | `api`      | FastAPI + LangGraph orchestrator, tools, vault, spend policy                | internal (token) |
 | `postgres` | Runs, events, approvals, vault, ledger, settings, checkpoints               | internal         |
 | `sandbox`  | Node 22 / pnpm / git / Python / deploy CLIs (incl. EAS), with a small exec API | internal      |
+| `signedin` | Same image and workspace; runs only commands that use your sign-ins         | internal         |
 | `browser`  | Headful Chromium on Xvfb; CDP + noVNC live view                             | `127.0.0.1:6080` |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal         |
 
@@ -310,10 +315,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, project layout and gu
 
 Todd is at **v0.4** and under active development.
 
-- **No dashboard login yet.** The dashboard and live view bind to 127.0.0.1. Don't expose Todd publicly until
-  auth is added. (Internally, the API requires a generated token and the sandbox and browser are
-  network-isolated; see [ARCHITECTURE.md](ARCHITECTURE.md#security-model).)
-- **One shared browser.** Browser tasks run one at a time; other agents keep working in parallel.
+- **No dashboard login yet.** The dashboard and live view bind to 127.0.0.1, the dashboard only answers its own
+  pages on `localhost`, and the live view has a password. Don't expose Todd publicly until auth is added.
+  (Internally, the API requires a generated token and the sandbox and browser are network-isolated; see
+  [ARCHITECTURE.md](ARCHITECTURE.md#security-model).)
+- **Purchases and public actions are checked in code, by recognition.** Buy/Upgrade/Pay-style clicks, payment and
+  billing pages, posting sites and known purchase/posting APIs and commands wait for you. Something Todd doesn't
+  recognize as a purchase gets through, so keep the budget and auto-approve limit low and use a limited virtual card.
+  See [SECURITY.md](SECURITY.md#what-needs-a-person-enforced-in-code).
+- **One shared browser.** Browser tasks run one at a time, across all runs; other agents keep working in parallel.
 - **CLI sign-in with the browser session** covers GitHub, Vercel, Netlify, Railway, Cloudflare, Stripe and
   Firebase. Supabase's CLI only signs in from a real terminal, so it needs a token in Settings. Approving uses
   generic page rules (fill the code, click Continue/Authorize). Some final buttons, such as GitHub's Authorize and

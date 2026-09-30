@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# todd-cli PACKAGE BIN [ARGS...]: run a CLI that comes from npm (netlify, wrangler, railway, stripe) from Todd's own
+# install, made on first use outside the project. Not `npx` in the project: npx prefers the project's
+# node_modules/.bin, which code in the project (an npm install script, say) can change, and these commands run with
+# your sign-ins.
+set -euo pipefail
+pkg=$1 bin=$2
+shift 2
+dir="${TODD_TOOLS:-${REAL_HOME:-$HOME}/.todd-tools}/$(printf %s "$pkg" | tr '/@' '__')"
+if [ ! -x "$dir/node_modules/.bin/$bin" ]; then
+  (mkdir -p "$dir" && cd "$dir" && { [ -f package.json ] || echo '{"private": true}' > package.json; } &&
+    npm install --no-audit --no-fund --loglevel=error "$pkg@latest" >&2)
+fi
+exec "$dir/node_modules/.bin/$bin" "$@"

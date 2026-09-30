@@ -33,17 +33,41 @@ async def ask_human(question: str, secret_name: str | None = None) -> str:
 
 
 @todd_tool
-async def request_approval(action: str, details: str = "") -> dict:
+async def request_approval(action: str, details: str = "", sites: list[str] | None = None) -> dict:
     """Ask the human to approve an irreversible, risky or public action that doesn't cost money: posting or
     messaging from their accounts (include the exact text), emailing people, deleting data, publishing. Spending
     is handled by the spend tools automatically — don't use this for purchases.
 
+    In the browser, sites where the human's account talks to people (x.com, LinkedIn, Reddit, Gmail…) are locked
+    until they approve: pass sites=["x.com"] and, once approved, you can act there for 30 minutes (for this only).
+
     Args:
         action: one-line description of what you want to do
         details: everything the human needs to decide, e.g. the exact post text and where it goes
+        sites: websites this approval opens for you in the browser, e.g. ["x.com"]
     """
-    approved, note = await get_ctx().request_approval(action, agent=get_agent_id(), data={"details": details})
-    return {"approved": approved, "note": note}
+    from ..gates import approve_public
+
+    return await approve_public(get_ctx(), get_agent_id(), action, details, sites)
 
 
-HUMAN_TOOLS = [ask_human, request_approval]
+@todd_tool
+async def authorize_purchase(amount_usd: float, merchant: str, description: str, sites: list[str]) -> str:
+    """Get a purchase approved before making it where Todd can't see the price: clicking Buy / Upgrade / Subscribe /
+    Pay on a site where a card may already be saved (plans, credits, seats, a paid tier), or an API/CLI call that
+    buys something (a domain through a registrar's API). Todd holds those back until this is approved; the human
+    approves it and it goes in the Ledger. Then you have 30 minutes, for this purchase only. (A new card checkout is
+    the browser's payment_* arguments instead; a Vercel domain is vercel_buy_domain.)
+
+    Args:
+        amount_usd: the total you expect to pay, including tax (0 if you're sure it's free: the human confirms)
+        merchant: who gets paid, e.g. "Vercel"
+        description: what's being bought, e.g. "Vercel Pro plan, 1 seat, monthly"
+        sites: the service's site, e.g. ["vercel.com"] (its subdomains and API are included)
+    """
+    from ..gates import approve_purchase
+
+    return await approve_purchase(get_ctx(), get_agent_id(), amount_usd, merchant, description, sites)
+
+
+HUMAN_TOOLS = [ask_human, request_approval, authorize_purchase]

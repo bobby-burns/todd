@@ -1,5 +1,7 @@
 # The sandbox is where code agents work: node 22 + pnpm + git + gh + python + common deploy CLIs (incl. Expo EAS).
 # Only the API can reach it (no published ports). It never sees the vault — tokens are injected per command.
+# The same image runs the signed-in runner (docker-compose `signedin`): the commands that use your sign-ins, in their
+# own container with the same workspace.
 FROM node:22-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,6 +23,7 @@ RUN python3 -m venv /opt/sandbox && /opt/sandbox/bin/pip install --no-cache-dir 
 
 RUN useradd -m -s /bin/bash agent && mkdir -p /workspace && chown agent:agent /workspace
 COPY server.py /opt/sandbox/server.py
+COPY todd-cli /usr/local/bin/todd-cli
 
 USER agent
 WORKDIR /workspace

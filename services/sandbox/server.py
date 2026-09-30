@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 ROOT = Path(os.getenv("WORKSPACE_ROOT", "/workspace")).resolve()
 TOKEN = os.getenv("SANDBOX_TOKEN", "change-me-sandbox-token")
+TOKEN_FILE = os.getenv("SANDBOX_TOKEN_FILE", "")  # the signed-in runner: a random token the API made (read-only here)
 MAX_OUTPUT = int(os.getenv("SANDBOX_MAX_OUTPUT", "20000"))
 SKIP = {"node_modules", ".git", ".next", "dist", "build", ".turbo", ".venv", "__pycache__", ".vercel"}
 
@@ -68,7 +69,7 @@ async def _relay(listen_port: int, target_port: int):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     servers = []
-    for i, port in enumerate(PREVIEW_PORTS):
+    for i, port in enumerate(PREVIEW_PORTS if os.getenv("SANDBOX_PREVIEWS", "1") != "0" else []):
         if port == EXEC_PORT:
             continue
         try:
@@ -84,8 +85,20 @@ app = FastAPI(title="todd-sandbox", lifespan=lifespan)
 ROOT.mkdir(parents=True, exist_ok=True)
 
 
+def _token() -> str:
+    if TOKEN_FILE:
+        try:
+            return Path(TOKEN_FILE).read_text().strip()
+        except OSError:
+            return ""  # not made yet: refuse everything until it is
+    return TOKEN
+
+
 def auth(x_sandbox_token: str = Header(default="")) -> None:
-    if x_sandbox_token != TOKEN:
+    import hmac
+
+    token = _token()
+    if not token or not hmac.compare_digest(x_sandbox_token.encode(), token.encode()):
         raise HTTPException(401, "bad sandbox token")
 
 
@@ -130,6 +143,7 @@ async def exec_(req: ExecReq) -> dict:
     cwd.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "CI": "1", "TERM": "dumb", "NO_COLOR": "1", "npm_config_yes": "true", **req.env}
     env.pop("SANDBOX_TOKEN", None)
+    env.pop("SANDBOX_TOKEN_FILE", None)
     start = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         "bash", "-lc", CLOSE_FDS + req.cmd, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,

@@ -2,6 +2,7 @@
 // Streams responses, which keeps server-sent events live.
 import { readFileSync } from "node:fs";
 import type { NextRequest } from "next/server";
+import { refusal } from "@/lib/guard";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +24,8 @@ function apiToken(): string {
 const HOP_BY_HOP = ["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade"];
 
 async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  const refused = refusal(req.method, req.headers);
+  if (refused) return Response.json({ detail: refused }, { status: 403 });
   const { path } = await ctx.params;
   const url = `${API_URL}/api/${path.map(encodeURIComponent).join("/")}${req.nextUrl.search}`;
   const headers = new Headers(req.headers);

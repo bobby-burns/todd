@@ -68,8 +68,8 @@ def local_sandbox(tmp_path, monkeypatch):
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
     calls: list[dict] = []
 
-    async def exec_(cmd, cwd, timeout=300, env=None):
-        calls.append({"cmd": cmd, "env": dict(env or {})})
+    async def exec_(cmd, cwd, timeout=300, env=None, signed_in=False):
+        calls.append({"cmd": cmd, "env": dict(env or {}), "signed_in": signed_in})
         proc = await asyncio.create_subprocess_exec(
             "bash", "-c", cmd, cwd=str(work), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,

@@ -17,6 +17,9 @@ export function useAccounts(pollMs = 0) {
         .then((d) => {
           setData(d);
           setErr(null);
+          // sign in once: a signed-in account whose CLI isn't connected yet gets it connected
+          if (d.accounts.some((a) => a.status === "signed_in" && a.cli && a.cli.state === "idle"))
+            api("/accounts/auto-connect", { method: "POST" }).catch(() => {});
         })
         .catch((e) => setErr(e.message)),
     [],

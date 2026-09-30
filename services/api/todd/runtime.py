@@ -71,16 +71,60 @@ class PauseGate:
 _pending: dict[str, asyncio.Future] = {}
 
 
+class BrowserLock:
+    """There is one agents' browser, so one task drives it at a time: across every run (not just within one) and the
+    Accounts page's CLI sign-ins. `holder` says who has it, for the "waiting for the browser" note."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.holder: str | None = None
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def acquire(self, holder: str = "") -> None:
+        await self._lock.acquire()
+        self.holder = holder or None
+
+    def release(self, holder: str | None = None) -> None:
+        """Give it back (only if `holder`, when given, is who has it)."""
+        if self._lock.locked() and (holder is None or holder == self.holder):
+            self.holder = None
+            self._lock.release()
+
+    async def __aenter__(self) -> "BrowserLock":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self.release()
+
+
+_browser_locks: dict[int, BrowserLock] = {}  # per event loop (the app has one; tests make several)
+
+
+def browser_lock() -> BrowserLock:
+    key = id(asyncio.get_running_loop())
+    if key not in _browser_locks:
+        _browser_locks.clear()  # a lock from a closed loop can't be used again
+        _browser_locks[key] = BrowserLock()
+    return _browser_locks[key]
+
+
 class RunContext:
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
         self.cancelled = False
         self.user_notes = Inbox()  # the human's messages to the planner
         self._waiting = 0
-        self.browser_lock = asyncio.Lock()  # one shared browser; browser tasks run one at a time
         self._images: dict[str, str] = {}  # agent_id -> latest screenshot to hand to the model (Claude Code engine)
         self.agents: dict[str, Any] = {}  # agent_id -> AgentHandle (see agents/dynamic.py)
         self.gates: dict[str, PauseGate] = {}  # agent_id -> pause switch ("planner" included)
+
+    @property
+    def browser_lock(self) -> BrowserLock:
+        """The one browser lock, shared with every other run and the Accounts page."""
+        return browser_lock()
 
     # ---- events -------------------------------------------------------------------------
     def emit(self, agent: str, kind: str, text: str, data: dict[str, Any] | None = None) -> None:

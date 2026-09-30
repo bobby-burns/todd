@@ -13,7 +13,7 @@ import os
 import socket
 from typing import Any
 
-from .. import prompts, redact, vault
+from .. import gates, prompts, redact, vault
 from ..config import config
 from ..llm import model_for
 from ..policy import authorize_spend, settle
@@ -49,11 +49,11 @@ def _card_secrets(domains: list[str]) -> dict[str, dict[str, str]] | None:
     if "card_number" not in card:
         return None
     out: dict[str, dict[str, str]] = {}
-    for d in domains:
-        d = d.strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+    for d in domains:  # exactly these sites (and their www.), not their subdomains
+        d = d.strip().lower().removeprefix("https://").removeprefix("http://").strip("/").removeprefix("www.")
         if d:
             out[f"https://{d}"] = card
-            out[f"https://*.{d}"] = card
+            out[f"https://www.{d}"] = card
     return out or None
 
 
@@ -90,6 +90,9 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
     extra = ""
     if payment:
         domains = payment.get("domains") or []
+        problem = gates.check_card_domains(domains)
+        if problem:
+            return {"success": False, "result": problem}
         sensitive = _card_secrets(domains)
         if sensitive is None:
             return {"success": False, "result": "No payment card is stored in the vault (Settings → Payment card)."}
@@ -131,6 +134,31 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
     @tools.action("Keep waiting for the human's answer to a question you already asked (pass its question_id).")
     async def wait_for_human(question_id: str) -> ActionResult:
         return await _await_human(question_id, "(continued)")
+
+    @tools.action("Ask the human to approve something on a site where their account posts, messages or emails people "
+                  "(x.com, LinkedIn, Reddit, Gmail…): those sites are locked until they say yes. action: one line; "
+                  "details: the exact text and where it goes; sites: e.g. ['x.com'].")
+    async def request_approval(action: str, details: str, sites: list[str]) -> ActionResult:
+        try:
+            r = await gates.approve_public(ctx, agent_id, action, details, sites)
+        except Exception as e:  # noqa: BLE001
+            return ActionResult(error=str(e))
+        if not r["approved"]:
+            return ActionResult(extracted_content=f"The human said no. {r['note'] or ''}".strip())
+        return ActionResult(extracted_content=f"Approved. {r.get('sites', '')} {r['note'] or ''}".strip())
+
+    @tools.action("Get a purchase approved before clicking Buy / Upgrade / Subscribe / Pay on a site that may have a "
+                  "saved card (the human approves it; it's recorded in the Ledger). amount_usd: the total; sites: e.g. "
+                  "['vercel.com']. Use amount_usd=0 if you're sure it's free.")
+    async def authorize_purchase(amount_usd: float, merchant: str, description: str, sites: list[str]) -> ActionResult:
+        try:
+            msg = await gates.approve_purchase(ctx, agent_id, amount_usd, merchant, description, sites)
+        except Exception as e:  # noqa: BLE001
+            return ActionResult(error=str(e))
+        return ActionResult(extracted_content=msg, long_term_memory=msg)
+
+    card_grant = gates.Card(payment.get("domains") or [], float(payment["amount_usd"])) if payment else None
+    gates.install(tools, ctx, agent_id, card_grant)  # purchases, card entry and posting are checked in code
 
     if sensitive is None:  # never while card details may be on the page
         from ..sdk import ToolError
@@ -202,7 +230,8 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
     full_task = task + (f"\nStart at: {start_url}" if start_url else "") + extra
     if ctx.browser_lock.locked():
         ctx.emit(agent_id, "status", "Waiting for the browser (another agent is using it)…")
-    async with ctx.browser_lock:
+    await ctx.browser_lock.acquire(f"{ctx.run_id}:{agent_id}")
+    try:
         browser = Browser(cdp_url=cdp_url(), keep_alive=True)
         page_guard.install(browser)  # secret-looking text is blurred before every screenshot
         agent = Agent(
@@ -247,6 +276,8 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
                 await browser.stop()
             except Exception:
                 pass
+    finally:
+        ctx.browser_lock.release(f"{ctx.run_id}:{agent_id}")
 
     try:
         u = getattr(history, "usage", None)

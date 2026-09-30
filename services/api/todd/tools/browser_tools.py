@@ -23,7 +23,8 @@ async def browse(task: str, why_not_api: str, start_url: str | None = None, paym
         start_url: optional URL to start at
         payment_amount_usd: maximum card payment for this task, if any
         payment_merchant: who is being paid
-        payment_domains: exact domains where card details may be entered, e.g. ["namecheap.com", "checkout.stripe.com"]
+        payment_domains: exact sites where card details may be entered, e.g. ["namecheap.com"] or, when the merchant
+            sends you to a shared payment page, both: ["vercel.com", "checkout.stripe.com"]
     """
     from ..agents.browser import run_browser_task
     from ..sdk import get_agent_id, get_ctx
@@ -39,6 +40,11 @@ async def browse(task: str, why_not_api: str, start_url: str | None = None, paym
         if not domains or any(d is None for d in domains):
             return {"success": False, "result": "payment_domains must be a list of exact site domains like "
                                                 "['namecheap.com', 'checkout.stripe.com'] (no wildcards)."}
+        from ..gates import check_card_domains
+
+        problem = check_card_domains(domains)  # type: ignore[arg-type]
+        if problem:
+            return {"success": False, "result": problem}
         payment = {"amount_usd": payment_amount_usd, "merchant": payment_merchant or domains[0],
                    "domains": domains, "description": task[:300]}
     return await run_browser_task(task, start_url=start_url, payment=payment)

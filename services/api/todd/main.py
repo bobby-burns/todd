@@ -60,7 +60,7 @@ def health() -> dict:
 
 @app.get("/api/meta")
 def meta() -> dict:
-    return {"browser_live_url": config.browser_live_url, "version": app.version,
+    return {"browser_live_url": config.live_url(), "version": app.version,
             "integrations": integrations_summary()}
 
 
@@ -548,10 +548,17 @@ def _with_cli(a: dict) -> dict:
 async def accounts_list(selected_only: bool = False) -> dict:
     ids = (settings.get("accounts_selected") or []) if selected_only else None
     st = await accounts.statuses(ids)
-    connect.auto_connect(st["accounts"])  # sign in once: a signed-in account gets its CLI connected too
     st["accounts"] = [_with_cli(a) for a in st["accounts"]]
     st["categories"] = list(dict.fromkeys(a["category"] for a in st["accounts"]))
     return st
+
+
+@app.post("/api/accounts/auto-connect")
+async def accounts_auto_connect() -> dict:
+    """Sign in once: a signed-in account gets its CLI connected too (the Accounts page calls this after loading; a GET
+    never starts anything)."""
+    st = await accounts.statuses()
+    return {"started": connect.auto_connect(st["accounts"])}
 
 
 @app.get("/api/accounts/{service_id}")
