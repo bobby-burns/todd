@@ -318,7 +318,7 @@ class RunManager:
         return ("- Launch plan: the human is being asked, on a card, where this will live (their domain, a new one, or "
                 "a free address), whether the GitHub repository is private or public, and whether to ask before it "
                 "goes live. Don't wait for it: start building now. Their answer arrives as a message. Until then: "
-                "private repository, nothing live (previews and localhost are fine). When a step needs the answer, "
+                "private repository, nothing deployed (localhost is fine). When a step needs the answer, "
                 "call plan_launch(wait=true).")
 
     async def _planner_claude_code(self, ctx: RunContext, run: Run, system: str, tools: list, resume: bool,

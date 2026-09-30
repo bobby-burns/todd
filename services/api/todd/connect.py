@@ -73,7 +73,7 @@ CONNECTORS: dict[str, Connector] = {c.service: c for c in [
               example="repo create my-app --private --source . --push"),
     Connector("vercel", "Vercel CLI", "vercel", "login", r"https://vercel\.com/oauth/device\?user_code=[A-Z0-9-]+",
               ("vercel.com",), code_re=r"user_code=([A-Z0-9]{4}-[A-Z0-9]{4})",
-              blocked=("login", "logout", "switch", "whoami --token"), example="deploy --target=preview --yes"),
+              blocked=("login", "logout", "switch", "whoami --token"), example="deploy --prod --yes"),
     Connector("netlify", "Netlify CLI", _npm_cli("netlify-cli", "netlify"), "login",
               r"https://app\.netlify\.com/authorize\?\S+", ("netlify.com",),
               blocked=("login", "logout", "switch", "env:get", "env:list"), example="deploy --dir dist"),

@@ -102,12 +102,12 @@ def test_going_live_follows_the_plan(loop, monkeypatch):
         set_ctx(ctx)
         set_current_agent("a_host")
 
-        # no plan yet: going live asks; "no" keeps it on a preview
+        # no plan yet: going live asks; "no" keeps it on localhost
         t = asyncio.create_task(gates.approve_live(ctx, "a_host", "a production deploy on Vercel"))
         it = await pending(rid)
         assert it.data["kind_hint"] == "live" and it.prompt.startswith("Put it live?")
         resolve_interaction(it.id, decision="deny", answer=None)
-        with pytest.raises(ToolError, match="preview"):
+        with pytest.raises(ToolError, match="localhost"):
             await t
         # "yes" counts for the rest of the run, for every agent
         t = asyncio.create_task(gates.approve_live(ctx, "a_host", "a production deploy on Vercel"))
@@ -142,13 +142,15 @@ def test_live_commands_and_requests():
     cc = gates.check_command
     assert cc("vercel", ["deploy", "--prod", "--yes"])[0] == "live"
     assert cc("vercel", ["deploy", "--yes"])[0] == "live"  # a new project's first deploy is production
-    assert cc("vercel", ["deploy", "--target=preview", "--yes"]) is None
+    assert cc("vercel", ["deploy", "--target=preview", "--yes"])[0] == "deploy"  # previews ask too
     assert cc("vercel", ["domains", "add", "quizdaily.com"])[0] == "live"
-    assert cc("netlify", ["deploy", "--dir", "dist"]) is None and cc("netlify", ["deploy", "--prod"])[0] == "live"
-    assert cc("firebase", ["deploy"])[0] == "live" and cc("firebase", ["hosting:channel:deploy", "pr"]) is None
-    assert cc("cloudflare", ["pages", "deploy", "dist", "--branch", "preview"]) is None
+    assert cc("netlify", ["deploy", "--dir", "dist"])[0] == "deploy" and cc("netlify", ["deploy", "--prod"])[0] == "live"
+    assert cc("firebase", ["deploy"])[0] == "live" and cc("firebase", ["hosting:channel:deploy", "pr"])[0] == "deploy"
+    assert cc("vercel", ["env", "ls"]) is None and cc("netlify", ["status"]) is None  # not deploys
+    assert cc("cloudflare", ["pages", "deploy", "dist", "--branch", "preview"])[0] == "deploy"
     assert cc("railway", ["up"])[0] == "live"
     assert gates.check_request("POST", "https://api.vercel.com/v13/deployments", '{"target": "production"}')[0] == "live"
+    assert gates.check_request("POST", "https://api.vercel.com/v13/deployments", '{"name": "quiz"}')[0] == "deploy"
     assert gates.check_request("POST", "https://api.vercel.com/v10/projects/quiz/domains", "{}")[0] == "live"
 
 
@@ -228,3 +230,75 @@ def test_launch_checklist_reads_the_project(loop, monkeypatch):
     files.clear()
     files["notes.md"] = "# notes"
     assert loop.run_until_complete(readiness.check("r2")) == {"web": False, "items": []}
+
+
+def test_deploying_comes_last_and_previews_ask_too(loop):
+    from types import SimpleNamespace
+
+    async def go():
+        rid = new_run(PROMPT)
+        ctx = RunContext(rid)
+        set_ctx(ctx)
+        set_current_agent("a_ship")
+        building = asyncio.get_running_loop().create_future()  # a builder that's still working
+        ctx.agents["a_build"] = SimpleNamespace(id="a_build", name="Site Builder", toolsets=["sandbox"], task=building)
+        ctx.agents["a_research"] = SimpleNamespace(id="a_research", name="Research", toolsets=["web"],
+                                                   task=asyncio.get_running_loop().create_future())
+        with pytest.raises(ToolError, match="Site Builder is still working"):
+            await gates.approve_live(ctx, "a_ship", "a preview deploy on Vercel", kind="deploy")
+        assert not [i for i in _cards(rid) if i.status == "pending"]  # refused before asking anyone
+        building.set_result(None)  # the build is done (a research helper without the sandbox doesn't block)
+
+        # a preview asks, and approving it covers previews only
+        t = asyncio.create_task(gates.approve_live(ctx, "a_ship", "a preview deploy on Vercel", kind="deploy"))
+        it = await pending(rid)
+        assert it.prompt.startswith("Deploy a preview?")
+        resolve_interaction(it.id, decision="approve", answer=None)
+        await t
+        await gates.approve_live(ctx, "a_ship", "another preview", kind="deploy")  # no second question
+        t = asyncio.create_task(gates.approve_live(ctx, "a_ship", "a production deploy on Vercel"))
+        it = await pending(rid)
+        assert it.prompt.startswith("Put it live?")
+        resolve_interaction(it.id, decision="approve", answer=None)
+        await t
+
+    loop.run_until_complete(go())
+
+
+def test_two_agents_never_change_the_same_file(loop, monkeypatch):
+    from types import SimpleNamespace
+
+    from todd.tools import sandbox
+    from todd.tools.sandbox_tools import write_file
+
+    written: list[str] = []
+
+    async def write(path, content):
+        written.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(sandbox, "write", write)
+
+    async def go():
+        ctx = RunContext(new_run(PROMPT))
+        set_ctx(ctx)
+        loop_ = asyncio.get_running_loop()
+        builder = SimpleNamespace(id="a_build", name="Site Builder", toolsets=["sandbox"], task=loop_.create_future())
+        bank = SimpleNamespace(id="a_bank", name="Question Bank", toolsets=["sandbox"], task=loop_.create_future())
+        ctx.agents.update({"a_build": builder, "a_bank": bank})
+
+        set_current_agent("a_build")
+        await write_file.ainvoke({"path": "app/page.tsx", "content": "export default function Home() {}"})
+        set_current_agent("a_bank")  # the helper writes its own file, which the builder will read
+        await write_file.ainvoke({"path": "data/questions.json", "content": "[]"})
+        with pytest.raises(ToolError, match="Site Builder is working on app/page.tsx"):
+            await write_file.ainvoke({"path": "app/page.tsx", "content": "// mine now"})
+        set_current_agent("a_build")
+        with pytest.raises(ToolError, match="Question Bank is working on data/questions.json"):
+            await write_file.ainvoke({"path": "./data/questions.json", "content": "[{}]"})
+        await write_file.ainvoke({"path": "app/page.tsx", "content": "// still the builder's"})
+        bank.task.set_result(None)  # once the helper is done, its file is free
+        await write_file.ainvoke({"path": "data/questions.json", "content": "[{}]"})
+        assert len(written) == 4
+
+    loop.run_until_complete(go())

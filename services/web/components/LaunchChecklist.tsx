@@ -50,7 +50,7 @@ export function LaunchChecklist({ runId, onPick }: { runId: string; onPick: (tex
             animate={{ opacity: 1, y: 0 }}
             transition={{ ...softSpring, delay: 0.02 * i }}
             disabled={it.ok}
-            onClick={() => onPick(`Add ${it.fix} to the site, check it on localhost, then put it back online the way it is now (ask me before a production deploy).`)}
+            onClick={() => onPick(`Add ${it.fix} to the site and check it on localhost. If it's already online, deploy it again the same way (ask me first).`)}
             title={it.ok ? `Found in ${it.where}` : `Tap to ask Todd to add ${it.fix}`}
             className="flex min-w-0 items-center gap-2 rounded-[12px] px-2.5 py-1.5 text-left transition-colors enabled:hover:bg-fill disabled:cursor-default"
           >

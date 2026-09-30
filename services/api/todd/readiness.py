@@ -77,8 +77,8 @@ async def check(run_id: str) -> dict[str, Any]:
     prompt = ""
     if missing:
         prompt = ("Make the site ready for real visitors: add " + _join([i["fix"] for i in missing]) +
-                  ". Keep what's there, check everything on localhost, then put it back online the way it is now "
-                  "(ask me before a production deploy) and check each one loads on the live address.")
+                  ". Keep what's there and check everything on localhost. If the site is already online, deploy it "
+                  "again the same way (ask me first) and check each one loads on the live address.")
     return {"web": True, "project": project or ".", "framework": framework, "items": items, "missing": len(missing),
             "prompt": prompt}
 

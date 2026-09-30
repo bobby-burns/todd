@@ -511,6 +511,8 @@ def check_request(method: str, url: str, body: str = "") -> tuple[str, str] | No
     if under(host, "api.vercel.com") and method == "POST" and re.search(r"^/v\d+/deployments$", u.path) and \
             re.search(r"\"target\"\s*:\s*\"production\"", body or ""):
         return "live", "a production deploy on Vercel (the live site)"
+    if under(host, "api.vercel.com") and method == "POST" and re.search(r"^/v\d+/deployments$", u.path):
+        return "deploy", "a deploy on Vercel"
     if under(host, "api.vercel.com") and method == "POST" and re.search(r"^/v\d+/projects/[^/]+/domains$", u.path):
         return "live", "pointing a domain at the site on Vercel"
     if under(host, "api.stripe.com") and method in ("POST", "DELETE") and re.search(
@@ -538,7 +540,7 @@ def _positionals(argv: list[str]) -> list[str]:
 
 def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
     """(kind, what it does) for a signed-in CLI command that buys something, publishes, makes a repository public or
-    puts something live: kind is "purchase", "public", "public-repo" or "live" (see hold)."""
+    deploys: kind is "purchase", "public", "public-repo", "live" (production) or "deploy" (a preview; see hold)."""
     words = _positionals(argv)
     flags = {a.split("=", 1)[0] for a in argv if a.startswith("-")}
     first = words[0] if words else ""
@@ -550,9 +552,9 @@ def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
         return "public", "a live-mode Stripe change (real customers and real money)"
     if service in ("eas", "expo") and first == "submit":
         return "public", "sending the app to Apple / Google (App Store Connect, Google Play)"
-    live = _live_command(service, words, flags, argv)
-    if live:
-        return "live", live
+    deploy = _deploy_command(service, words, flags, argv)
+    if deploy:
+        return deploy
     if service == "github":
         sub = words[1] if len(words) > 1 else ""
         if first == "release" and sub == "create":
@@ -584,8 +586,8 @@ def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
 _PROD_BRANCHES = {"main", "master", "production", "prod"}
 
 
-def _live_command(service: str, words: list[str], flags: set[str], argv: list[str]) -> str | None:
-    """What a deploy command makes live for everyone (production), if it does. Previews aren't live."""
+def _deploy_command(service: str, words: list[str], flags: set[str], argv: list[str]) -> tuple[str, str] | None:
+    """("live", …) for a deploy everyone sees (production), ("deploy", …) for a preview; None if it deploys nothing."""
     first = words[0] if words else ""
     second = words[1] if len(words) > 1 else ""
     if service == "vercel":
@@ -593,48 +595,73 @@ def _live_command(service: str, words: list[str], flags: set[str], argv: list[st
         preview = "--target=preview" in argv or ("--target" in argv and "preview" in argv)
         if flags & {"--prod", "--production"} or "--target=production" in argv or \
                 ("--target" in argv and "production" in argv):
-            return "a production deploy on Vercel (the live site)"
-        if deploy and not preview:  # can be production (a new project's first deploy is)
-            return "a Vercel deploy (for a preview only, add --target=preview)"
+            return "live", "a production deploy on Vercel (the live site)"
+        if deploy:  # a plain deploy can be production (a new project's first one is)
+            return ("deploy", "a preview deploy on Vercel") if preview else \
+                ("live", "a Vercel deploy (a new project's first one is its live site)")
         if first in ("promote", "rollback"):
-            return "changing what's live on Vercel"
+            return "live", "changing what's live on Vercel"
         if first == "alias" or (first == "domains" and second == "add"):
-            return "pointing a domain at the site on Vercel"
+            return "live", "pointing a domain at the site on Vercel"
         if first == "git" and second == "connect":
-            return "connecting the GitHub repository to Vercel (every push to main goes live)"
-    if service == "netlify" and first == "deploy" and flags & {"--prod", "-p", "--prodIfUnlocked"}:
-        return "a production deploy on Netlify (the live site)"
-    if service == "firebase" and first == "deploy":
-        return "a Firebase deploy (live right away)"
+            return "live", "connecting the GitHub repository to Vercel (every push to main goes live)"
+    if service == "netlify" and first == "deploy":
+        return ("live", "a production deploy on Netlify (the live site)") if flags & {"--prod", "-p", "--prodIfUnlocked"} \
+            else ("deploy", "a preview deploy on Netlify")
+    if service == "firebase":
+        if first == "deploy":
+            return "live", "a Firebase deploy (live right away)"
+        if first == "hosting:channel:deploy":
+            return "deploy", "a Firebase preview channel"
     if service == "cloudflare":
-        if first == "deploy" or (first == "pages" and second == "deploy" and not (
-                "--branch" in flags and not ({a.split("=", 1)[-1] for a in argv} & _PROD_BRANCHES))):
-            return "a Cloudflare deploy (the live site)"
+        if first == "deploy":
+            return "live", "a Cloudflare deploy (the live site)"
+        if first == "pages" and second == "deploy":
+            preview = "--branch" in flags and not ({a.split("=", 1)[-1] for a in argv} & _PROD_BRANCHES)
+            return ("deploy", "a Cloudflare preview deploy") if preview else ("live", "a Cloudflare deploy (the live site)")
     if service == "railway" and first == "up":
-        return "a Railway deploy (live right away)"
-    if service in ("eas", "expo") and first == "update" and {"production", "--channel=production",
-                                                               "--branch=production"} & set(argv):
-        return "an update to the app people have installed (EAS Update, production)"
+        return "live", "a Railway deploy (live right away)"
+    if service in ("eas", "expo") and first == "update":
+        if {"production", "--channel=production", "--branch=production"} & set(argv):
+            return "live", "an update to the app people have installed (EAS Update, production)"
+        return "deploy", "an app update on a test channel (EAS Update)"
     return None
 
 
-async def approve_live(ctx: Any, agent: str, what: str, details: str = "") -> None:
-    """Going live for everyone: fine if the human's launch plan says "when it's ready" or they already approved it
-    in this run; otherwise ask them (once per run)."""
+def _deploy_last(ctx: Any, agent: str) -> None:
+    """Deploying comes last: not while another agent can still change the project."""
+    from .sdk import ToolError
+
+    busy = [h.name for h in ctx.running_agents() if h.id != agent and "sandbox" in (h.toolsets or [])]
+    if busy:
+        raise ToolError(f"Deploying comes last, and {', '.join(busy)} {'is' if len(busy) == 1 else 'are'} still "
+                        "working on the project. Wait for them to finish (wait_for_agents), then deploy. If you're a "
+                        "helper agent, finish and report that it's ready to deploy.")
+
+
+async def approve_live(ctx: Any, agent: str, what: str, details: str = "", kind: str = "live") -> None:
+    """Before any deploy. It comes last (nobody else still changing the project), and it waits for the human unless
+    their launch plan says "when it's ready": once per run for going live (which also covers previews), once for
+    previews only."""
     from . import launch
     from .sdk import ToolError
 
+    _deploy_last(ctx, agent)
     plan = launch.get(ctx)
-    if (plan and plan["live"] == "auto") or granted(ctx, "live", "*", agent):
+    if (plan and plan["live"] == "auto") or granted(ctx, "live", "*", agent) or \
+            (kind == "deploy" and granted(ctx, "deploy", "*", agent)):
         return
+    title = f"Put it live? {what}" if kind == "live" else f"Deploy a preview? {what}"
+    after = ("agents put this run's work live (deploys, the domain)" if kind == "live" else
+             "agents deploy previews of this run's work")
     ok, note = await ctx.request_approval(
-        f"Put it live? {what}", agent=agent,
-        data={"kind_hint": "live", "details": (details or what)[:4000] + "\n\nApproving lets agents put this run's "
-              "work live (production deploys, the domain) without asking again."})
+        title, agent=agent,
+        data={"kind_hint": "live", "details": (details or what)[:4000] + f"\n\nApproving lets {after} without asking "
+              "again."})
     if not ok:
-        raise ToolError("The human wants to wait before this goes live. Keep it on a preview (e.g. deploy without "
-                        f"--prod) or localhost, and report that it's ready to go live. {note or ''}".strip())
-    grant(ctx, "live", ["*"], "*", minutes=24 * 60, note=what)
+        raise ToolError("The human doesn't want this deployed yet. Keep it on localhost, and report that it's ready "
+                        f"to deploy. {note or ''}".strip())
+    grant(ctx, kind, ["*"], "*", minutes=24 * 60, note=what)
 
 
 async def hold(ctx: Any, agent: str, kind: str, label: str, what: str, *, site: str | None = None) -> None:
@@ -648,8 +675,8 @@ async def hold(ctx: Any, agent: str, kind: str, label: str, what: str, *, site: 
         raise ToolError(f"This is {label}, which costs money. Call authorize_purchase(amount_usd, merchant, "
                         f"description, sites=[\"{site or 'the service'}\"]) first (the human approves it), then run it "
                         "again.")
-    if kind == "live":
-        return await approve_live(ctx, agent, label, what)
+    if kind in ("live", "deploy"):
+        return await approve_live(ctx, agent, label, what, kind=kind)
     if kind == "public-repo":
         from . import launch
 

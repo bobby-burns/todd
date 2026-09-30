@@ -8,7 +8,7 @@ card, without stopping the run (agents start building while the human decides):
 * **Code:** a private GitHub repository (the default) or a public one.
 * **Going live:** ask them first (the default) or put it live when it's ready.
 
-The answer goes to the planner as a message and is enforced in code (gates.py): production deploys and connecting a
+The answer goes to the planner as a message and is enforced in code (gates.py): deploys (previews too) and connecting a
 domain wait for the human unless they chose "when it's ready", and a public repository needs them to have chosen
 public (or to approve it). Until they answer, the defaults apply.
 """
@@ -66,8 +66,8 @@ def describe(plan: dict[str, str]) -> str:
                     "(the purchase asks them)",
              "free": "a free address for now (e.g. name.vercel.app); no domain"}[plan["domain"]]
     live = ("put it live as soon as it's ready and checked" if plan["live"] == "auto" else
-            "ask them before it goes live (Todd asks when an agent deploys to production or connects a domain; "
-            "previews and localhost are fine)")
+            "ask them before deploying anything, previews included (Todd asks by itself when an agent deploys or "
+            "connects a domain; localhost is always fine)")
     note = f" Their note: {plan['note']}" if plan["note"] else ""
     return (f"Launch plan: address: {where}. Code: a {plan['repo']} GitHub repository. Going live: {live}.{note}")
 
@@ -114,7 +114,8 @@ async def ask(ctx: RunContext, what: str = "", agent: str = "planner") -> str:
     iid = await ctx.open_interaction("question", question, agent, {
         "kind_hint": KIND_HINT, "what": what, "background": True,
         "defaults": DEFAULT,
-        "details": "Agents start building meanwhile. Nothing goes live or public until you answer (or approve it)."})
+        "details": "Agents start building meanwhile. Nothing is deployed or made public until you answer (or approve "
+                   "it)."})
     ctx._launch_task = asyncio.create_task(_await_answer(ctx, iid), name=f"launch-{ctx.run_id}")  # type: ignore[attr-defined]
     return "asked"
 
@@ -146,7 +147,7 @@ def summary(plan: dict[str, str]) -> str:
     where = {"own": f"on {plan['domain_name'] or 'your domain'}", "buy": "on a new domain",
              "free": "on a free address for now"}[plan["domain"]]
     return (f"{where}, {plan['repo']} repository, " +
-            ("goes live when ready" if plan["live"] == "auto" else "asks before going live"))
+            ("deploys when ready" if plan["live"] == "auto" else "asks before deploying"))
 
 
 async def wait(ctx: RunContext, timeout: float | None = None) -> dict[str, str] | None:

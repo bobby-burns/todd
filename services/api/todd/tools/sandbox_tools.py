@@ -106,8 +106,26 @@ async def write_file(path: str, content: str) -> str:
         raise ToolError("This content has values Todd hid from you (••••••••, [secret hidden]); writing it would replace "
                         "the real ones. Change only the lines you need with shell (e.g. `sed -i` or `printf 'NAME=%s\\n' "
                         "\"$VALUE\" >> .env` with env={\"VALUE\": \"{{secret:NAME}}\"}).")
-    await sandbox.write(_abs(path), content)
+    target = _abs(path)
+    _claim(target, posixpath.relpath(target, _root()))
+    await sandbox.write(target, content)
     return f"wrote {path} ({len(content)} chars)"
+
+
+def _claim(target: str, shown: str) -> None:
+    """Two agents never change the same file at once: whoever writes a file first keeps it while it's still working
+    (then it's free, e.g. for a later fix-up agent). Agents can still use each other's files, just not edit them."""
+    ctx, me = get_ctx(), get_agent_id()
+    if not hasattr(ctx, "_file_owners"):
+        ctx._file_owners = {}
+    owner = ctx._file_owners.get(target)
+    if owner and owner != me:
+        h = ctx.agents.get(owner)
+        if h is not None and h.task is not None and not h.task.done():
+            raise ToolError(f"{h.name} is working on {shown} right now, and two agents never change the same file. "
+                            f"Leave it to {h.name} (say in your summary what should change there), or put your part "
+                            "in its own file for the code to use.")
+    ctx._file_owners[target] = me
 
 
 @todd_tool(toolset="sandbox")
@@ -303,16 +321,16 @@ async def gh(command: str, timeout_s: int = 300) -> dict:
 @todd_tool(toolset="sandbox")
 async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600) -> dict:
     """Run a service's CLI signed in with the human's account (connected once with cli_login, or on the Accounts
-    page), in a project directory. No tokens or login steps needed. Examples: cli("vercel", "deploy --target=preview
-    --yes"), cli("vercel", "deploy --prod --yes"), cli("netlify", "deploy --prod --dir dist"),
+    page), in a project directory. No tokens or login steps needed. Examples: cli("vercel", "deploy --prod --yes"),
+    cli("vercel", "env ls"), cli("netlify", "deploy --prod --dir dist"),
     cli("cloudflare", "pages deploy dist --project-name site"),
     cli("railway", "up --detach"), cli("firebase", "deploy --only hosting"), cli("stripe", "products list").
     For GitHub use `gh`; for Expo / EAS (mobile apps) use `eas`.
 
     Args:
         service: vercel, netlify, railway, cloudflare (wrangler), stripe or firebase
-        command: arguments for the CLI, e.g. "deploy --target=preview --yes". Going live (a production deploy, a
-            domain) waits for the human unless their launch plan says to put it live when ready.
+        command: arguments for the CLI, e.g. "deploy --prod --yes". Deploying (previews too) and domains come last,
+            after the build, and wait for the human unless their launch plan says to put it live when ready.
         path: directory relative to the project root (default .)
         timeout_s: timeout in seconds (default 600)
     """

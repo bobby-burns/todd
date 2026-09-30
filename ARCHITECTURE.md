@@ -173,11 +173,16 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   in the Ledger, 30 minutes, that agent and site); posting/messaging/email sites need `request_approval(sites=…)`;
   known posting APIs and publishing commands open an approval with the exact request. Recognition is by label,
   page and endpoint, so these are backstops to the budget and a limited card, not a proof.
-- **Going live** (`gates.approve_live`): production deploys (`vercel --prod`, a plain `vercel deploy` (a new
+- **Deploying** (`gates.approve_live`): every deploy, production (`vercel --prod`, a plain `vercel deploy` (a new
   project's first one is its production site), `netlify deploy --prod`, `firebase deploy`, `wrangler deploy`, `railway up`, a
-  production EAS update, Vercel's deployments API with `target: production`, `vercel_deploy`), connecting a domain,
-  a Git connection that deploys every push, and Deploy/Publish clicks on hosting dashboards wait for the human,
-  once per run, unless the launch plan says "when it's ready". Previews (`--target=preview`) never ask. New GitHub
+  production EAS update, Vercel's deployments API with `target: production`, `vercel_deploy`) or preview
+  (`--target=preview`, Netlify drafts, Firebase channels, Cloudflare preview branches), connecting a domain, a Git
+  connection that deploys every push, and Deploy/Publish clicks on hosting dashboards, waits for the human unless
+  the launch plan says "when it's ready": approving production covers the run, approving a preview covers previews.
+  And deploying is last: refused while another agent with the `sandbox` toolset is still running.
+- **One agent per file:** `write_file` records which agent wrote each file; while that agent is running, another
+  agent's write to the same file is refused (it's free again once the first finishes). Agents still read each
+  other's files: a helper's data file is how it hands work to the builder. New GitHub
   repositories are private (`gh repo create` gets `--private` when no visibility is given); a public one needs the
   launch plan to say public, or an approval.
 - **Launch plan** (`launch.py`): for a goal that makes a website, the run's first step (after the sign-in check)

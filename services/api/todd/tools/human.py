@@ -96,15 +96,16 @@ async def plan_launch(what: str = "", wait: bool = False) -> str:
     plan = launch.get(ctx)
     if plan is None:
         return ("Asked the human (a card with the address, private/public repo and going-live choices). Their answer "
-                "arrives as a message. Until then: private repository, nothing live; previews and localhost are fine.")
+                "arrives as a message. Until then: private repository, nothing deployed; localhost is fine.")
     return launch.describe(plan)
 
 
 @todd_tool
 async def go_live(what: str, where: str) -> str:
-    """Before making something live for everyone: a production deploy, connecting a domain, publishing a site.
-    Unless the human's launch plan says to put it live when ready, they're asked once for this run (production
-    deploys through the CLIs and APIs ask by themselves; call this first in the browser, or to ask up front).
+    """Before deploying (the last step, once the build is done and checked on localhost): a production deploy,
+    connecting a domain, publishing a site. Unless the human's launch plan says to put it live when ready, they're
+    asked once for this run. Deploys through the CLIs and APIs ask by themselves; call this first for the browser,
+    or to ask before a series of deploy steps. Refused while another agent is still working on the project.
 
     Args:
         what: what goes live, e.g. "the AI quiz site"

@@ -244,13 +244,14 @@ def _handle(ctx: RunContext, agent_id: str) -> AgentHandle:
 @todd_tool
 async def spawn_agent(name: str, instructions: str, task: str, toolsets: list[str], model: str = "default",
                       background: bool = True, tasks: list[str] | None = None) -> dict:
-    """Create an agent for one part of the work that can move on its own, with a checklist of its related tasks
-    (`tasks`). Split independent parts across agents so they run at the same time (most builds: 3–5 agents); don't
-    create one agent per small step. When agents share a codebase, name each one's files and folders in its
-    instructions, and say which one installs packages and which one runs git. Design it for the job: a short name
-    (e.g. "Quiz Engine", "Launch Readiness", "Repo & Hosting"), instructions describing its role, standards and
-    constraints, and only the toolsets it needs — API/MCP toolsets before `browser`. Agents don't see your
-    conversation: the task must be self-contained (inputs, exact outputs to report, done condition).
+    """Create an agent for one part of the work, with a checklist of its related tasks (`tasks`). Two agents never
+    work on the same code: for software, one agent writes the code, and others run alongside it only for work that
+    doesn't touch that code (content or data it will read, in their own files; research; assets), or after it's done
+    (reviews, fixes, deploying, which is always last). Don't create one agent per small step. Design it for the job:
+    a short name (e.g. "Site Builder", "Question Bank"), instructions describing its role, standards and
+    constraints (for a helper: the exact file and format it delivers), and only the toolsets it needs: API/MCP
+    toolsets before `browser`. Agents don't see your conversation: the task must be self-contained (inputs, exact
+    outputs to report, done condition).
     The agent works on its own, in parallel with you and other agents: this returns right away with an agent_id.
     Spawn every independent group in one turn, then call wait_for_agents to collect results. background=false
     waits for this agent's summary instead (a message from the human ends the wait early; the agent keeps running).

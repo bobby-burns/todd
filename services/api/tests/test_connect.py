@@ -206,7 +206,10 @@ def test_cli_login_github_puts_the_token_in_the_vault(loop, local_sandbox, fake_
 
 def test_connect_vercel_snapshot_and_cli_run(loop, local_sandbox, fake_approval):
     async def go():
-        _ctx(["sandbox"])
+        from todd import launch
+
+        ctx = _ctx(["sandbox"])
+        ctx.launch = launch.parse('{"live": "auto"}')  # they said to deploy when it's ready (no approval card here)
         conn = connect.start("vercel")  # what the Accounts page does right after the human signs in
         await asyncio.wait_for(conn.done.wait(), 30)
         assert conn.state == "connected", conn.message

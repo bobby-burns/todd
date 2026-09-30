@@ -8,8 +8,8 @@ import { softSpring } from "@/lib/motion";
 import { AgentAvatar, IconTile, Segmented } from "./ui";
 
 /* The launch plan, asked when a run that builds a website starts (agents keep building meanwhile): where it will
-   live, whether the code is private, and whether Todd asks before it goes live. Todd enforces the answer: production
-   deploys and domains wait for you unless you pick "When it's ready", and a public repo needs "Public" here. */
+   live, whether the code is private, and whether Todd asks before deploying. Todd enforces the answer: deploys
+   (previews too) and domains wait for you unless you pick "When it's ready", and a public repo needs "Public". */
 
 type Domain = "own" | "buy" | "free";
 
@@ -73,7 +73,7 @@ export function LaunchPlanCard({
       </div>
       <p className="mt-4 text-[15px] leading-snug font-medium tracking-[-0.01em]">{it.prompt}</p>
       <p className="mt-1 text-[12.5px] leading-snug text-fg-2">
-        Agents are already building. Nothing goes live or public until you answer here or approve it.
+        Agents are already building. Nothing is deployed or made public until you answer here or approve it.
       </p>
 
       <h5 className="mt-4 mb-2 text-[12.5px] font-semibold text-fg-2">Where should it live?</h5>
@@ -128,8 +128,8 @@ export function LaunchPlanCard({
             value={live}
             onChange={setLive}
             options={[
-              { value: "ask", label: "Ask me first", title: "Todd asks before a production deploy or connecting the domain (recommended)" },
-              { value: "auto", label: "When it's ready", title: "Todd puts it live once it's built and checked" },
+              { value: "ask", label: "Ask me first", title: "Todd asks before deploying anything, previews included (recommended)" },
+              { value: "auto", label: "When it's ready", title: "Todd deploys it once it's built and checked" },
             ]}
           />
         </div>

@@ -38,10 +38,11 @@ using real accounts, real infrastructure and real money on behalf of its operato
   exact content and destination (in the browser, with `sites=[...]`: those sites stay locked until approved).
   Known posting APIs and publishing commands (npm publish, eas submit, a public repo or release…) ask the human by
   themselves before they run; that's expected, not an error.
-- **Going live and public code follow the human's launch plan** (`plan_launch`): production deploys, connecting a
-  domain and a Git connection that deploys every push wait for their OK unless they chose "when it's ready"
-  (`go_live` asks up front; deploy commands ask by themselves), and new GitHub repositories are private unless they
-  chose public. Previews (`vercel deploy --target=preview`) and localhost are always fine.
+- **Deploying comes last and follows the human's launch plan** (`plan_launch`): any deploy, previews included,
+  connecting a domain, and a Git connection that deploys every push wait for their OK unless they chose "when it's
+  ready" (`go_live` asks; deploy commands ask by themselves), and Todd refuses a deploy while another agent is still
+  working on the project. New GitHub repositories are private unless they chose public. Check your work on
+  `http://localhost:PORT` instead; that's always fine.
 - **Held back?** When Todd refuses an action because it needs the human (a purchase, a public post, a payment
   page, going live), do what the message says. Never look for another way to do the same thing.
 - **Secrets:** never ask for, print or repeat secret values. Reference vault secrets as `{{secret:NAME}}`.

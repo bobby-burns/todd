@@ -11,10 +11,10 @@ changes).
 
 - **Launch plan** for website goals: at the start, one card asks where it should live (your domain, a new domain,
   or a free address for now), whether the GitHub repository is private (default) or public, and whether to ask
-  before it goes live. Agents keep building meanwhile. Enforced in code: production deploys, connecting a domain,
-  Git connections that deploy every push and Deploy/Publish clicks on hosting dashboards wait for your OK (once per
-  run) unless you chose "when it's ready"; new repositories are private unless you chose public. Tools:
-  `plan_launch`, `go_live`.
+  before deploying. Agents keep building meanwhile. Enforced in code: deploys (previews too), connecting a domain,
+  Git connections that deploy every push and Deploy/Publish clicks on hosting dashboards wait for your OK unless
+  you chose "when it's ready"; new repositories are private unless you chose public. Tools: `plan_launch`,
+  `go_live`.
 - **Ready for real visitors?** checklist on a finished website run, read from the project's files: titles and
   descriptions, social preview, icons, robots.txt, sitemap.xml, llms.txt, 404 page, security headers (plus manifest
   and privacy page, recommended). Tap a missing item, or "Add the N missing", to ask Todd for it.
@@ -100,15 +100,16 @@ changes).
 
 ### Changed
 
-- **Builds run in parallel:** the planner splits work into parts that move on their own (usually 3–5 agents, each
-  with its own files; one scaffolds first, one installs packages, one runs git) instead of grouping everything into
-  one agent. Default limits: 6 agents at once, 16 per run.
-- **Production readiness is part of every site build** (a Launch Readiness agent: SEO and sharing, robots.txt,
+- **Agents work side by side without touching the same code:** one agent writes the code; helpers run alongside it
+  for work that feeds it without editing it (content or data in their own files, like a questions file the site
+  reads; research; assets); reviews and fixes come after the build and deploying is last. Todd refuses a write to
+  a file another running agent is working on. Default limits: 6 agents at once, 16 per run.
+- **Deploying asks first and comes last:** every deploy, previews included, waits for your OK (unless the launch
+  plan says "when it's ready"), and a deploy is refused while another agent is still working on the project.
+- **Production readiness is part of every site build** (the builder's last tasks: SEO and sharing, robots.txt,
   sitemap.xml, llms.txt, 404, security headers, accessibility, Lighthouse), and "Try next" leads with what's left
   for production. Suggested next steps keep up to three production-readiness items so feature ideas can't crowd
   them out.
-- Vercel deploys ask before going live unless they're previews (`--target=preview`): a plain `vercel deploy` can
-  become the production site (a new project's first deploy does).
 - `git_push` pushes like a developer would: to `origin` (set from `repo` when given) with upstream tracking, the
   current branch instead of renaming it to main, a default .gitignore when the project has none (node_modules,
   .env, build folders, key files) and `--force-with-lease` for force. Before, agents couldn't push with plain git

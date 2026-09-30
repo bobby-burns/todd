@@ -48,11 +48,12 @@ Open source and self-hosted: `docker compose up` and it's yours.
 
 ## Features
 
-- **Dynamic agents, working in parallel.** There's no hardcoded team. The planner calls
-  `spawn_agent(name, instructions, task, tasks, toolsets, model)` for each *part of the work that can move on its
-  own* ("Quiz Engine", "Question Bank", "Launch Readiness", "Repo & Hosting"), each with its own files, not one
-  agent for everything and not one per step. A build usually runs 3–5 agents at once (up to 6 by default,
-  configurable), and the planner waits on, messages or cancels them. It stays responsive while they work: message it any time and it acts
+- **Dynamic agents, working side by side without stepping on each other.** There's no hardcoded team. The planner
+  calls `spawn_agent(name, instructions, task, tasks, toolsets, model)` for each part of the work. Two agents never
+  work on the same code: one agent writes the code, and helpers run alongside it for what feeds it (a "Question
+  Bank" writing the questions file the site reads, research, images), while reviews and deploying wait until the
+  build is done. Todd refuses an edit to a file another running agent is working on. Up to 6 agents at once by
+  default (configurable); the planner waits on, messages or cancels them. It stays responsive while they work: message it any time and it acts
   right away (for example, spawns another agent) while the others keep going.
 - **Watch them think, pause them, steer them.** Each agent has its own window with its reasoning (narrated,
   plus native model reasoning where supported), tool calls, browser steps, a **Pause/Resume** button and a
@@ -83,9 +84,10 @@ Open source and self-hosted: `docker compose up` and it's yours.
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
 - **Built to launch, not just to demo.** When a goal makes a website, Todd asks at the start, on one card, where it
   should live (your domain, a new one, or a free address for now), whether the code is private (the default) or
-  public, and whether to ask you before it goes live. Agents keep building while you decide. Production deploys,
-  connecting a domain and public repositories follow your answer, in code. A **Launch Readiness** agent is part of
-  every site build: titles and descriptions, a social preview image, icons, robots.txt, sitemap.xml, llms.txt, a 404
+  public, and whether to ask you before deploying. Agents keep building while you decide. Deploying (previews too),
+  connecting a domain and public repositories follow your answer, in code, and deploying is always the last step:
+  Todd refuses a deploy while an agent is still working on the project. Every site build ends with **launch
+  readiness**: titles and descriptions, a social preview image, icons, robots.txt, sitemap.xml, llms.txt, a 404
   page, security headers, accessibility and a Lighthouse check. When the run ends, a **Ready for real visitors?**
   checklist, read from the project's files, shows what's in place, and one tap asks Todd to add what's missing.
 - **Questions you can tap.** When an agent needs you to choose (which domain, which option), you tap an answer
