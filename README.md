@@ -48,11 +48,11 @@ Open source and self-hosted: `docker compose up` and it's yours.
 
 ## Features
 
-- **Dynamic agents, grouped sensibly.** There's no hardcoded team. The planner calls
-  `spawn_agent(name, instructions, task, tasks, toolsets, model)` for each *group of related work* ("Store
-  Listing" = keywords + metadata + submit; "Marketing Site & Domain" = domain + banner + deploy), not one
-  agent per step. Independent groups run in parallel (typically 1–4 agents; limits are configurable), and the
-  planner waits on, messages or cancels them. It stays responsive while they work: message it any time and it acts
+- **Dynamic agents, working in parallel.** There's no hardcoded team. The planner calls
+  `spawn_agent(name, instructions, task, tasks, toolsets, model)` for each *part of the work that can move on its
+  own* ("Quiz Engine", "Question Bank", "Launch Readiness", "Repo & Hosting"), each with its own files, not one
+  agent for everything and not one per step. A build usually runs 3–5 agents at once (up to 6 by default,
+  configurable), and the planner waits on, messages or cancels them. It stays responsive while they work: message it any time and it acts
   right away (for example, spawns another agent) while the others keep going.
 - **Watch them think, pause them, steer them.** Each agent has its own window with its reasoning (narrated,
   plus native model reasoning where supported), tool calls, browser steps, a **Pause/Resume** button and a
@@ -81,6 +81,15 @@ Open source and self-hosted: `docker compose up` and it's yours.
 - **See what it made.** Each run has a **Files** view: everything its agents created or changed, live while they
   work, read-only (code with line numbers, Markdown formatted, images shown, `.env` values hidden until you ask),
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
+- **Built to launch, not just to demo.** When a goal makes a website, Todd asks at the start, on one card, where it
+  should live (your domain, a new one, or a free address for now), whether the code is private (the default) or
+  public, and whether to ask you before it goes live. Agents keep building while you decide. Production deploys,
+  connecting a domain and public repositories follow your answer, in code. A **Launch Readiness** agent is part of
+  every site build: titles and descriptions, a social preview image, icons, robots.txt, sitemap.xml, llms.txt, a 404
+  page, security headers, accessibility and a Lighthouse check. When the run ends, a **Ready for real visitors?**
+  checklist, read from the project's files, shows what's in place, and one tap asks Todd to add what's missing.
+- **Questions you can tap.** When an agent needs you to choose (which domain, which option), you tap an answer
+  instead of typing; you can still write your own.
 - **A recap anyone can read.** When a run finishes you get **In plain words** first, then what got done, what you
   got (links you can click), what's next for you, and **Words to know**. Technical words in the recap explain
   themselves when you hover or tap them.
@@ -243,7 +252,7 @@ web (Next.js :3000) ──proxy/SSE + token──► api (FastAPI, internal)
 | `browser`  | Headful Chromium on Xvfb; CDP + noVNC live view                             | `127.0.0.1:6080` |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal         |
 
-- **Parallelism:** background agents run at the same time (max 4 at once, 12 per run by default). Browser
+- **Parallelism:** background agents run at the same time (max 6 at once, 16 per run by default). Browser
   tasks share one browser and queue.
 - **Pause:** each agent (and the planner) has a pause gate checked before every model call and tool call. A
   paused browser task is paused inside browser-use. Sending a message to a paused agent resumes it.

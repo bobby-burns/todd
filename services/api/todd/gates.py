@@ -49,6 +49,12 @@ PUBLIC_SITES = (
     "mail.google.com", "outlook.live.com", "outlook.office.com", "outlook.office365.com", "mail.yahoo.com",
     "mail.proton.me", "app.hey.com",
 )
+# Hosting dashboards, where a Deploy / Publish / Promote click makes a site live.
+HOSTING_SITES = ("vercel.com", "netlify.com", "app.netlify.com", "dash.cloudflare.com", "console.firebase.google.com",
+                 "railway.com", "railway.app", "render.com", "fly.io", "expo.dev")
+_LIVE_LABEL = re.compile(r"^(re)?deploy\b|^publish\b|^go live\b|^promote\b|^make (it )?live\b|^launch\b|"
+                         r"^(add|connect|assign) (a )?(custom )?domain\b", re.I)
+_PUBLIC_REPO_LABEL = re.compile(r"\bmake (this repository |it )?public\b|\bchange to public\b", re.I)
 BILLING_SEGMENTS = {"billing", "checkout", "upgrade", "subscribe", "subscription", "subscriptions", "payment",
                     "payments", "purchase", "cart"}
 LOGIN_SEGMENTS = {"login", "signin", "sign-in", "log-in", "sso", "oauth", "authorize", "2fa", "verify"}
@@ -66,7 +72,9 @@ def host_of(url: str) -> str:
 
 
 def under(host: str, site: str) -> bool:
-    """host is the site or one of its subdomains."""
+    """host is the site or one of its subdomains ("*" is any site)."""
+    if site == "*":
+        return True
     site = site.lower().removeprefix("www.")
     return host == site or host.endswith("." + site)
 
@@ -137,7 +145,7 @@ def purchase_label(text: str) -> bool:
 # ------------------------------------------------------------------------------------------ grants
 @dataclass
 class Grant:
-    kind: str  # "purchase" or "public"
+    kind: str  # "purchase", "public" or "live"
     sites: tuple[str, ...]
     agent: str
     until: float
@@ -163,7 +171,7 @@ def grant(ctx: Any, kind: str, sites: list[str], agent: str, *, amount_usd: floa
 def granted(ctx: Any, kind: str, host: str, agent: str) -> Grant | None:
     now = time.time()
     for g in reversed(_grants(ctx)):
-        if g.kind == kind and g.agent == agent and g.until > now and any(under(host, s) for s in g.sites):
+        if g.kind == kind and g.agent in (agent, "*") and g.until > now and any(under(host, s) for s in g.sites):
             return g
     return None
 
@@ -318,8 +326,22 @@ async def check_browser(ctx: Any, agent: str, action: str, params: dict, session
                         "Open the checkout from the merchant's own site, in this tab.")
         return _over(_total_or_none(await _page_text(session)), card.amount_usd)
 
-    # Money
     label = await _label(session, action, params)
+    # Going live, and making a repository public (the human's launch plan decides; otherwise they're asked)
+    if action == "click" and label:
+        from . import launch
+
+        plan = launch.effective(ctx)
+        if any(under(host, h) for h in HOSTING_SITES) and _LIVE_LABEL.search(label.strip()) and \
+                plan["live"] != "auto" and not granted(ctx, "live", "*", agent):
+            return (f"\"{label.strip()[:40]}\" would put the site live, which waits for the human. Call "
+                    "go_live(what, where) first (they're asked once for this run), then click again.")
+        if under(host, "github.com") and _PUBLIC_REPO_LABEL.search(label) and plan["repo"] != "public" and \
+                not granted(ctx, "public", host, agent):
+            return ("Making the repository public needs the human's OK (their launch plan says private): call "
+                    "request_approval(..., sites=[\"github.com\"]) first.")
+
+    # Money
     why = ("a payment page" if is_payment_host(host) and not is_test_checkout(url) else
            "a billing page" if is_billing_page(url) else
            f"\"{label.strip()[:40]}\" looks like a purchase" if purchase_label(label) else None)
@@ -467,7 +489,8 @@ def _match(table: list[tuple[str, str, str, str]], method: str, host: str, targe
 
 
 def check_request(method: str, url: str, body: str = "") -> tuple[str, str] | None:
-    """("purchase" | "public", what it does) when an API call buys something or speaks for the human."""
+    """(kind, what it does) when an API call buys something, speaks for the human, makes a repository public or
+    puts something live (kinds as for check_command, plus "live-stripe")."""
     method = method.upper()
     try:
         u = urlparse(url)
@@ -484,7 +507,12 @@ def check_request(method: str, url: str, body: str = "") -> tuple[str, str] | No
         return "public", label
     repo_path = re.search(r"^/(repos/[^/]+/[^/]+|user/repos|orgs/[^/]+/repos)$", u.path)
     if under(host, "api.github.com") and method in ("PATCH", "POST") and repo_path and _PUBLIC_REPO.search(body or ""):
-        return "public", "making a GitHub repository public"
+        return "public-repo", "making a GitHub repository public"
+    if under(host, "api.vercel.com") and method == "POST" and re.search(r"^/v\d+/deployments$", u.path) and \
+            re.search(r"\"target\"\s*:\s*\"production\"", body or ""):
+        return "live", "a production deploy on Vercel (the live site)"
+    if under(host, "api.vercel.com") and method == "POST" and re.search(r"^/v\d+/projects/[^/]+/domains$", u.path):
+        return "live", "pointing a domain at the site on Vercel"
     if under(host, "api.stripe.com") and method in ("POST", "DELETE") and re.search(
             r"^/v1/(charges|payment_intents|payouts|transfers|refunds|topups|invoices/[^/]+/(pay|send)|subscriptions|"
             r"credit_notes|application_fees/[^/]+/refunds)", u.path):
@@ -509,7 +537,8 @@ def _positionals(argv: list[str]) -> list[str]:
 
 
 def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
-    """("purchase" | "public", what it does) for a signed-in CLI command that buys something or publishes."""
+    """(kind, what it does) for a signed-in CLI command that buys something, publishes, makes a repository public or
+    puts something live: kind is "purchase", "public", "public-repo" or "live" (see hold)."""
     words = _positionals(argv)
     flags = {a.split("=", 1)[0] for a in argv if a.startswith("-")}
     first = words[0] if words else ""
@@ -521,14 +550,17 @@ def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
         return "public", "a live-mode Stripe change (real customers and real money)"
     if service in ("eas", "expo") and first == "submit":
         return "public", "sending the app to Apple / Google (App Store Connect, Google Play)"
+    live = _live_command(service, words, flags, argv)
+    if live:
+        return "live", live
     if service == "github":
         sub = words[1] if len(words) > 1 else ""
         if first == "release" and sub == "create":
             return "public", "publishing a GitHub release"
         if first == "repo" and sub == "create" and "--public" in flags:
-            return "public", "creating a public GitHub repository"
+            return "public-repo", "creating a public GitHub repository"
         if first == "repo" and sub == "edit" and "--visibility" in flags and "public" in argv:
-            return "public", "making a GitHub repository public"
+            return "public-repo", "making a GitHub repository public"
         if first == "gist" and sub == "create" and flags & {"--public", "-p"}:
             return "public", "publishing a public gist"
         if (first, sub) in (("issue", "create"), ("issue", "comment"), ("pr", "comment"), ("pr", "review")):
@@ -549,6 +581,62 @@ def check_command(service: str, argv: list[str]) -> tuple[str, str] | None:
     return None
 
 
+_PROD_BRANCHES = {"main", "master", "production", "prod"}
+
+
+def _live_command(service: str, words: list[str], flags: set[str], argv: list[str]) -> str | None:
+    """What a deploy command makes live for everyone (production), if it does. Previews aren't live."""
+    first = words[0] if words else ""
+    second = words[1] if len(words) > 1 else ""
+    if service == "vercel":
+        deploy = first == "deploy" or not words or first.startswith((".", "/"))  # `vercel`, `vercel ./dist`
+        preview = "--target=preview" in argv or ("--target" in argv and "preview" in argv)
+        if flags & {"--prod", "--production"} or "--target=production" in argv or \
+                ("--target" in argv and "production" in argv):
+            return "a production deploy on Vercel (the live site)"
+        if deploy and not preview:  # can be production (a new project's first deploy is)
+            return "a Vercel deploy (for a preview only, add --target=preview)"
+        if first in ("promote", "rollback"):
+            return "changing what's live on Vercel"
+        if first == "alias" or (first == "domains" and second == "add"):
+            return "pointing a domain at the site on Vercel"
+        if first == "git" and second == "connect":
+            return "connecting the GitHub repository to Vercel (every push to main goes live)"
+    if service == "netlify" and first == "deploy" and flags & {"--prod", "-p", "--prodIfUnlocked"}:
+        return "a production deploy on Netlify (the live site)"
+    if service == "firebase" and first == "deploy":
+        return "a Firebase deploy (live right away)"
+    if service == "cloudflare":
+        if first == "deploy" or (first == "pages" and second == "deploy" and not (
+                "--branch" in flags and not ({a.split("=", 1)[-1] for a in argv} & _PROD_BRANCHES))):
+            return "a Cloudflare deploy (the live site)"
+    if service == "railway" and first == "up":
+        return "a Railway deploy (live right away)"
+    if service in ("eas", "expo") and first == "update" and {"production", "--channel=production",
+                                                               "--branch=production"} & set(argv):
+        return "an update to the app people have installed (EAS Update, production)"
+    return None
+
+
+async def approve_live(ctx: Any, agent: str, what: str, details: str = "") -> None:
+    """Going live for everyone: fine if the human's launch plan says "when it's ready" or they already approved it
+    in this run; otherwise ask them (once per run)."""
+    from . import launch
+    from .sdk import ToolError
+
+    plan = launch.get(ctx)
+    if (plan and plan["live"] == "auto") or granted(ctx, "live", "*", agent):
+        return
+    ok, note = await ctx.request_approval(
+        f"Put it live? {what}", agent=agent,
+        data={"kind_hint": "live", "details": (details or what)[:4000] + "\n\nApproving lets agents put this run's "
+              "work live (production deploys, the domain) without asking again."})
+    if not ok:
+        raise ToolError("The human wants to wait before this goes live. Keep it on a preview (e.g. deploy without "
+                        f"--prod) or localhost, and report that it's ready to go live. {note or ''}".strip())
+    grant(ctx, "live", ["*"], "*", minutes=24 * 60, note=what)
+
+
 async def hold(ctx: Any, agent: str, kind: str, label: str, what: str, *, site: str | None = None) -> None:
     """Before an API call or command that buys something or speaks for the human: purchases need an approved purchase
     for the site (authorize_purchase); public actions open an approval showing exactly what will run."""
@@ -560,6 +648,13 @@ async def hold(ctx: Any, agent: str, kind: str, label: str, what: str, *, site: 
         raise ToolError(f"This is {label}, which costs money. Call authorize_purchase(amount_usd, merchant, "
                         f"description, sites=[\"{site or 'the service'}\"]) first (the human approves it), then run it "
                         "again.")
+    if kind == "live":
+        return await approve_live(ctx, agent, label, what)
+    if kind == "public-repo":
+        from . import launch
+
+        if launch.effective(ctx)["repo"] == "public":
+            return  # the human chose a public repository in the launch plan
     if site and granted(ctx, "public", site, agent):
         return
     ok, note = await ctx.request_approval(f"Allow {label}?", agent=agent, data={"details": what[:4000]})

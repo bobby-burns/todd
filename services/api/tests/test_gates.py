@@ -72,7 +72,7 @@ def test_known_purchase_and_posting_requests():
     assert cr("POST", "https://api.x.com/2/tweets") == ("public", "posting on X")
     assert cr("POST", "https://api.resend.com/emails")[0] == "public"
     assert cr("POST", "https://api.github.com/repos/me/app/issues")[0] == "public"
-    assert cr("PATCH", "https://api.github.com/repos/me/app", '{"private": false}')[0] == "public"
+    assert cr("PATCH", "https://api.github.com/repos/me/app", '{"private": false}')[0] == "public-repo"
     assert cr("PATCH", "https://api.github.com/repos/me/app", '{"description": "x"}') is None
     assert cr("POST", "https://api.stripe.com/v1/refunds")[0] == "live-stripe"
     assert cr("POST", "https://api.stripe.com/v1/products") is None
@@ -80,16 +80,16 @@ def test_known_purchase_and_posting_requests():
 
     cc = gates.check_command
     assert cc("vercel", ["domains", "buy", "example.com"])[0] == "purchase"
-    assert cc("vercel", ["deploy", "--prod", "--yes"]) is None
+    assert cc("vercel", ["deploy", "--prod", "--yes"])[0] == "live"  # see test_launch.py
     assert cc("stripe", ["refunds", "create", "--charge", "ch_1", "--live"])[0] == "public"
     assert cc("stripe", ["refunds", "create", "--charge", "ch_1"]) is None  # test mode
     assert cc("eas", ["submit", "-p", "ios"])[0] == "public"
-    assert cc("github", ["repo", "create", "app", "--public", "--source", "."])[0] == "public"
+    assert cc("github", ["repo", "create", "app", "--public", "--source", "."])[0] == "public-repo"
     assert cc("github", ["repo", "create", "app", "--private", "--source", "."]) is None
     assert cc("github", ["release", "create", "v1.0"])[0] == "public"
     assert cc("github", ["api", "repos/me/app/issues", "-f", "title=x"])[0] == "public"
     assert cc("github", ["api", "repos/me/app/issues"]) is None  # a GET
-    assert cc("github", ["api", "-X", "PATCH", "repos/me/app", "-F", "private=false"])[0] == "public"
+    assert cc("github", ["api", "-X", "PATCH", "repos/me/app", "-F", "private=false"])[0] == "public-repo"
     assert cc("github", ["api", "-X", "PATCH", "repos/me/app", "-f", "description=hi"]) is None
     assert cc("github", ["pr", "create", "--fill"]) is None
     assert gates.check_shell("cd pkg && npm publish --access public")

@@ -17,32 +17,34 @@ const READY: { when: RegExp; text: string }[] = [
   { when: /firebase|firestore/i, text: "Lock down the Firestore and Storage security rules so people can only read and write their own data, and add tests for the rules." },
   { when: /supabase/i, text: "Turn on row-level security for every Supabase table and add policies so people only see their own rows; make sure the service key is never in client code." },
   { when: /stripe|payment|checkout|subscription/i, text: "Get payments ready for real customers: verify Stripe webhook signatures, handle failed and refunded payments, then switch to live mode and do one small real purchase." },
-  { when: /\b(web ?site|web ?app|landing page|vercel|netlify|deploy|next\.js|site)\b/i, text: "Make the site production ready: security headers (CSP, HSTS), rate limits on forms and APIs, no secrets in client code, and error monitoring with alerts." },
+  { when: /\b(web ?site|web ?app|landing page|vercel|netlify|deploy|next\.js|site)\b/i, text: "Do a security pass on the site: security headers (CSP, HSTS), rate limits on forms and APIs, no secrets in client code, and dependency updates." },
+  { when: /\b(web ?site|web ?app|landing page|vercel|netlify|next\.js|site)\b/i, text: "Help people find and share it: submit the sitemap to Google Search Console, check the social preview on X and LinkedIn, and fix anything Lighthouse flags for SEO and accessibility." },
+  { when: /\b(web ?site|web ?app|landing page|vercel|netlify|next\.js|site)\b/i, text: "Add privacy-friendly analytics, uptime monitoring and error alerts, so you know when people use it and when it breaks." },
   { when: /\b(backend|server|endpoints?|auth|sign[- ]?in|login)\b/i, text: "Do a security pass on the backend: validate every input, check that each endpoint enforces who can do what, and add rate limiting and logging for sign-ins." },
   { when: /github|repo/i, text: "Add CI on GitHub that runs the build and tests on every push, and turn on Dependabot security updates and branch protection for main." },
   { when: /domain|dns/i, text: "Set up email for the domain (MX, SPF, DKIM and DMARC) so mail from it doesn't land in spam, and make sure HTTPS is enforced." },
   { when: /\b(database|firestore|supabase|postgres|mongodb)\b/i, text: "Set up automatic backups for the data and check that a restore actually works." },
 ];
 const GENERIC: Step[] = [
-  { text: "Write a short README that explains how to run, change and deploy this, in plain words." },
   { text: "Review what you built for security problems and fix anything serious.", ready: true },
+  { text: "Write a short README that explains how to run, change and deploy this, in plain words." },
 ];
+const READY_WORDS = /secur|rule|row[- ]level|webhook|backup|monitor|rate limit|production|live mode|privacy|seo|sitemap|robots|llms\.txt|lighthouse|analytics|header/i;
 
-export function nextSteps(summary: string, prompt = "", max = 4): Step[] {
+/** Production-readiness steps first (up to 3, so ideas can't crowd them out), then the planner's other ideas. */
+export function nextSteps(summary: string, prompt = "", max = 5): Step[] {
   const own = parseSummary(summary)
     .filter((s) => s.kind === "suggest")
     .flatMap((s) => s.body.split("\n"))
     .map((l) => l.replace(BULLET, "$3").replace(/\*\*|__|`/g, "").trim())
     .filter((l) => l.length > 8)
-    .map((text) => ({ text, ready: /secur|rule|row[- ]level|webhook|backup|monitor|rate limit|production|live mode|privacy/i.test(text) }));
+    .map((text) => ({ text, ready: READY_WORDS.test(text) }));
   const hay = `${summary}\n${prompt}`;
   const built = READY.filter((r) => r.when.test(hay)).map((r) => ({ text: r.text, ready: true }));
-  const out: Step[] = [];
-  for (const s of [...own, ...built, ...GENERIC]) {
-    if (out.length >= max) break;
-    if (!out.some((o) => o.text.toLowerCase() === s.text.toLowerCase())) out.push(s);
-  }
-  return out;
+  const unique = (list: Step[]) => list.filter((s, i) => list.findIndex((o) => o.text.toLowerCase() === s.text.toLowerCase()) === i);
+  const ready = unique([...own.filter((s) => s.ready), ...built, ...GENERIC.filter((s) => s.ready)]).slice(0, 3);
+  const ideas = unique([...own.filter((s) => !s.ready), ...GENERIC.filter((s) => !s.ready)]).slice(0, max - ready.length);
+  return [...ready, ...ideas];
 }
 
 export function NextSteps({ summary, prompt, onPick }: { summary: string; prompt?: string; onPick: (text: string) => void }) {

@@ -78,11 +78,13 @@ async def wait_status(run_id: str, statuses: set[str], timeout: float = 30) -> R
     raise AssertionError(f"run {run_id} stuck in {get_run(run_id).status}")
 
 
-async def pending(run_id: str, timeout: float = 10) -> Interaction:
+async def pending(run_id: str, timeout: float = 10, background: bool = False) -> Interaction:
+    """The run's first open card (background ones, like the launch plan, only when asked for)."""
     for _ in range(int(timeout * 20)):
         with session() as s:
-            it = s.exec(select(Interaction).where(Interaction.run_id == run_id,
-                                                  Interaction.status == "pending")).first()
+            rows = s.exec(select(Interaction).where(Interaction.run_id == run_id,
+                                                    Interaction.status == "pending")).all()
+        it = next((i for i in rows if background or not (i.data or {}).get("background")), None)
         if it:
             return it
         await asyncio.sleep(0.05)

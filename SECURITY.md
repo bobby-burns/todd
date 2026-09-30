@@ -108,6 +108,9 @@ held back only by the agents' instructions. Now (`todd/gates.py`):
   Reddit, Bluesky, Mastodon, Slack, Discord, Telegram, Gmail, SendGrid, Resend, Postmark, Mailgun, Twilio, GitHub
   issues and releases) and publishing commands (`npm publish`, `docker push`, `eas submit`, a public GitHub repo,
   release or gist, a live-mode Stripe change) show the human the exact request and wait for them.
+- **Going live and public code.** Production deploys, connecting a domain, a Git connection that deploys every
+  push, and Deploy/Publish clicks on hosting dashboards wait for the human (once per run) unless their launch plan
+  says to put it live when ready. New GitHub repositories are private unless the plan says public.
 - **The dashboard only serves your own browser tabs.** It answers only to `localhost` (or names in
   `TODD_ALLOWED_HOSTS`), which stops DNS rebinding and Todd's own containers from calling it, and refuses any
   request a browser marks as coming from another site or another localhost port (CSRF). Nothing happens on a GET.

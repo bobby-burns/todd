@@ -16,6 +16,7 @@ import { RunFiles } from "@/components/RunFiles";
 import { RunUsage } from "@/components/RunUsage";
 import { recapLine, SummaryText } from "@/components/SummaryText";
 import { NextSteps } from "@/components/NextSteps";
+import { LaunchChecklist } from "@/components/LaunchChecklist";
 import { StatusWidget } from "@/components/StatusWidget";
 
 type View = "windows" | "timeline" | "files" | "usage";
@@ -318,6 +319,13 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
               <div className="mt-5 border-t border-sep pt-5">
                 <SummaryText text={run.summary} className="text-[14px]" />
               </div>
+              <LaunchChecklist
+                runId={id}
+                onPick={(t) => {
+                  setFollowup(t);
+                  requestAnimationFrame(() => followupRef.current?.focus());
+                }}
+              />
               <NextSteps
                 summary={run.summary}
                 prompt={run.prompt}

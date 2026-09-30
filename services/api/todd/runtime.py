@@ -203,7 +203,8 @@ class RunContext:
             s.refresh(it)
         _pending[it.id] = asyncio.get_running_loop().create_future()
         self.emit(agent, "interaction", prompt, {"interaction_id": it.id, "interaction_kind": kind, **(data or {})})
-        update_run(self.run_id, status="waiting")
+        if not (data or {}).get("background"):  # a background card (the launch plan) doesn't stop anyone
+            update_run(self.run_id, status="waiting")
         return it.id
 
     async def wait_interaction(self, interaction_id: str, timeout: float | None = None) -> Interaction | None:
@@ -332,9 +333,10 @@ def cancel_agent_interactions(run_id: str, agent_id: str) -> None:
 
 
 def _has_pending(run_id: str) -> bool:
+    """Whether someone in the run is waiting on the human (background cards don't count)."""
     with session() as s:
-        return s.exec(select(Interaction).where(Interaction.run_id == run_id, Interaction.status == "pending")).first() \
-            is not None
+        rows = s.exec(select(Interaction).where(Interaction.run_id == run_id, Interaction.status == "pending")).all()
+    return any(not (it.data or {}).get("background") for it in rows)
 
 
 def cancel_stale_interactions() -> int:

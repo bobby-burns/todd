@@ -13,7 +13,7 @@ import httpx
 
 from .. import settings, vault
 from ..policy import authorize_spend, settle
-from ..sdk import ToolError, get_ctx, todd_tool
+from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 
 VERCEL_API = "https://api.vercel.com"
 GITHUB_API = "https://api.github.com"
@@ -60,6 +60,13 @@ class HTTPToolError(ToolError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+async def _live(what: str, details: str = "") -> None:
+    """Production deploys and domains wait for the human unless their launch plan says "when it's ready"."""
+    from ..gates import approve_live
+
+    await approve_live(get_ctx(), get_agent_id(), what, details or what)
 
 
 def _price(value: Any) -> float | None:
@@ -158,7 +165,8 @@ async def vercel_create_project(name: str, github_repo: str | None = None, frame
     body: dict[str, Any] = {"name": name}
     if framework:
         body["framework"] = framework
-    if github_repo:
+    if github_repo:  # from then on every push to main is a production deploy
+        await _live(f"connecting {github_repo} to Vercel (every push to main goes live)")
         body["gitRepository"] = {"type": "github", "repo": github_repo}
     p = await _vercel("POST", "/v11/projects", json=body)
     return {"id": p.get("id"), "name": p.get("name"), "link": p.get("link"), "framework": p.get("framework")}
@@ -173,6 +181,7 @@ async def vercel_add_domain(project: str, domain: str, redirect_www: bool = True
         domain: apex domain, e.g. example.com
         redirect_www: also add www.<domain> redirecting to the apex (default true)
     """
+    await _live(f"the site on {domain}", f"Project: {project}\nDomain: https://{domain}")
     res = await _vercel("POST", f"/v10/projects/{project}/domains", json={"name": domain})
     out = {"added": domain, "verified": res.get("verified"), "verification": res.get("verification")}
     if redirect_www and not domain.startswith("www."):
@@ -224,6 +233,7 @@ async def vercel_deploy(project: str, github_repo: str, ref: str = "main") -> di
         ref: branch or commit (default main)
     """
     org, repo = github_repo.split("/", 1)
+    await _live(f"a production deploy of {github_repo}@{ref} on Vercel", f"Project: {project}\nRepo: {github_repo}@{ref}")
     body = {"name": project, "project": project, "target": "production",
             "gitSource": {"type": "github", "org": org, "repo": repo, "ref": ref}}
     d = await _vercel("POST", "/v13/deployments", json=body)
@@ -271,6 +281,11 @@ async def github_create_repo(name: str, private: bool = True, description: str =
         private: create as private (default true)
         description: short description
     """
+    if not private:
+        from ..gates import hold
+
+        await hold(get_ctx(), get_agent_id(), "public-repo", "creating a public GitHub repository",
+                   f"Repository: {name}\n{description}")
     owner = settings.get("integrations").get("github_owner")
     me = await github_whoami()
     body = {"name": name, "private": private, "description": description, "auto_init": False}

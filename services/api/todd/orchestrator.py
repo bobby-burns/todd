@@ -13,7 +13,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
 
-from . import accounts, connect, prompts, registry, settings, signin, vault
+from . import accounts, connect, launch, prompts, registry, settings, signin, vault
 from .agents import claude_code, dynamic
 from .agents.graph import build_agent, recursion_limit
 from .config import config
@@ -243,6 +243,8 @@ class RunManager:
             ctx.toolsets = registry.all_toolsets(mcp_toolsets, engine=engine)  # type: ignore[attr-defined]
             # Sign in once, up-front: ask for the accounts this goal needs before any agent starts.
             preflight = "" if (resume or followup) else await signin.preflight(ctx, run.prompt)
+            note = await self._launch_note(ctx, run.prompt, resume or bool(followup))
+            preflight = "\n".join(filter(None, [preflight, note]))
             system = prompts.compose(
                 "planner", budget_usd=f"{run.budget_usd:.2f}",
                 integrations=integrations_summary() + "\n" + await accounts_summary()
@@ -290,12 +292,34 @@ class RunManager:
             update_run(run_id, status="failed", summary=f"{type(e).__name__}: {e}")
             ctx.emit("system", "error", f"{type(e).__name__}: {e}", {"traceback": traceback.format_exc(limit=8)})
         finally:
+            launch.close(ctx)
             n = dynamic.cancel_all(ctx)
             if n:
                 ctx.emit("system", "status", f"Stopped {n} agent(s) still running when the planner ended")
                 await asyncio.sleep(0)
             self.tasks.pop(run_id, None)
 
+
+    @staticmethod
+    async def _launch_note(ctx: RunContext, prompt: str, continuing: bool) -> str:
+        """Ask where a website will live (non-blocking), or remind the planner of the answer on a resume."""
+        plan = launch.get(ctx)
+        if plan is not None:
+            return "- " + launch.describe(plan)
+        if continuing or not launch.shippable(prompt):
+            return ""
+        try:
+            await launch.ask(ctx)
+        except RunCancelled:
+            raise
+        except Exception:  # noqa: BLE001  (never block a run on it)
+            log.exception("launch plan card failed")
+            return ""
+        return ("- Launch plan: the human is being asked, on a card, where this will live (their domain, a new one, or "
+                "a free address), whether the GitHub repository is private or public, and whether to ask before it "
+                "goes live. Don't wait for it: start building now. Their answer arrives as a message. Until then: "
+                "private repository, nothing live (previews and localhost are fine). When a step needs the answer, "
+                "call plan_launch(wait=true).")
 
     async def _planner_claude_code(self, ctx: RunContext, run: Run, system: str, tools: list, resume: bool,
                                    followup: str | None = None) -> dict:

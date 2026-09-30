@@ -27,7 +27,7 @@ DEFAULTS: dict[str, Any] = {
     # Native model reasoning ("thinking"). Agents always narrate their reasoning in text; this additionally asks
     # models that support it (Claude, o-series, Gemini, DeepSeek…) for extended reasoning, shown in the dashboard.
     "thinking": {"enabled": False, "effort": "medium"},
-    "limits": {"max_concurrent_agents": 4, "max_agents_per_run": 12},
+    "limits": {"max_concurrent_agents": 6, "max_agents_per_run": 16},
     # Accounts the user picked in onboarding / on the Accounts page, and custom sites they added.
     "accounts_selected": [],
     "cli_auto_skip": [],  # CLIs the human disconnected: don't connect them again automatically

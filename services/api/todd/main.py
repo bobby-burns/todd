@@ -466,6 +466,16 @@ async def run_file_view(run_id: str, path: str, reveal: bool = False) -> dict:
     return await _workspace_call(workspace.view(run_id, path, reveal=reveal))
 
 
+@app.get("/api/runs/{run_id}/launch-check")
+async def run_launch_check(run_id: str) -> dict:
+    """For a website the run built: what's in place for real visitors (SEO, sharing, standard files, security
+    headers…) and a prompt that adds what's missing."""
+    from . import readiness
+
+    _get_run(run_id)
+    return await _workspace_call(readiness.check(run_id))
+
+
 @app.get("/api/runs/{run_id}/files/download")
 async def run_file_download(run_id: str, path: str) -> Response:
     _get_run(run_id)
@@ -484,7 +494,8 @@ def run_agents(run_id: str) -> list[dict]:
         rows = s.exec(select(AgentInstance).where(AgentInstance.run_id == run_id)
                       .order_by(AgentInstance.created_at)).all()  # type: ignore[arg-type]
         pending = {i.agent for i in s.exec(select(Interaction).where(
-            Interaction.run_id == run_id, Interaction.status == "pending")).all()}
+            Interaction.run_id == run_id, Interaction.status == "pending")).all()
+            if not (i.data or {}).get("background")}  # the launch plan card doesn't hold anyone up
     # The run is "waiting" if *any* agent needs the human; the planner only "needs you" for its own requests.
     planner_status = "waiting" if "planner" in pending else ("running" if run.status == "waiting" else run.status)
     if manager.is_paused(run_id, "planner"):

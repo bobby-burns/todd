@@ -97,7 +97,8 @@ async def spawn(ctx: RunContext, *, name: str, instructions: str, task: str, too
         raise ToolError(f"model must be one of {TIERS}")
     limits = settings.get("limits") or {}
     if len(running(ctx)) >= int(limits.get("max_concurrent_agents", 6)):
-        raise ToolError(f"{len(running(ctx))} agents are already running (limit). Wait for some to finish first.")
+        raise ToolError(f"{len(running(ctx))} agents are already running (the limit, set in Settings). Spawn this one "
+                        "after wait_for_agents returns a finished one.")
     if len(ctx.agents) >= int(limits.get("max_agents_per_run", 30)):
         raise ToolError("This run has reached its agent limit. Finish with what you have or ask the human.")
 
@@ -243,11 +244,13 @@ def _handle(ctx: RunContext, agent_id: str) -> AgentHandle:
 @todd_tool
 async def spawn_agent(name: str, instructions: str, task: str, toolsets: list[str], model: str = "default",
                       background: bool = True, tasks: list[str] | None = None) -> dict:
-    """Create an agent for a coherent chunk of the work. One agent should own a group of RELATED tasks that share
-    context and tools (use `tasks` for the checklist); don't create one agent per small step. Design it for the
-    job: a short name (e.g. "Store Listing", "Marketing Site & Domain"), instructions describing its role,
-    standards and constraints, and only the toolsets it needs — API/MCP toolsets before `browser`. Agents don't see your conversation: the task
-    must be self-contained (inputs, exact outputs to report, done condition).
+    """Create an agent for one part of the work that can move on its own, with a checklist of its related tasks
+    (`tasks`). Split independent parts across agents so they run at the same time (most builds: 3–5 agents); don't
+    create one agent per small step. When agents share a codebase, name each one's files and folders in its
+    instructions, and say which one installs packages and which one runs git. Design it for the job: a short name
+    (e.g. "Quiz Engine", "Launch Readiness", "Repo & Hosting"), instructions describing its role, standards and
+    constraints, and only the toolsets it needs — API/MCP toolsets before `browser`. Agents don't see your
+    conversation: the task must be self-contained (inputs, exact outputs to report, done condition).
     The agent works on its own, in parallel with you and other agents: this returns right away with an agent_id.
     Spawn every independent group in one turn, then call wait_for_agents to collect results. background=false
     waits for this agent's summary instead (a message from the human ends the wait early; the agent keeps running).

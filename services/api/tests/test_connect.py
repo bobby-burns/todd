@@ -213,11 +213,11 @@ def test_connect_vercel_snapshot_and_cli_run(loop, local_sandbox, fake_approval)
         assert fake_approval["code"] == "WXYZ-2345"  # from the approval URL, not the telemetry link before it
         first = vault.get_secret(connect.state_name("vercel"))
         assert first and connect.is_connected("vercel") and connect.status("vercel")["connected"]
-        r = await sandbox_tools.cli.ainvoke({"service": "vercel", "command": "deploy --prod --yes"})
-        assert r["exit_code"] == 0 and 'deploying deploy --prod --yes as {"session":"one"}' in r["output"]
+        r = await sandbox_tools.cli.ainvoke({"service": "vercel", "command": "deploy --target=preview --yes"})
+        assert r["exit_code"] == 0 and 'deploying deploy --target=preview --yes as {"session":"one"}' in r["output"]
         assert "__TODD" not in r["output"]
         assert vault.get_secret(connect.state_name("vercel")) != first  # the refreshed session was saved
-        r = await sandbox_tools.cli.ainvoke({"service": "vercel", "command": "deploy"})
+        r = await sandbox_tools.cli.ainvoke({"service": "vercel", "command": "deploy --target=preview"})
         assert '{"session":"two"}' in r["output"]
         with pytest.raises(ToolError, match="Blocked"):
             await sandbox_tools.cli.ainvoke({"service": "vercel", "command": "logout"})

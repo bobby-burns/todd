@@ -36,7 +36,9 @@ tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
 tools/human.py     ask_human, request_approval, authorize_purchase (every agent)
-gates.py           what needs a person, checked in code: purchases, card entry, public actions (browser, APIs, CLIs)
+gates.py           what needs a person, checked in code: purchases, card entry, public actions, going live, public repos
+launch.py          the launch plan: asked at the start of a website run (address, repo visibility, going live)
+readiness.py       the "Ready for real visitors?" checklist, read from a finished run's project files
 accounts.py        Account catalog (~70 services), status detection, sign in/out, `accounts` toolset
 cdp.py             Minimal CDP client: cookies, open tab, sign out, probe a page
 sdk.py             Public plugin API: todd_tool(toolset=, planner=), get_ctx, get_agent_id, ToolError, …
@@ -171,6 +173,17 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   in the Ledger, 30 minutes, that agent and site); posting/messaging/email sites need `request_approval(sites=…)`;
   known posting APIs and publishing commands open an approval with the exact request. Recognition is by label,
   page and endpoint, so these are backstops to the budget and a limited card, not a proof.
+- **Going live** (`gates.approve_live`): production deploys (`vercel --prod`, a plain `vercel deploy` (a new
+  project's first one is its production site), `netlify deploy --prod`, `firebase deploy`, `wrangler deploy`, `railway up`, a
+  production EAS update, Vercel's deployments API with `target: production`, `vercel_deploy`), connecting a domain,
+  a Git connection that deploys every push, and Deploy/Publish clicks on hosting dashboards wait for the human,
+  once per run, unless the launch plan says "when it's ready". Previews (`--target=preview`) never ask. New GitHub
+  repositories are private (`gh repo create` gets `--private` when no visibility is given); a public one needs the
+  launch plan to say public, or an approval.
+- **Launch plan** (`launch.py`): for a goal that makes a website, the run's first step (after the sign-in check)
+  opens a *background* card (it doesn't set the run to waiting or hold up any agent) asking for the address, the
+  repository's visibility and whether to ask before going live. The answer goes to the planner's inbox and to
+  `ctx.launch`; a resumed run reads it back from the answered card. Unanswered cards close when the run ends.
 
 ## Security model
 

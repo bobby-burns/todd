@@ -103,7 +103,7 @@ export function StatusWidget({ agents, events, pending, pausedIds }: { agents: A
       const done = new Set(evs.filter((e) => e.kind === "tool_result").map((e) => e.data?.call_id));
       const call = [...evs].reverse().find((e) => e.kind === "tool_call" && !done.has(e.data?.call_id));
       const step = [...evs].reverse().find((e) => e.kind === "browser_step");
-      const ask = pending.find((p) => p.agent === a.id);
+      const ask = pending.find((p) => p.agent === a.id && !p.data?.background); // the launch plan card doesn't stop anyone
       const paused = pausedIds.includes(a.id) || a.status === "paused";
       const taskHead = (a.task ?? "").split("\n")[0];
       let doing = call ? describeTool(call.data?.tool, call.data?.args) : "Thinking";

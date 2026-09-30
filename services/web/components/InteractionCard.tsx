@@ -6,6 +6,7 @@ import { Check, CreditCard, Hand, Lock, MessageCircleQuestion, ShieldCheck, X } 
 import { api, usd, type Interaction } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
 import { openLiveBrowser } from "./LiveBrowser";
+import { LaunchPlanCard } from "./LaunchPlanCard";
 import { SigninCard } from "./SigninCard";
 import { AgentAvatar, IconTile } from "./ui";
 
@@ -37,12 +38,16 @@ export function InteractionCard({
   if (it.kind === "approval" && it.data?.kind_hint === "signin" && Array.isArray(it.data.services)) {
     return <SigninCard it={it} agentName={agentName} agentColor={agentColor} planner={planner} onDone={onDone} />;
   }
+  if (it.kind === "question" && it.data?.kind_hint === "launch") {
+    return <LaunchPlanCard it={it} agentName={agentName} agentColor={agentColor} planner={planner} onDone={onDone} />;
+  }
+  const options: string[] = it.kind === "question" && Array.isArray(it.data?.options) ? it.data.options : [];
 
-  async function send(decision: "approve" | "deny" | null) {
+  async function send(decision: "approve" | "deny" | null, text: string = answer) {
     setBusy(true);
     setErr(null);
     try {
-      await api(`/interactions/${it.id}`, { method: "POST", json: { decision, answer: answer || null } });
+      await api(`/interactions/${it.id}`, { method: "POST", json: { decision, answer: text || null } });
       onDone();
     } catch (e: any) {
       setErr(e.message);
@@ -112,12 +117,28 @@ export function InteractionCard({
         </p>
       )}
 
+      {options.length > 0 && (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {options.map((o) => (
+            <button
+              key={o}
+              type="button"
+              disabled={busy}
+              onClick={() => send(null, o)}
+              className="rounded-[16px] bg-fill/60 px-3.5 py-2.5 text-left text-[13.5px] leading-snug font-medium ring-1 ring-sep transition-colors hover:bg-accent/10 hover:ring-accent/50 disabled:opacity-60"
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-center">
         <input
           className="field h-10 flex-1 rounded-full px-4"
           type={secretName ? "password" : "text"}
           autoComplete={secretName ? "off" : undefined}
-          placeholder={secretName ? "Paste it here…" : it.kind === "question" ? "Your answer…" : "Add a note for the agent (optional)"}
+          placeholder={secretName ? "Paste it here…" : options.length ? "Something else…" : it.kind === "question" ? "Your answer…" : "Add a note for the agent (optional)"}
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
           onKeyDown={(e) => {

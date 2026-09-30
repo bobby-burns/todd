@@ -264,7 +264,8 @@ _GH_BLOCKED = {"auth", "extension", "extensions", "ext", "alias", "config", "cod
 @todd_tool(toolset="sandbox")
 async def gh(command: str, timeout_s: int = 300) -> dict:
     """Run the GitHub CLI in the project directory, signed in with the vault's GITHUB_TOKEN (connect it first with
-    cli_login("github") if find_integrations says so). Examples: `repo create my-app --private --source . --push`,
+    cli_login("github") if find_integrations says so). New repositories are private unless the human's launch plan
+    says public (a public one asks them). Examples: `repo create my-app --private --source . --push`,
     `repo view owner/name`, `pr create --fill`, `release create v1.0 --generate-notes`, `api user`.
 
     Args:
@@ -281,6 +282,8 @@ async def gh(command: str, timeout_s: int = 300) -> dict:
     token = vault.get_secret("GITHUB_TOKEN")
     if not token:
         raise ToolError(NO_TOKEN)
+    if argv[:2] == ["repo", "create"] and not {"--public", "--private", "--internal"} & set(argv):
+        argv.append("--private")  # private unless the human chose public (then --public is fine)
     await _hold("github", argv, "gh", site="github.com")
     # git operations inside gh (e.g. `repo create --push`) authenticate through gh for github.com only; hooks off.
     script = " && ".join([
@@ -300,14 +303,16 @@ async def gh(command: str, timeout_s: int = 300) -> dict:
 @todd_tool(toolset="sandbox")
 async def cli(service: str, command: str, path: str = ".", timeout_s: int = 600) -> dict:
     """Run a service's CLI signed in with the human's account (connected once with cli_login, or on the Accounts
-    page), in a project directory. No tokens or login steps needed. Examples: cli("vercel", "deploy --prod --yes"),
-    cli("netlify", "deploy --prod --dir dist"), cli("cloudflare", "pages deploy dist --project-name site"),
+    page), in a project directory. No tokens or login steps needed. Examples: cli("vercel", "deploy --target=preview
+    --yes"), cli("vercel", "deploy --prod --yes"), cli("netlify", "deploy --prod --dir dist"),
+    cli("cloudflare", "pages deploy dist --project-name site"),
     cli("railway", "up --detach"), cli("firebase", "deploy --only hosting"), cli("stripe", "products list").
     For GitHub use `gh`; for Expo / EAS (mobile apps) use `eas`.
 
     Args:
         service: vercel, netlify, railway, cloudflare (wrangler), stripe or firebase
-        command: arguments for the CLI, e.g. "deploy --prod --yes"
+        command: arguments for the CLI, e.g. "deploy --target=preview --yes". Going live (a production deploy, a
+            domain) waits for the human unless their launch plan says to put it live when ready.
         path: directory relative to the project root (default .)
         timeout_s: timeout in seconds (default 600)
     """
