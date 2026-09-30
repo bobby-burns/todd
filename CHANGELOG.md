@@ -19,6 +19,9 @@ changes).
   descriptions, social preview, icons, robots.txt, sitemap.xml, llms.txt, 404 page, security headers (plus manifest
   and privacy page, recommended). Tap a missing item, or "Add the N missing", to ask Todd for it.
   API: `GET /runs/{id}/launch-check`.
+- **Right now in plain words:** each agent's line says what it's doing in everyday language ("Building the site to
+  make sure it works", "Writing the streak badge part of the page", "Putting up a preview on Vercel"), with its own
+  words and the actual command or file shown smaller underneath.
 - **Questions you can tap:** `ask_human(options=[…])` shows the choices as buttons, with "Something else…" for your
   own answer.
 

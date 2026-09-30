@@ -5,73 +5,18 @@ import { AnimatePresence, motion } from "motion/react";
 import { ChevronDown, Hand, Pause, Radio } from "lucide-react";
 import { agentColor, type AgentInfo, type Interaction, type TEvent } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
+import { explainTool, type Doing } from "@/lib/plain";
 import { AgentAvatar } from "./ui";
 
-/* "Right now": one line per working agent on what it's trying to do (its latest thought, in its own words) and what
-   it's doing this moment (the tool it's running, in plain words), plus who's waiting on you or paused. */
+/* "Right now": for each working agent, what it's doing in plain words ("Building the site to make sure it works"),
+   then, smaller, its own words about what it's after and the actual command, file or page. Plus who's waiting on you
+   or paused. */
 
-type Row = { id: string; name: string; goal: string; doing: string; since: string | null; state: "working" | "waiting" | "paused" };
+/** plain: what it's doing, in everyday words; words: the agent's own latest thought; detail: the actual command,
+ *  file or page (shown small). */
+type Row = { id: string; name: string; plain: string; words: string; detail?: string; since: string | null; state: "working" | "waiting" | "paused" };
 
-const host = (u?: string) => {
-  try {
-    return u ? new URL(u).host.replace(/^www\./, "") : "";
-  } catch {
-    return "";
-  }
-};
 const short = (t: string, n = 60) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
-
-/** A tool call in plain words ("Pushing code to GitHub", "Reading app/page.tsx"). */
-export function describeTool(tool: string, args: Record<string, any> = {}): string {
-  const a = args ?? {};
-  switch (tool) {
-    case "shell":
-      return a.cmd ? `Running \`${short(String(a.cmd), 48)}\`` : "Running a command";
-    case "write_file":
-      return `Writing ${a.path ?? "a file"}`;
-    case "read_file":
-      return `Reading ${a.path ?? "a file"}`;
-    case "list_files":
-      return "Looking through the project files";
-    case "git_push":
-      return "Pushing code to GitHub";
-    case "git":
-      return `Running git ${String(a.command ?? "").split(" ")[0] || ""}`.trim();
-    case "gh":
-      return "Working with GitHub";
-    case "cli":
-      return `Using the ${a.service ?? ""} CLI`.replace("  ", " ");
-    case "eas":
-      return "Building the app with Expo";
-    case "browse":
-      return a.task ? `Using the browser: ${short(String(a.task), 60)}` : "Using the browser";
-    case "spawn_agent":
-      return `Starting ${a.name ?? "an agent"}`;
-    case "wait_for_agents":
-      return "Waiting for its agents to finish";
-    case "message_agent":
-      return "Sending an agent new instructions";
-    case "ask_human":
-      return "Waiting for your answer";
-    case "request_approval":
-      return "Waiting for your approval";
-    case "find_integrations":
-      return "Working out the best way to use each service";
-    case "check_accounts":
-    case "request_signins":
-      return "Checking your accounts";
-    case "cli_login":
-      return `Connecting ${a.service ?? "a service"}`;
-    case "api_request":
-      return `Calling ${host(a.url) || "an API"}`;
-    case "fetch_url":
-      return `Reading ${host(a.url) || "a web page"}`;
-  }
-  if (tool.startsWith("browser_")) return "Using the browser";
-  if (tool.startsWith("vercel")) return "Working with Vercel";
-  if (tool.startsWith("github")) return "Working with GitHub";
-  return tool.replace(/^mcp_/, "").replace(/_/g, " ");
-}
 
 const firstSentence = (t: string) => short((t.split(/(?<=[.!?])\s+/)[0] ?? t).replace(/\s+/g, " ").trim(), 150);
 
@@ -106,15 +51,22 @@ export function StatusWidget({ agents, events, pending, pausedIds }: { agents: A
       const ask = pending.find((p) => p.agent === a.id && !p.data?.background); // the launch plan card doesn't stop anyone
       const paused = pausedIds.includes(a.id) || a.status === "paused";
       const taskHead = (a.task ?? "").split("\n")[0];
-      let doing = call ? describeTool(call.data?.tool, call.data?.args) : "Thinking";
-      if (call && String(call.data?.tool ?? "").startsWith("browser") && step && step.id > call.id) doing = `In the browser: ${short(step.text, 70)}`;
-      if (ask) doing = ask.kind === "question" ? "Waiting for your answer" : ask.kind === "spend" ? "Waiting for you to approve a payment" : "Waiting for your approval";
-      if (paused) doing = "Paused";
+      const words = thought ? firstSentence(thought.text) : taskHead ? short(taskHead, 150) : "";
+      let doing: Doing = call ? explainTool(call.data?.tool, call.data?.args) : { plain: thought ? "Thinking about the next step" : "Getting started" };
+      if (call && String(call.data?.tool ?? "").replace(/^mcp__todd__/, "").startsWith("browser") && step && step.id > call.id)
+        doing = { plain: "Clicking through a website", detail: short(step.text, 90) };
+      if (ask)
+        doing = {
+          plain: ask.kind === "question" ? "Waiting for your answer" : ask.kind === "spend" ? "Waiting for you to approve a payment" : "Waiting for your OK",
+          detail: short(ask.prompt, 90),
+        };
+      if (paused) doing = { plain: "Paused", detail: doing.plain };
       return {
         id: a.id,
         name: a.name,
-        goal: thought ? firstSentence(thought.text) : taskHead ? short(taskHead, 150) : "Getting started",
-        doing,
+        plain: doing.plain,
+        words,
+        detail: doing.detail,
         since: (call ?? thought)?.ts ?? null,
         state: paused ? "paused" : ask ? "waiting" : "working",
       };
@@ -150,15 +102,20 @@ export function StatusWidget({ agents, events, pending, pausedIds }: { agents: A
                       <span className="truncate text-[13px] font-semibold">{r.name}</span>
                       {r.since && r.state === "working" && <span className="shrink-0 text-[11px] text-fg-3 tabular">{ago(r.since, now)}</span>}
                     </div>
-                    <p className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-fg">{r.goal}</p>
                     <p
-                      className={`mt-1 flex items-center gap-1.5 truncate text-[12px] font-medium ${
-                        r.state === "waiting" ? "text-orange" : r.state === "paused" ? "text-indigo" : "text-fg-2"
+                      className={`mt-0.5 flex items-start gap-1.5 text-[13.5px] leading-snug font-medium ${
+                        r.state === "waiting" ? "text-orange" : r.state === "paused" ? "text-indigo" : "text-fg"
                       }`}
                     >
-                      {r.state === "waiting" ? <Hand size={12} /> : r.state === "paused" ? <Pause size={12} /> : <Radio size={12} className="text-green" />}
-                      <span className={`truncate ${r.state === "working" ? "shimmer" : ""}`}>{r.doing}</span>
+                      {r.state === "waiting" ? <Hand size={13} className="mt-[3px] shrink-0" /> : r.state === "paused" ? <Pause size={13} className="mt-[3px] shrink-0" /> : <Radio size={13} className="mt-[3px] shrink-0 text-green" />}
+                      <span className={`min-w-0 ${r.state === "working" ? "shimmer" : ""}`}>{r.plain}</span>
                     </p>
+                    {r.words && r.words !== r.plain && <p className="mt-1 line-clamp-2 text-[11.5px] leading-snug text-fg-2">{r.words}</p>}
+                    {r.detail && (
+                      <p className="mt-0.5 truncate font-mono text-[10.5px] text-fg-3" title={r.detail}>
+                        {r.detail}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}
