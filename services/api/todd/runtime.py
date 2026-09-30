@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from . import events
+from . import redact, vault
 from .db import Interaction, add_run_cost, get_run, select, session, update_run, utcnow
 
 
@@ -194,7 +195,11 @@ class RunContext:
         it = await self._interact("question", question, agent, data)
         answer = it.answer or ""
         self.emit(agent, "human_reply", answer or "(no answer)", {"interaction_id": it.id})
-        return answer
+        clean = vault.scrub(answer)  # (the API already scrubs what it stores; this also covers direct callers)
+        if clean != answer or redact.MARK in clean:  # a pasted key or password never reaches the model
+            clean += ("\n(Part of this reply looked like a secret and was hidden. To collect a secret, ask again "
+                      "with ask_human(..., secret_name=NAME) so it goes straight into the vault.)")
+        return clean
 
     async def request_approval(self, prompt: str, agent: str | None = None, data: dict[str, Any] | None = None,
                                kind: str = "approval") -> tuple[bool, str]:

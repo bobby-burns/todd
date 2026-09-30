@@ -129,6 +129,17 @@ def test_planner_spawns_agent_end_to_end(loop):
         tools_seen = {t for entry in fake.LOG if entry.get("key") == worker("Writer") for t in entry["tools"]}
         assert tools_seen and all(t.startswith(T) for t in tools_seen)
         assert T + "echo" in tools_seen and T + "finish" in tools_seen and T + "shout" in tools_seen
+        # usage: every model call counted once per agent (the fake model reports 100 in / 20 out per call)
+        from todd import usage
+
+        u = usage.run_usage(rid)
+        per = {a["name"]: a for a in u["agents"]}
+        w_calls = per["Writer"]["calls"]
+        assert w_calls >= 2 and per["Writer"]["input_tokens"] == 100 * w_calls  # never counted twice
+        assert per["Writer"]["output_tokens"] == 20 * w_calls and per["Writer"]["tool_calls"] >= 1
+        assert per["Planner"]["calls"] >= 2 and u["total"]["tokens"] >= 480
+        assert u["total"]["cost_usd"] == 0 and u["total"]["plan_usd"] > 0  # the plan pays; shown at API prices
+        assert u["models"][0]["model"] == "claude-opus-5-5" and any(t["tool"] == "echo" for t in u["tools"])
 
     loop.run_until_complete(go())
 

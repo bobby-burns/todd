@@ -33,6 +33,22 @@ class Integration:
     setup: str | None = None  # how an agent creates the api_secrets in the browser once the human is signed in
 
 
+# Squarespace Domains (where Google Domains went) has no API for domains or DNS: agents use the browser.
+SQUARESPACE_DNS = """\
+Squarespace has no API for domains or DNS, so this is browser work (the human signs in once: check_accounts /
+request_signins with "squarespace").
+- Domains list: https://account.squarespace.com/domains. DNS for one domain:
+  https://account.squarespace.com/domains/managed/<domain>/dns/dns-settings ("Custom records" → Add record).
+- Point it at Vercel: first vercel_add_domain (or the host's own "add domain"), then add exactly the records the host
+  asks for. Vercel's usual ones: A record, host @, data 76.76.21.21; CNAME record, host www, data cname.vercel-dns.com.
+  Netlify / Cloudflare Pages / others: use the records their dashboard or CLI prints for the domain.
+- Remove conflicting records first (Squarespace's default "Squarespace Defaults" A/CNAME records, or parking records)
+  or the new ones won't take effect; ask the human before removing anything that serves email (MX, TXT/SPF, DKIM).
+- Changes take minutes to a few hours; check with vercel_domain_status or `dig` in the sandbox, don't re-add records.
+- Buying a domain here is a card checkout (browser_start with payment_*), so prefer vercel_buy_domain unless the
+  human wants it at Squarespace."""
+
+
 # One-time key setup in the browser (the human only signs in). Written for both browser engines: the direct tools'
 # names first, the browse() agent's actions in parentheses.
 ASC_SETUP = """\
@@ -53,7 +69,7 @@ Needs the human signed in to App Store Connect as Account Holder or Admin (check
 I = Integration
 CATALOG: list[Integration] = [
     I("github", "GitHub", ["gh"], toolset="github", api_docs="https://docs.github.com/rest", api_secrets=["GITHUB_TOKEN"],
-      cli="gh and git (sandbox: the `gh` and `git_push` tools handle auth)", mcp_url="https://api.githubcopilot.com/mcp/",
+      cli="gh and git (sandbox: the `git`, `git_push` and `gh` tools handle auth; plain git in shell has none)", mcp_url="https://api.githubcopilot.com/mcp/",
       mcp_docs="https://github.com/github/github-mcp-server"),
     I("vercel", "Vercel", [], toolset="vercel", api_docs="https://vercel.com/docs/rest-api", api_secrets=["VERCEL_TOKEN"],
       cli="the Vercel CLI (sandbox: cli(\"vercel\", …))", mcp_url="https://mcp.vercel.com", mcp_docs="https://vercel.com/docs/mcp"),
@@ -87,6 +103,8 @@ CATALOG: list[Integration] = [
     I("resend", "Resend", ["email"], api_docs="https://resend.com/docs/api-reference", api_secrets=["RESEND_API_KEY"]),
     I("porkbun", "Porkbun", [], api_docs="https://porkbun.com/api/json/v3/documentation",
       api_secrets=["PORKBUN_API_KEY", "PORKBUN_SECRET_KEY"]),
+    I("squarespace", "Squarespace Domains", ["squarespace", "google domains", "squarespace domains"],
+      browser_note=SQUARESPACE_DNS),
     I("namecheap", "Namecheap", [], api_docs="https://www.namecheap.com/support/api/intro/",
       api_secrets=["NAMECHEAP_API_KEY"], browser_note="The API needs your IP allow-listed; the browser is fine for one-offs."),
     I("expo", "Expo (EAS)", ["eas", "expo application services", "react native", "expo go", "ios", "iphone",
@@ -200,7 +218,7 @@ def assess(query: str, available_toolsets: set[str] | None = None,
         route = "cli"
     elif _needs_connect(it):
         signed_in = (browser_status or {}).get(it.id) == "signed_in"
-        after = (f"the `{it.toolset}` toolset, gh and git_push work" if conn and conn.secret
+        after = (f"the `{it.toolset}` toolset, git, git_push and gh work" if conn and conn.secret
                  else f"use {it.tool}(…)" if it.tool else f"use cli(\"{it.id}\", …)")
         rec = (f"{it.name} isn't connected to Todd yet" + (", but the browser is signed in to it. " if signed_in else ". ")
                + f"Call cli_login(\"{it.id}\"): Todd signs the {conn.name if conn else 'CLI'} in with "

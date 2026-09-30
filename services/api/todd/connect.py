@@ -69,7 +69,8 @@ CONNECTORS: dict[str, Connector] = {c.service: c for c in [
               ("vercel.com",), code_re=r"user_code=([A-Z0-9]{4}-[A-Z0-9]{4})",
               blocked=("login", "logout", "switch", "whoami --token"), example="deploy --prod --yes"),
     Connector("netlify", "Netlify CLI", "npx -y netlify-cli", "login", r"https://app\.netlify\.com/authorize\?\S+",
-              ("netlify.com",), blocked=("login", "logout", "switch"), example="deploy --prod --dir dist"),
+              ("netlify.com",), blocked=("login", "logout", "switch", "env:get", "env:list"),
+              example="deploy --prod --dir dist"),
     Connector("railway", "Railway CLI", "npx -y @railway/cli", "login --browserless",
               r"https://railway\.com/activate\?user_code=[A-Z0-9-]+", ("railway.com",),
               code_re=r"user_code=([A-Z0-9]{4}-[A-Z0-9]{4})", blocked=("login", "logout"), example="up --detach"),
@@ -375,6 +376,16 @@ async def _store(c: Connector, state: str) -> None:
 _run_locks: dict[str, asyncio.Lock] = {}
 
 
+def _blocked(argv: list[str], rule: str) -> bool:
+    """A blocked subcommand anywhere among the command's words, not just first: global flags in front
+    (`stripe --color off config --list`) don't get around it. Rules with a flag need every part present."""
+    parts = rule.split()
+    if any(p.startswith("-") for p in parts):
+        return all(p in argv for p in parts)
+    words = [a for a in argv if not a.startswith("-")]
+    return any(words[i:i + len(parts)] == parts for i in range(len(words)))
+
+
 async def run(service: str, command: str, cwd: str, timeout: int = 600, env: dict[str, str] | None = None,
               pre: str = "", post: str = "") -> dict[str, Any]:
     """Run a connected CLI (not GitHub: that's the `gh` tool) with its saved sign-in. The snapshot is unpacked into a
@@ -388,8 +399,7 @@ async def run(service: str, command: str, cwd: str, timeout: int = 600, env: dic
         argv = shlex.split(command)
     except ValueError as e:
         raise ToolError(f"couldn't parse the command: {e}") from e
-    joined = " ".join(argv)
-    if not argv or any(joined == b or joined.startswith(b + " ") for b in c.blocked):
+    if not argv or any(_blocked(argv, b) for b in c.blocked):
         raise ToolError(f"`{argv[0] if argv else ''}` isn't available through Todd (it signs in or out, or can print "
                         f"credentials). Blocked: {', '.join(c.blocked)}.")
     q = shlex.quote

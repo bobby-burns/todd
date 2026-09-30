@@ -26,7 +26,8 @@ from ..agents.browser import _card_secrets, cdp_url
 from ..config import config
 from ..policy import authorize_spend, settle
 from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
-from . import page_capture
+from .. import redact
+from . import page_capture, page_guard
 from .browser_tools import clean_domain
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
@@ -96,7 +97,8 @@ async def _state(ctx, agent_id: str, h: _Handle, note: str) -> str:
     card_mode = h.sensitive is not None
     s = await h.browser.get_browser_state_summary(include_screenshot=not card_mode)
     h.steps += 1
-    data: dict[str, Any] = {"step": h.steps, "url": s.url, "title": s.title}
+    url, title = redact.urls(s.url or ""), redact.page(s.title or "")
+    data: dict[str, Any] = {"step": h.steps, "url": url, "title": title}
     if s.screenshot and not card_mode:
         shots = config.data_dir / "screens" / ctx.run_id
         shots.mkdir(parents=True, exist_ok=True)
@@ -108,11 +110,12 @@ async def _state(ctx, agent_id: str, h: _Handle, note: str) -> str:
         except Exception:
             pass
     ctx.emit(agent_id, "browser_step", note, data)
-    dom = _redactor(h.sensitive)(s.dom_state.llm_representation() if s.dom_state else "")
+    dom = redact.page(_redactor(h.sensitive)(s.dom_state.llm_representation() if s.dom_state else ""))
     if len(dom) > MAX_DOM_CHARS:
         dom = dom[:MAX_DOM_CHARS] + "\n…[page truncated: scroll or use browser_search to see more]"
-    tabs = ", ".join(f"{t.target_id[-4:]}: {t.title or t.url}"[:80] for t in (s.tabs or []))
-    return (f"URL: {s.url}\nTitle: {s.title}\nTabs: {tabs}\n"
+    tabs = ", ".join(redact.urls(f"{t.target_id[-4:]}: {t.title or t.url}")[:80] for t in (s.tabs or []))
+    note = f"{page_guard.NOTE}\n" if page_guard.shielded(h.browser) or redact.PAGE_MARK in dom else ""
+    return (f"URL: {url}\nTitle: {title}\nTabs: {tabs}\n{note}"
             f"Interactive elements are shown as [index]<tag …/>; use the index with browser_click/browser_type.\n\n{dom}")
 
 
@@ -123,7 +126,7 @@ async def _act(action: str, params: dict[str, Any], note: str) -> str:
     err = getattr(r, "error", None)
     if err:
         msg = f"Error: {err}"
-    msg = _redactor(h.sensitive)(msg)
+    msg = redact.page(_redactor(h.sensitive)(msg))
     state = await _state(ctx, agent_id, h, note)
     return f"{msg}\n\n{state}" if msg else state
 
@@ -135,7 +138,9 @@ async def browser_start(why_not_api: str, start_url: str | None = None, payment_
     (1) LAST RESORT for doing work on a service: consoles without APIs, sign-in-gated pages, forms, card checkout.
     Call find_integrations first: prefer toolsets, MCP servers, api_request and CLIs. (2) Checking and debugging
     websites you built or deployed: open the page, look at the screenshot, click through, browser_console for errors
-    (why_not_api: e.g. "Checking the deployed site renders"). Returns the page state; then use the other browser_* tools and
+    (why_not_api: e.g. "Checking the site renders"). An app running in the sandbox is at http://localhost:PORT here
+    (ports 3000, 3001, 4173, 4321, 5000, 5173, 8000, 8080, 8081, 19006): don't deploy it just to look at it.
+    Returns the page state; then use the other browser_* tools and
     call browser_done when finished so other agents can use it. Card payment: pass payment_amount_usd,
     payment_merchant and the exact payment_domains; the human must approve, then type card fields as
     <secret>card_number</secret>, <secret>card_exp</secret>, <secret>card_cvc</secret>, <secret>card_name</secret>,
@@ -195,6 +200,7 @@ async def _start(ctx, agent_id: str, why_not_api: str, start_url: str | None, pa
 
         browser = Browser(cdp_url=cdp_url(), keep_alive=True)
         await browser.start()
+        page_guard.install(browser)  # secret-looking text is blurred before every screenshot
     except BaseException:
         ctx.browser_lock.release()
         if ledger is not None:
@@ -240,7 +246,8 @@ async def browser_click(index: int, what: str = "") -> str:
 
 @todd_tool(toolset="browser")
 async def browser_type(index: int, text: str, clear: bool = True, what: str = "") -> str:
-    """Type into an input by its [index]. Use <secret>name</secret> placeholders for card fields.
+    """Type into an input by its [index]. To type a password or key from the vault without seeing it, write
+    {{secret:NAME}} (e.g. a password you stored with vault_store). Card fields use <secret>card_number</secret> …
 
     Args:
         index: element index
@@ -248,7 +255,12 @@ async def browser_type(index: int, text: str, clear: bool = True, what: str = ""
         clear: replace existing text (default) instead of appending
         what: a few words on which field (shown to the human)
     """
-    shown = "••••" if "<secret>" in text else (text[:60] + ("…" if len(text) > 60 else ""))
+    secret = "<secret>" in text or "{{secret:" in text
+    shown = "••••" if secret else (text[:60] + ("…" if len(text) > 60 else ""))
+    if "{{secret:" in text:
+        from .infra import resolve_secrets
+
+        text = resolve_secrets(text)  # protected tokens and card fields can't be typed this way
     return await _act("input", {"index": index, "text": text, "clear": clear}, f"Type {shown!r} into {what or f'[{index}]'}")
 
 
@@ -311,7 +323,7 @@ async def browser_search(pattern: str) -> str:
     if h.sensitive is not None:
         raise ToolError("browser_search is off during a checkout. Use browser_state.")
     r = await h.tools.registry.execute_action("search_page", {"pattern": pattern}, browser_session=h.browser)
-    return (getattr(r, "extracted_content", None) or getattr(r, "error", None) or "No matches.").strip()
+    return redact.page((getattr(r, "extracted_content", None) or getattr(r, "error", None) or "No matches.").strip())
 
 
 # Text of an element (or the page) as a person would copy it: walks the composed tree (open shadow roots, slotted
@@ -341,7 +353,7 @@ async def browser_read_text(index: int | None = None, max_chars: int = 20000) ->
     limit = max(200, min(int(max_chars), 100000))
     if len(text) > limit:
         text = text[:limit] + f"\n…[{len(text) - limit} more characters: raise max_chars or pick an element]"
-    return text or "(no text)"
+    return redact.page(text) or "(no text)"
 
 
 @todd_tool(toolset="browser")
@@ -446,14 +458,14 @@ async def browser_console(reload: bool = False) -> str:
                                                  session_id=s.session_id)
     d = r.get("result", {}).get("value") or {}
     ctx.emit(agent_id, "browser_step", "Checked the console" + (" after a reload" if reload else ""),
-             {"url": d.get("url")})
+             {"url": redact.urls(str(d.get("url") or ""))})
     lines = [f"URL: {d.get('url')}  (HTTP {d.get('status') or '?'})"]
     logs = d.get("logs") or []
     lines += [f"{x['level'].upper()}: {x['text']}" for x in logs] or ["No JavaScript errors or console warnings."]
     lines += [f"FAILED REQUEST: {f}" for f in d.get("failed") or []]
     if not reload and not logs:
         lines.append("(Errors are recorded from when you took the browser; use reload=true to include page load.)")
-    return "\n".join(lines)
+    return redact.page("\n".join(lines))  # console logs and failed-request URLs can carry tokens
 
 
 @todd_tool(toolset="browser")
@@ -489,6 +501,10 @@ async def release(ctx, agent_id: str, *, success: bool = False, result: str = ""
     try:
         if h.ledger is not None:
             settle(h.ledger, "completed" if success else "needs_review", {"result": result[:500]})
+        if h.sensitive is not None:  # don't leave card details on screen for the next agent's screenshots
+            from ..cdp import blank_tabs
+
+            await asyncio.wait_for(blank_tabs(h.ledger.data.get("domains", []) if h.ledger else []), 10)
         await asyncio.wait_for(h.browser.stop(), 10)
     except BaseException:
         pass

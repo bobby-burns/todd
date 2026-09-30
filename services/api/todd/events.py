@@ -24,8 +24,15 @@ def serialize(ev: Event) -> dict[str, Any]:
     }
 
 
+def _clean(value: Any) -> Any:
+    """What the timeline stores and shows never holds a secret: vault values and secret-looking strings are hidden."""
+    from . import redact, vault
+
+    return redact.deep(value, vault.scrub)
+
+
 def emit(run_id: str, agent: str, kind: str, text: str, data: dict[str, Any] | None = None) -> dict:
-    ev = Event(run_id=run_id, agent=agent, kind=kind, text=text[:20000], data=_jsonable(data or {}))
+    ev = Event(run_id=run_id, agent=agent, kind=kind, text=_clean(text[:20000]), data=_clean(_jsonable(data or {})))
     with session() as s:
         s.add(ev)
         s.commit()

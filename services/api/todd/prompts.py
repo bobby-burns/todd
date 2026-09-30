@@ -45,6 +45,10 @@ def get(name: str) -> tuple[str, str]:
 
 def render(template: str, **vars: object) -> str:
     vars.setdefault("today", date.today().isoformat())
+    if "{{preview_ports}}" in template:
+        from .preview import PORTS
+
+        vars.setdefault("preview_ports", ", ".join(str(p) for p in PORTS))
     for k, v in vars.items():
         template = template.replace("{{" + k + "}}", str(v))
     return template

@@ -98,6 +98,25 @@ class SecretOrigin(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class UsageTotal(SQLModel, table=True):
+    """Model usage, summed per run, agent, model and day (usage.py). `cost_usd` is billed to your API keys;
+    `plan_usd` is what Claude Code usage on your Claude plan would cost at API prices (nothing is billed)."""
+
+    id: str = Field(primary_key=True)  # run_id:agent_id:model:day
+    run_id: str = Field(index=True)
+    agent_id: str
+    model: str = ""
+    day: str = Field(index=True)  # YYYY-MM-DD (UTC)
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    plan_usd: float = 0.0
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Setting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: Any = Field(default=None, sa_column=Column(JSON))
@@ -169,6 +188,7 @@ __all__ = [
     "AgentInstance",
     "Secret",
     "SecretOrigin",
+    "UsageTotal",
     "Setting",
     "LedgerEntry",
     "engine",

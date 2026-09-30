@@ -78,5 +78,5 @@ async def download(run_id: str, path: str) -> tuple[str, bytes]:
         text = data.decode(errors="replace")
         if PRIVATE_KEY.search(text):
             raise ToolError("this file holds a private key and can't be downloaded here")
-        data = vault.scrub(text).encode()
+        data = vault.scrub(text, patterns=False).encode()  # the human's own file: only vault values
     return posixpath.basename(p), data

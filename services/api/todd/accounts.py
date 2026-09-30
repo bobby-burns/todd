@@ -93,6 +93,8 @@ CATALOG: list[Service] = [
       "https://porkbun.com/account/domainsSpeedy"),
     S("godaddy", "GoDaddy", "Domains & DNS", "https://sso.godaddy.com/", "https://account.godaddy.com/products",
       ["godaddy.com"]),
+    S("squarespace", "Squarespace Domains", "Domains & DNS", "https://login.squarespace.com/",
+      "https://account.squarespace.com/domains", ["squarespace.com"]),
     # ---- Payments & commerce
     S("stripe", "Stripe", "Payments & commerce", "https://dashboard.stripe.com/login",
       "https://dashboard.stripe.com/dashboard", ["stripe.com"]),

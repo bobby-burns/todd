@@ -15,6 +15,7 @@ import {
   KeyRound,
   Link2,
   Lock,
+  LogIn,
   PlayCircle,
   UserRound,
   Plus,
@@ -25,7 +26,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { api, type ToolInfo, type ToolsetInfo } from "@/lib/api";
+import { api, type Account, type ToolInfo, type ToolsetInfo } from "@/lib/api";
+import { Favicon, StatusChip } from "@/components/accounts";
+import { openLiveBrowser } from "@/components/LiveBrowser";
 import { spring } from "@/lib/motion";
 import { ActivityIndicator, IconTile, PageHeader, Section, Segmented, Switch, Toast, listSep } from "@/components/ui";
 import { ThemeSwitch } from "@/components/Nav";
@@ -250,7 +253,15 @@ export default function SettingsPage() {
             </Group>,
           )}
 
-          {S("registrant", undefined, "Registrars need contact details for domain purchases.", <RegistrantForm value={s.registrant_contact} onSave={(v) => patch({ registrant_contact: v }, "Contact saved")} />)}
+          {S(
+            "registrant",
+            undefined,
+            "Where your domains live, and the contact details registrars need for new purchases.",
+            <>
+              <DomainAccounts />
+              <RegistrantForm value={s.registrant_contact} onSave={(v) => patch({ registrant_contact: v }, "Contact saved")} />
+            </>,
+          )}
 
           {S(
             "card",
@@ -561,6 +572,67 @@ const CONTACT_FIELDS: [string, string][] = [
   ["country", "Country (ISO, e.g. US)"],
   ["companyName", "Company (optional)"],
 ];
+
+const REGISTRARS = [
+  { id: "squarespace", why: "Squarespace (and Google Domains, which moved there) has no API: agents set up DNS in the browser with your sign-in." },
+  { id: "namecheap", why: "Agents can manage DNS through Namecheap's API (add NAMECHEAP_API_KEY) or the browser." },
+  { id: "godaddy", why: "Agents manage DNS in the browser with your sign-in." },
+];
+
+/** Sign in to the registrars where your existing domains live, so agents can point them at what they build. */
+function DomainAccounts() {
+  const [rows, setRows] = useState<Record<string, Account>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(() => {
+    Promise.all(REGISTRARS.map((r) => api<Account>(`/accounts/${r.id}`).then((a): [string, Account] => [r.id, a]).catch(() => null))).then((got) =>
+      setRows(Object.fromEntries(got.filter((x): x is [string, Account] => x !== null))),
+    );
+  }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [load]);
+  async function signIn(id: string, name: string) {
+    setBusy(id);
+    try {
+      await api(`/accounts/${id}/open`, { method: "POST" });
+      openLiveBrowser({ pageUrl: rows[id]?.login ?? null, note: `Sign in to ${name}. Todd keeps the session for DNS changes.` });
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <Group className="mb-5">
+      {REGISTRARS.map((r, i) => {
+        const a = rows[r.id];
+        const signed = a?.status === "signed_in";
+        const featured = i === 0;
+        return (
+          <div key={r.id} className={`${listSep} flex items-center gap-3 px-4 py-3 [--inset:16px]`}>
+            {a ? <Favicon a={a} size={featured ? 32 : 26} /> : <span className="h-7 w-7 rounded-full bg-fill" />}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className={`truncate font-semibold ${featured ? "text-[14px]" : "text-[13.5px]"}`}>{a?.name ?? r.id}</span>
+                {a && <StatusChip a={a} />}
+              </div>
+              <div className="mt-0.5 text-[12px] leading-snug text-fg-2">{r.why}</div>
+            </div>
+            {signed ? (
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-green/15 text-green">
+                <Check size={15} strokeWidth={3} />
+              </span>
+            ) : (
+              <button className={`btn btn-sm shrink-0 ${featured ? "btn-accent" : "btn-glass"}`} disabled={busy === r.id} onClick={() => signIn(r.id, a?.name ?? r.id)}>
+                {busy === r.id ? <ActivityIndicator size={12} /> : <LogIn size={12} />} {featured ? "Sign in with Squarespace" : "Sign in"}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </Group>
+  );
+}
 
 function RegistrantForm({ value, onSave }: { value: Record<string, string>; onSave: (v: Record<string, string>) => void }) {
   const [v, setV] = useState(value);

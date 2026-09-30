@@ -41,6 +41,7 @@ from langchain_core.tools import tool as lc_tool
 
 from .policy import SpendDenied, authorize_spend, settle  # noqa: F401  (re-exported)
 from .runtime import RunCancelled, RunContext, current_agent_id, set_current_agent  # noqa: F401
+from . import redact
 from .vault import get_secret, scrub, set_secret  # noqa: F401  (re-exported)
 
 _current_ctx: ContextVar[RunContext | None] = ContextVar("todd_run_ctx", default=None)
@@ -155,7 +156,8 @@ async def execute_tool_calls(ctx: RunContext, tools: dict[str, BaseTool], calls:
                      {"tool": name, "args": _redact(args), "toolset": toolset_of(t), "call_id": call_id})
         status = "success"
         try:
-            text = scrub(to_text(await t.ainvoke(args)))
+            # every string is scrubbed before serializing: JSON escaping would hide multi-line secrets from a match
+            text = scrub(to_text(redact.deep(await t.ainvoke(args), scrub)))
         except (RunCancelled, asyncio.CancelledError):
             raise
         except SpendDenied as e:
@@ -177,20 +179,21 @@ def _describe(name: str, args: dict[str, Any]) -> str:
     for key in ("name", "task", "domain", "question", "cmd", "path", "url", "key", "text", "summary"):
         v = args.get(key)
         if isinstance(v, str):
-            return f"{name}: {v[:300]}"
+            return scrub(f"{name}: {v[:300]}")
     return name
 
 
 def _redact(args: dict[str, Any]) -> dict[str, Any]:
+    """Tool arguments as shown in the timeline: secret-looking fields cut short, everything scrubbed."""
     out: dict[str, Any] = {}
     for k, v in args.items():
         if isinstance(v, str) and any(x in k.lower() for x in ("token", "password", "secret", "value")) \
                 and not v.startswith("{{secret:"):
             out[k] = v[:2] + "…"
         elif isinstance(v, str) and len(v) > 2000:
-            out[k] = v[:2000] + "…"
+            out[k] = scrub(v[:2000]) + "…"
         else:
-            out[k] = v
+            out[k] = redact.deep(v, scrub)
     return out
 
 

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Check, CreditCard, Hand, MessageCircleQuestion, ShieldCheck, X } from "lucide-react";
+import { Check, CreditCard, Hand, Lock, MessageCircleQuestion, ShieldCheck, X } from "lucide-react";
 import { api, usd, type Interaction } from "@/lib/api";
 import { softSpring } from "@/lib/motion";
 import { openLiveBrowser } from "./LiveBrowser";
@@ -32,6 +32,7 @@ export function InteractionCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const k = KIND[it.kind];
+  const secretName: string | undefined = it.kind === "question" ? it.data?.secret_name : undefined;
 
   if (it.kind === "approval" && it.data?.kind_hint === "signin" && Array.isArray(it.data.services)) {
     return <SigninCard it={it} agentName={agentName} agentColor={agentColor} planner={planner} onDone={onDone} />;
@@ -95,10 +96,22 @@ export function InteractionCard({
         <div className="well mt-4 rounded-[14px] px-3.5 py-3 text-[12.5px] leading-relaxed whitespace-pre-wrap text-fg-2">{it.data.details}</div>
       )}
 
+      {secretName && (
+        <p className="mt-3 flex items-start gap-2 rounded-[14px] bg-green/10 px-3 py-2 text-[12.5px] leading-snug text-fg-2">
+          <Lock size={14} className="mt-px shrink-0 text-green" />
+          <span>
+            This goes straight into the vault as <code className="font-mono text-[12px] text-fg">{secretName}</code>. The agent never sees it; it only
+            learns that it was saved.
+          </span>
+        </p>
+      )}
+
       <div className="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-center">
         <input
           className="field h-10 flex-1 rounded-full px-4"
-          placeholder={it.kind === "question" ? "Your answer…" : "Add a note for the agent (optional)"}
+          type={secretName ? "password" : "text"}
+          autoComplete={secretName ? "off" : undefined}
+          placeholder={secretName ? "Paste it here…" : it.kind === "question" ? "Your answer…" : "Add a note for the agent (optional)"}
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
           onKeyDown={(e) => {
@@ -107,7 +120,7 @@ export function InteractionCard({
         />
         {it.kind === "question" ? (
           <button className="btn btn-accent btn-lg" disabled={busy || !answer.trim()} onClick={() => send(null)}>
-            Send
+            {secretName ? "Save to vault" : "Send"}
           </button>
         ) : (
           <div className="flex gap-2">

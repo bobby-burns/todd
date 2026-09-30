@@ -53,7 +53,7 @@ class Toolset:
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
     "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "
-                       "workspace shared by all agents in this run: shell, read/write/list files, git_push, the "
+                       "workspace shared by all agents in this run: shell, read/write/list files, git and git_push (signed in to GitHub), the "
                        "GitHub CLI (`gh`) and `cli` for Vercel/Netlify/Railway/Cloudflare/Stripe/Firebase, all "
                        "signed in with the human's account (connect with cli_login), and `eas` for iPhone/Android "
                        "apps with Expo (cloud builds, TestFlight/Play uploads; connect with cli_login(\"expo\")).",

@@ -1,10 +1,10 @@
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
-import { ArrowUp, Bot, Brain, ChevronLeft, CircleCheck, CircleX, FolderOpen, Globe, LayoutGrid, Pause, Play, RotateCcw, Rows3, Square, X } from "lucide-react";
+import { ArrowUp, Bot, Brain, ChevronLeft, CircleCheck, CircleX, FolderOpen, Gauge, Globe, LayoutGrid, Pause, Play, RotateCcw, Rows3, Square, X } from "lucide-react";
 import { agentColor, api, usd, type AgentInfo, type Interaction, type Run, type TEvent } from "@/lib/api";
 import { softSpring, spring } from "@/lib/motion";
 import { ActivityIndicator, AgentAvatar, Segmented, StatusPill } from "@/components/ui";
@@ -13,9 +13,12 @@ import { InteractionCard } from "@/components/InteractionCard";
 import { AgentWindow } from "@/components/AgentWindow";
 import { LiveBrowser } from "@/components/LiveBrowser";
 import { RunFiles } from "@/components/RunFiles";
+import { RunUsage } from "@/components/RunUsage";
 import { recapLine, SummaryText } from "@/components/SummaryText";
+import { NextSteps } from "@/components/NextSteps";
+import { StatusWidget } from "@/components/StatusWidget";
 
-type View = "windows" | "timeline" | "files";
+type View = "windows" | "timeline" | "files" | "usage";
 
 const FINISHED = ["succeeded", "failed", "cancelled", "interrupted"];
 
@@ -55,6 +58,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   const [shot, setShot] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [followup, setFollowup] = useState("");
+  const followupRef = useRef<HTMLInputElement>(null);
   const [err, setErr] = useState<string | null>(null);
   const [opened, setOpened] = useState<string[]>([]); // finished agents the human opened from the tray
   const [hidden, setHidden] = useState<string[]>([]); // finished agents the human dismissed (this browser only)
@@ -190,24 +194,24 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                         />
                       ))}
                     </span>
-                    <span className="hidden sm:inline">
+                    <span className="hidden whitespace-nowrap sm:inline">
                       {spawned.length} agent{spawned.length === 1 ? "" : "s"}
                       {pausedCount > 0 && <span className="text-indigo"> · {pausedCount} paused</span>}
                     </span>
                   </span>
                 )}
-                <span className="hidden items-center gap-1.5 tabular md:flex">
+                <span className="hidden items-center gap-1.5 whitespace-nowrap tabular xl:flex">
                   <span className="h-1 w-12 overflow-hidden rounded-full bg-fill-2">
                     <motion.span className="block h-full rounded-full bg-green" animate={{ width: `${budgetUsed * 100}%` }} transition={softSpring} />
                   </span>
                   {usd(run.spent_usd)} of {usd(run.budget_usd, 0)}
                 </span>
                 {run.engine === "claude_code" ? (
-                  <span className="hidden items-center gap-1 rounded-full bg-[#d97757]/15 px-2 py-0.5 text-[11px] font-semibold text-[#d97757] lg:inline-flex" title="Model usage counts toward your Claude plan">
+                  <span className="hidden items-center gap-1 rounded-full bg-[#d97757]/15 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap text-[#d97757] 2xl:inline-flex" title="Model usage counts toward your Claude plan">
                     <Bot size={11} /> Claude plan
                   </span>
                 ) : (
-                  <span className="hidden tabular lg:inline">· model {usd(run.llm_cost_usd, 3)}</span>
+                  <span className="hidden whitespace-nowrap tabular 2xl:inline">· model {usd(run.llm_cost_usd, 3)}</span>
                 )}
               </div>
             </div>
@@ -221,6 +225,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                   { value: "windows", icon: LayoutGrid, label: <span className="hidden sm:inline">Windows</span>, title: "One window per agent" },
                   { value: "timeline", icon: Rows3, label: <span className="hidden sm:inline">Timeline</span>, title: "Everything in order" },
                   { value: "files", icon: FolderOpen, label: <span className="hidden sm:inline">Files</span>, title: "What the agents made (read-only)" },
+                  { value: "usage", icon: Gauge, label: <span className="hidden sm:inline">Usage</span>, title: "Tokens, calls, time and cost" },
                 ]}
               />
               <div className="flex rounded-full bg-fill p-[3px]">
@@ -260,6 +265,9 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
       </div>
 
       <div className="flex-1 px-3 pt-4 pb-6 md:pr-4 md:pl-1">
+        {/* What the agents are doing right now */}
+        {run.active && view !== "usage" && <StatusWidget agents={agents} events={list} pending={pending} pausedIds={run.paused_agents ?? []} />}
+
         {/* Things waiting on you */}
         <AnimatePresence>
           {pending.length > 0 && (
@@ -285,7 +293,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
 
         {/* Run summary */}
         <AnimatePresence>
-          {run.summary && !run.active && view !== "files" && (
+          {run.summary && !run.active && view !== "files" && view !== "usage" && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -310,6 +318,14 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
               <div className="mt-5 border-t border-sep pt-5">
                 <SummaryText text={run.summary} className="text-[14px]" />
               </div>
+              <NextSteps
+                summary={run.summary}
+                prompt={run.prompt}
+                onPick={(t) => {
+                  setFollowup(t);
+                  requestAnimationFrame(() => followupRef.current?.focus());
+                }}
+              />
               <form
                 className="mt-5 flex h-11 items-center gap-2 rounded-full bg-fill pr-1.5 pl-4 transition-shadow focus-within:shadow-[0_0_0_3.5px_color-mix(in_oklab,var(--accent)_30%,transparent)]"
                 onSubmit={(e) => {
@@ -320,6 +336,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                 }}
               >
                 <input
+                  ref={followupRef}
                   className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-3"
                   placeholder="Keep going: ask the planner for a change or the next step…"
                   value={followup}
@@ -335,6 +352,8 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
 
         {view === "files" ? (
           <RunFiles runId={id} active={run.active} agents={agents} />
+        ) : view === "usage" ? (
+          <RunUsage runId={id} active={run.active} agents={agents} claudePlan={run.engine === "claude_code"} />
         ) : view === "windows" ? (
           <LayoutGroup>
             {(tray.length > 0 || hiddenCount > 0) && (

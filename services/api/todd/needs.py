@@ -31,6 +31,7 @@ ALIASES: dict[str, list[str]] = {
     "lemonsqueezy": ["lemon squeezy"],
     "digitalocean": ["digital ocean"],
     "fly": ["fly.io"],
+    "squarespace": ["squarespace", "google domains"],  # Google Domains moved to Squarespace
 }
 # Names that are also everyday words: only count them when written as a name (capitalized), e.g. "Notion".
 PROPER_ONLY = {"notion", "linear", "render", "slack", "medium", "threads", "discord", "canva", "fly", "neon",
@@ -94,6 +95,10 @@ USES: dict[str, str] = {
     "stripe": "Takes the payments",
     "x": "Posts the launch",
     "producthunt": "Lists the launch",
+    "squarespace": "Manages your domain and its DNS",
+    "namecheap": "Manages your domain and its DNS",
+    "godaddy": "Manages your domain and its DNS",
+    "porkbun": "Manages your domain and its DNS",
 }
 
 

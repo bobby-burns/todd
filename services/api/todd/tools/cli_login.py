@@ -14,7 +14,7 @@ async def cli_login(service: str, reconnect: bool = False) -> dict:
     """Connect a service's CLI with the human's signed-in browser session, so nobody creates or copies a token:
     Todd opens the CLI's sign-in in the shared browser and approves it itself. Only a password or 2FA page, or a final
     Authorize button the site only accepts from a person, needs the human, who is asked once. Best done before spawning agents, when find_integrations says route "connect".
-    Supported: github (also powers the github toolset, gh and git_push), vercel, netlify, railway, cloudflare,
+    Supported: github (also powers the github toolset, git, git_push and gh), vercel, netlify, railway, cloudflare,
     stripe, firebase, expo. Afterwards use `cli` (`gh` for GitHub, `eas` for Expo).
 
     Args:
@@ -61,7 +61,7 @@ async def cli_login(service: str, reconnect: bool = False) -> dict:
 
 def _usage(c: connect.Connector) -> str:
     if c.service == "github":
-        return "Use the github toolset, gh(...) and git_push; the token is in the vault as GITHUB_TOKEN."
+        return "Use the github toolset, git(...), git_push and gh(...); the token is in the vault as GITHUB_TOKEN."
     if c.service == "expo":
         return "Run it with eas(\"build:list --limit 1 --non-interactive\") (sandbox toolset)."
     return f"Run it with cli(\"{c.service}\", \"{c.example}\")."

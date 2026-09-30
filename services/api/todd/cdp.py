@@ -341,6 +341,26 @@ async def approve(url: str, *, hosts: list[str], code: str | None = None, callba
         return {"state": "timeout", "tab": tab}
 
 
+async def blank_tabs(domains: list[str]) -> int:
+    """Send every tab showing one of `domains` (or a subdomain) to about:blank. Returns how many."""
+    from urllib.parse import urlparse
+
+    doms = [d.lower().removeprefix("https://").removeprefix("http://").strip("/") for d in domains if d]
+    n = 0
+    async with CDP() as c:
+        for t in (await c.send("Target.getTargets")).get("targetInfos", []):
+            host = (urlparse(t.get("url") or "").hostname or "").lower()
+            if t.get("type") != "page" or not host or not any(host == d or host.endswith("." + d) for d in doms):
+                continue
+            try:
+                sid = (await c.send("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True}))["sessionId"]
+                await c.send("Page.navigate", {"url": "about:blank"}, session_id=sid)
+                n += 1
+            except CDPError:
+                pass
+    return n
+
+
 async def close_tab(target: str) -> None:
     try:
         async with CDP() as c:

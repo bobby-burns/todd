@@ -34,7 +34,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from .. import settings
+from .. import settings, usage
 from ..config import config
 from ..runtime import RunCancelled, RunContext, set_current_agent
 from ..sdk import execute_tool_calls, set_ctx
@@ -348,6 +348,40 @@ async def run_agent(
             del stderr_tail[:-40]
 
     err_task = asyncio.create_task(read_stderr())
+    # Usage: a call per assistant message (a message spans several events), counted live with its input tokens (final
+    # when a message starts); each result's `usage` is that turn's total, so the rest (output, and anything missed)
+    # is added then. The session's running cost is at API prices (it counts toward the plan, nothing is billed).
+    seen_msgs: set[str] = set()
+    live: dict[str, int] = {}  # counted so far in this turn
+    last_cost: float | None = None
+
+    def count_call(msg: dict[str, Any]) -> None:
+        mid = str(msg.get("id") or "")
+        if not mid or mid in seen_msgs:
+            return
+        seen_msgs.add(mid)
+        now = usage.from_anthropic(msg.get("usage"))
+        now.pop("output_tokens", None)  # still counting while the message streams
+        for k, v in now.items():
+            live[k] = live.get(k, 0) + v
+        usage.record(ctx.run_id, agent_id, model, calls=1, **now)
+
+    def count_turn(ev: dict[str, Any]) -> None:
+        nonlocal last_cost
+        turn = usage.from_anthropic(ev.get("usage"))
+        rest = {k: max(0, v - live.get(k, 0)) for k, v in turn.items()}
+        live.clear()
+        total = float(ev.get("total_cost_usd") or 0)
+        if last_cost is not None and total >= last_cost:
+            plan = total - last_cost
+        else:  # the first turn of this process: a resumed session's total may include earlier turns
+            mu = ev.get("modelUsage") or {}
+            all_tokens = sum(int(v.get(k) or 0) for v in mu.values() for k in
+                             ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+            plan = total * min(1.0, sum(turn.values()) / all_tokens) if all_tokens else total
+        last_cost = total
+        usage.record(ctx.run_id, agent_id, model, calls=0, plan_usd=plan, **rest)
+
     nudges = 0
     calls_at_last_result = 0
     last_text = ""
@@ -375,6 +409,7 @@ async def run_agent(
                 if bad:
                     raise ClaudeCodeError(f"Claude Code couldn't reach Todd's tools ({bad[0].get('status')}).")
             elif et == "assistant":
+                count_call(ev.get("message") or {})
                 for block in (ev.get("message") or {}).get("content") or []:
                     bt = block.get("type")
                     if bt == "thinking" and block.get("thinking", "").strip():
@@ -384,6 +419,7 @@ async def run_agent(
                         if not sess.finished:  # the closing line after finish is noise
                             ctx.emit(agent_id, "thought", last_text)
             elif et == "result":
+                count_turn(ev)
                 if ev.get("is_error") and not sess.finished:
                     msg = str(ev.get("result") or ev.get("subtype") or "error")
                     raise ClaudeCodeError(_explain(msg))

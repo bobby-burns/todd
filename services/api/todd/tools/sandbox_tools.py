@@ -16,11 +16,14 @@ from . import sandbox
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
-# Refuse repo-level config that could redirect a push or run code with the token in the environment.
+# Local git config that could redirect a push, capture credentials or run code while a command holds the token.
 _GIT_GUARD = ("bad=$(git config --local --get-regexp "
-              "'^(url\\..*|credential\\..*|core\\.sshcommand|core\\.hookspath|core\\.askpass|core\\.fsmonitor|http\\..*|"
-              "include\\..*|includeif\\..*)$' 2>/dev/null); "
-              "if [ -n \"$bad\" ]; then echo \"refusing to push: suspicious git config: $bad\"; exit 3; fi")
+              "'^(url\\..*|credential\\..*|core\\.sshcommand|core\\.hookspath|core\\.askpass|core\\.fsmonitor|"
+              "core\\.gitproxy|core\\.pager|core\\.editor|sequence\\.editor|http\\..*|include\\..*|includeif\\..*|"
+              "alias\\..*|filter\\..*|diff\\..*\\.textconv|diff\\..*\\.command|merge\\..*\\.driver|protocol\\..*|"
+              "uploadpack\\..*|remote\\..*\\.(uploadpack|receivepack|proxy)|gpg\\.program|gpg\\..*\\.program)$' "
+              "2>/dev/null); "
+              "if [ -n \"$bad\" ]; then echo \"refusing to run with a token: suspicious git config: $bad\"; exit 3; fi")
 NO_TOKEN = ("GITHUB_TOKEN is not configured. If the browser is signed in to GitHub, connect it with "
             "cli_login(\"github\"); otherwise ask the human to add it in Settings → Integrations.")
 
@@ -38,20 +41,51 @@ def _abs(path: str) -> str:
 
 
 @todd_tool(toolset="sandbox")
-async def shell(cmd: str, timeout_s: int = 300, env: dict[str, str] | None = None) -> dict:
+async def shell(cmd: str, timeout_s: int = 300, env: dict[str, str] | None = None,
+                save_to_vault: dict[str, str] | None = None) -> dict:
     """Run a bash command in the project directory. Returns exit_code and combined stdout/stderr. Prefer CLIs and
     APIs (npx vercel, npx stripe, firebase, npx wrangler, curl) over the browser; pass credentials through `env`
-    as {{secret:NAME}} so they're never in the command text.
+    as {{secret:NAME}} so they're never in the command text. When a command prints a new secret (a webhook signing
+    secret, a generated key), pass save_to_vault so it goes straight into the vault instead of into your context.
 
     Args:
         cmd: bash command (non-interactive)
         timeout_s: timeout in seconds (default 300, max 1800)
         env: extra environment variables; values may be {{secret:NAME}} (e.g. {"STRIPE_API_KEY": "{{secret:STRIPE_SECRET_KEY}}"})
+        save_to_vault: {"NAME": "regex"}: the first match (its first group, if it has one) is stored as NAME and shown
+            to you as {{secret:NAME}}, e.g. {"STRIPE_WEBHOOK_SECRET": "(whsec_[A-Za-z0-9]+)"}
     """
     from .infra import resolve_secrets
 
     resolved = {k: resolve_secrets(str(v)) for k, v in (env or {}).items()}
-    return await sandbox.exec_(cmd, cwd=_root(), timeout=int(min(max(timeout_s, 5), 1800)), env=resolved)
+    r = await sandbox.exec_(cmd, cwd=_root(), timeout=int(min(max(timeout_s, 5), 1800)), env=resolved)
+    if save_to_vault:
+        r = dict(r)
+        r["output"], r["saved_to_vault"] = _capture(str(r.get("output") or ""), save_to_vault)
+    return r
+
+
+def _capture(output: str, fields: dict[str, str]) -> tuple[str, list[str]]:
+    """Store what each regex finds in `output` in the vault; the output shows {{secret:NAME}} in its place."""
+    from .. import vault
+    from .page_capture import check_name
+
+    saved = []
+    for name, pattern in fields.items():
+        check_name(name)
+        try:
+            m = re.search(pattern, output)
+        except re.error as e:
+            raise ToolError(f"bad regex for {name}: {e}") from e
+        if not m:
+            continue
+        value = (m.group(1) if m.groups() else m.group(0)).strip()
+        if not value:
+            continue
+        vault.set_secret(name, value)
+        output = output.replace(value, f"{{{{secret:{name}}}}}")
+        saved.append(name)
+    return output, saved
 
 
 @todd_tool(toolset="sandbox")
@@ -62,6 +96,12 @@ async def write_file(path: str, content: str) -> str:
         path: path relative to the project root
         content: full file content
     """
+    from .. import redact
+
+    if redact.hidden_markers(content):
+        raise ToolError("This content has values Todd hid from you (••••••••, [secret hidden]); writing it would replace "
+                        "the real ones. Change only the lines you need with shell (e.g. `sed -i` or `printf 'NAME=%s\\n' "
+                        "\"$VALUE\" >> .env` with env={\"VALUE\": \"{{secret:NAME}}\"}).")
     await sandbox.write(_abs(path), content)
     return f"wrote {path} ({len(content)} chars)"
 
@@ -73,7 +113,13 @@ async def read_file(path: str) -> str:
     Args:
         path: path relative to the project root
     """
-    return (await sandbox.read(_abs(path)))["content"]
+    content = (await sandbox.read(_abs(path)))["content"]
+    from ..workspace import ENV_FILE, ENV_LINE, MASK
+
+    if ENV_FILE.search(path):  # settings files: names, not values (they're usually keys)
+        content = ENV_LINE.sub(lambda m: m.group(1) + MASK, content) + \
+            "\n[values hidden: set them with shell env={{secret:NAME}}, never by reading them]"
+    return content
 
 
 @todd_tool(toolset="sandbox")
@@ -87,48 +133,124 @@ async def list_files(path: str = ".", depth: int = 2) -> dict:
     return await sandbox.listdir(_abs(path), depth=int(depth))
 
 
-@todd_tool(toolset="sandbox")
-async def git_push(repo: str, message: str = "Update from Todd", branch: str = "main", force: bool = False) -> dict:
-    """Commit all changes and push to a GitHub repository. Handles authentication.
+# Git with GitHub sign-in: the token reaches git only through gh's credential helper, for github.com, for one
+# command; hooks are off and the repo's config is checked first. The sandbox itself has no GitHub credentials.
+_GIT_AUTH_ENV = ("export GIT_TERMINAL_PROMPT=0 GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "
+                 "GIT_ALLOW_PROTOCOL=https:http:ssh:git:file "
+                 "GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
+                 "GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1= "
+                 "GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2='!gh auth git-credential'")
+_GIT_NETWORK = {"push", "pull", "fetch", "clone", "ls-remote", "submodule"}
+_GIT_ALLOWED = _GIT_NETWORK | {
+    "add", "bisect", "blame", "branch", "checkout", "cherry-pick", "clean", "commit", "describe", "diff", "grep",
+    "init", "log", "ls-files", "merge", "mv", "rebase", "remote", "reset", "restore", "revert", "rev-parse", "rm",
+    "shortlog", "show", "stash", "status", "switch", "tag"}
+# Options that would run a program, load other config, or need an editor.
+_GIT_BAD_OPTS = ("--upload-pack", "--receive-pack", "--exec", "--template", "--config", "--interactive",
+                 "--edit-description", "--ext-diff", "--textconv")
+DEFAULT_GITIGNORE = "node_modules/\n.env\n.env.*\n!.env.example\n.next/\n.expo/\n.vercel/\n.turbo/\n*.p8\n*.pem\n.DS_Store\n"
 
-    Args:
-        repo: GitHub repo as owner/name
-        message: commit message
-        branch: branch to push (default main)
-        force: force push (default false)
-    """
-    if not _REPO.fullmatch(repo) or ".." in repo:
-        raise ToolError("repo must look like owner/name")
-    if not _BRANCH.fullmatch(branch):
-        raise ToolError("invalid branch name")
-    token = vault.get_secret("GITHUB_TOKEN")
-    if not token:
+
+def _git_argv(command: str) -> list[str]:
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        raise ToolError(f"couldn't parse the arguments: {e}") from e
+    if argv and argv[0] == "git":
+        argv = argv[1:]
+    if not argv or argv[0].startswith("-"):
+        raise ToolError("Start with the git subcommand, e.g. \"push -u origin main\" (no global options like -c or "
+                        "-C: use `path` for the directory).")
+    sub = argv[0]
+    if sub not in _GIT_ALLOWED:
+        raise ToolError(f"`git {sub}` isn't available here. Allowed: {', '.join(sorted(_GIT_ALLOWED))}. "
+                        "(git config can't be changed through Todd; user.name/email are set for you.)")
+    for a in argv[1:]:
+        if a.split("=", 1)[0] in _GIT_BAD_OPTS or (a in ("-c", "-i") and sub in ("clone", "rebase", "add", "submodule")):
+            raise ToolError(f"`{a}` isn't allowed with git {sub} here (it would run a program, load config or open "
+                            "an editor).")
+        if a == "-u" and sub in ("fetch", "pull", "clone", "ls-remote"):  # -u means --upload-pack for these
+            raise ToolError(f"`-u` isn't allowed with git {sub} (it runs a program).")
+    return argv
+
+
+async def _git_run(argv: list[str], path: str, timeout: int, pre: str = "", tail: str | None = None) -> dict:
+    """Run git in the project (or `path`), with GitHub sign-in for commands that talk to a remote. With the token,
+    hooks are off and the repo's config is checked before anything else runs. `pre` runs first (same safety);
+    `tail` replaces the git command line (for git_push's shell-expanded refspec)."""
+    network = argv[0] in _GIT_NETWORK
+    token = vault.get_secret("GITHUB_TOKEN") if network else None
+    if network and not token:
         raise ToolError(NO_TOKEN)
-    q = shlex.quote
-    guard = _GIT_GUARD
-    remote = f"https://github.com/{repo}.git"
-    script = " && ".join([
-        "set -o pipefail",
-        "(git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q -b " + q(branch) + ")",
-        guard,
-        "(git config user.name >/dev/null || git config user.name 'Todd Agent')",
-        "(git config user.email >/dev/null || git config user.email 'todd@localhost')",
-        "git add -A",
-        f"(git diff --cached --quiet || git commit -q --no-verify -m {q(message)})",
-        f"git branch -M {q(branch)}",
-        # Token goes in as an HTTP header via env-only config; hooks and credential helpers are disabled.
-        "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader "
-        "GIT_CONFIG_VALUE_0=\"Authorization: Basic $(printf 'x-access-token:%s' \"$GIT_TOKEN\" | base64 -w0)\"",
-        f"git -c core.hooksPath=/dev/null -c credential.helper= push {'-f ' if force else ''}{q(remote)} "
-        f"HEAD:{q(branch)} 2>&1",
-        "git log --oneline -1",
-    ])
-    r = await sandbox.exec_(script, cwd=_root(), timeout=300, env={"GIT_TOKEN": token})
+    lines = ["set -o pipefail"]
+    if network:
+        lines += [_GIT_AUTH_ENV, f"(! git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {{ {_GIT_GUARD}; }})"]
+    lines += ["(git config user.name >/dev/null 2>&1 || git config --global user.name 'Todd Agent')",
+              "(git config user.email >/dev/null 2>&1 || git config --global user.email 'todd@localhost')"]
+    if pre:
+        lines.append(pre)
+    lines.append((tail or shlex.join(["git", *argv])) + " 2>&1")
+    r = await sandbox.exec_(" && ".join(lines), cwd=_abs(path), timeout=timeout,
+                            env={"GH_TOKEN": token} if token else None)
     out = r.get("output") or ""
-    for v in (token, base64.b64encode(f"x-access-token:{token}".encode()).decode()):
-        out = out.replace(v, "***")
+    if token:
+        for v in (token, base64.b64encode(f"x-access-token:{token}".encode()).decode()):
+            out = out.replace(v, "***")
     return {"exit_code": r.get("exit_code"), "output": out}
 
+
+@todd_tool(toolset="sandbox")
+async def git(command: str, path: str = ".", timeout_s: int = 300) -> dict:
+    """Run git the normal way, signed in to GitHub (the human's account) for push/pull/fetch/clone. Use this instead
+    of `shell` for anything that talks to GitHub: the sandbox has no GitHub credentials of its own. Examples:
+    "push -u origin main", "pull --rebase", "clone https://github.com/owner/repo", "remote add origin
+    https://github.com/owner/repo.git", "status", "log --oneline -5", "checkout -b feature/x".
+    For push/pull/fetch/clone hooks are off; git config can't be changed here (never put a token in a remote URL).
+
+    Args:
+        command: everything after `git`, e.g. "push -u origin main"
+        path: directory relative to the project root (default .)
+        timeout_s: timeout in seconds (default 300)
+    """
+    return await _git_run(_git_argv(command), path, int(min(max(timeout_s, 5), 1800)))
+
+
+@todd_tool(toolset="sandbox")
+async def git_push(repo: str | None = None, message: str = "Update from Todd", branch: str | None = None,
+                   force: bool = False, path: str = ".") -> dict:
+    """Commit everything and push it to GitHub in one step (a normal `git push -u origin`). Creates the repo's git
+    history if there is none, adds a sensible .gitignore if the project has none (node_modules, .env, build
+    folders, key files), points `origin` at `repo` when you give one, and pushes the current branch (or `branch`)
+    with upstream tracking, so later `git("pull")` / `git("push")` just work. For anything else use the `git` tool.
+
+    Args:
+        repo: GitHub repo as owner/name (sets origin); omit to push to the existing origin
+        message: commit message (only used when there are changes to commit)
+        branch: remote branch to push to (default: the current branch; "main" for a new repository)
+        force: overwrite the remote branch (--force-with-lease: refuses if someone else pushed meanwhile)
+        path: directory relative to the project root (default .)
+    """
+    if repo is not None and (not _REPO.fullmatch(repo) or ".." in repo or repo.endswith(".git")):
+        raise ToolError("repo must look like owner/name")
+    if branch is not None and (not _BRANCH.fullmatch(branch) or ".." in branch or branch.startswith("-")):
+        raise ToolError("invalid branch name")
+    q = shlex.quote
+    url = f"https://github.com/{repo}.git" if repo else ""
+    pre = " && ".join([
+        f"(git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -q -b {q(branch or 'main')})",
+        _GIT_GUARD,  # a repo that existed already was checked before this; a new one is checked here
+        f"([ -e .gitignore ] || printf %s {q(DEFAULT_GITIGNORE)} > .gitignore)",
+        "git add -A",
+        f"(git diff --cached --quiet || git commit -q --no-verify -m {q(message)})",
+        (f"(git remote get-url origin >/dev/null 2>&1 && git remote set-url origin {q(url)} "
+         f"|| git remote add origin {q(url)})") if repo else
+        "(git remote get-url origin >/dev/null 2>&1 || { echo 'No origin remote yet: pass repo=\"owner/name\".'; exit 4; })",
+        'BR=$(git symbolic-ref --short HEAD)',
+    ])
+    dest = q(branch) if branch else '"$BR"'
+    tail = (f"git push -u {'--force-with-lease ' if force else ''}origin \"HEAD:refs/heads/\"{dest} "
+            "&& git log --oneline -1")
+    return await _git_run(["push"], path, 300, pre=pre, tail=tail)
 
 
 # Subcommands that could leak the token, run arbitrary code or change how gh authenticates.
@@ -320,4 +442,4 @@ async def ensure_workspace() -> None:
     await sandbox.exec_("mkdir -p " + shlex.quote(_root()), cwd=config.workspace_root, timeout=30)
 
 
-SANDBOX_TOOLS = [shell, write_file, read_file, list_files, git_push, gh, cli, eas]
+SANDBOX_TOOLS = [shell, write_file, read_file, list_files, git, git_push, gh, cli, eas]

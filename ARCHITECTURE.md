@@ -26,7 +26,7 @@ agents/claude_code.py  Claude Code engine: headless `claude` sessions, the /mcp 
 agents/browser.py  browser-use over CDP (used by the browse tool); ask_human in bounded waits; screenshots;
                    card placeholders only after approval
 registry.py        Toolsets: built-in, plugin files (./plugins), MCP servers; planner tool selection
-tools/sandbox_tools.py  `sandbox` toolset: shell, files, git_push, gh, cli and eas (signed in per command)
+tools/sandbox_tools.py  `sandbox` toolset: shell, files, git, git_push, gh, cli and eas (signed in per command)
 connect.py         Sign in once: connect a service's CLI with the browser session (7 CLIs), run connected CLIs
 tools/cli_login.py cli_login: the agent side of connect.py
 tools/browser_tools.py  `browser` toolset (API engine): browse(task, why_not_api, payment…) — last resort
@@ -44,6 +44,10 @@ runtime.py         RunContext: events, human-in-the-loop waits, current agent id
 llm.py             Model tiers via LiteLLM (LangChain ChatLiteLLM), optional native reasoning, cost tracking
 vault.py           Fernet-encrypted secrets in Postgres (env var fallback), output scrubbing; each secret is credited
                    to the run and agent that saved it (SecretOrigin), so Settings → Vault groups keys by run
+usage.py           Model usage per run/agent/model/day (both engines) + tool calls and browser steps from events
+redact.py          Secret-shaped strings (tokens, keys, URL credentials; stricter on web pages) hidden from models
+preview.py         localhost:PORT in the agents' browser → the same port in the sandbox (relayed, no deploy needed)
+tools/page_guard.py  Blur secret-looking text before screenshots; redact the browser-use agent's state messages
 workspace.py       The run's folder in the sandbox, read-only for the dashboard's Files view (sandbox /files/tree
                    and /files/view): vault values masked, `.env` values hidden until asked, private keys never shown
 ```
@@ -168,15 +172,23 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   into a volume mounted only by `api` and `web` (or set `TODD_API_TOKEN`). Code in the sandbox, or a page in
   the browser, can reach the API port but can't approve spends, change settings or read secrets. OpenAPI
   docs are disabled.
-- **Secrets never enter prompts:** tools read them from the vault. Every tool result and error is scrubbed of
-  all vault values before it reaches the model or the timeline. `{{secret:NAME}}` injection is refused for
+- **Secrets never enter prompts:** tools read them from the vault. Every string in a tool result is scrubbed of
+  vault values (and their escaped/encoded forms) before serializing, and of secret-shaped strings (`redact.py`);
+  events are scrubbed the same way before they're stored. Browser pages get stricter redaction, and anything
+  secret-looking is blurred before a screenshot (`tools/page_guard.py`). `{{secret:NAME}}` injection is refused for
   protected secrets (integration tokens, model keys, card fields) and for public env vars (`NEXT_PUBLIC_*`,
-  `VITE_*`…). Agents can't overwrite protected secrets.
-- **git_push:** validates `owner/name` and the branch; refuses repos whose local git config could redirect
-  the push or run code (`url.*`, `credential.*`, `core.hooksPath`, `http.*`, `include.*`…); disables hooks;
-  passes the token as an env-only HTTP header and scrubs it (and its base64 form) from output. Known limit:
-  the sandbox runs as a single user, so code already running in the sandbox *during* a push could read the
-  push process's environment. A per-push user or a credential proxy is the next step.
+  `VITE_*`…). Agents can't overwrite protected secrets. New secrets go straight to the vault
+  (`shell`/`api_request` `save_to_vault`, `ask_human(secret_name=…)`, `browser_save_secret`). See SECURITY.md.
+- **git / git_push:** GitHub sign-in reaches git only through gh's credential helper (`GH_TOKEN` in that one
+  command's environment), only for network subcommands, with hooks off and after refusing repos whose local config
+  could redirect the push or run code (`url.*`, `credential.*`, `core.hooksPath`, `alias.*`, `filter.*`, `http.*`,
+  `include.*`…). Global options (`-c`, `-C`), `git config` and program-running options (`--upload-pack`…) are
+  refused. The token (and its base64 form) is scrubbed from output. Known limit: the sandbox runs as a single user,
+  so code already running in the sandbox *during* a push could read the push process's environment. A per-push user
+  or a credential proxy is the next step.
+- **Previews:** the browser's `localhost:PORT` (common dev ports) is relayed through the API to the same port on the
+  sandbox's localhost (`preview.py`, relays in the sandbox and browser containers). The sandbox stays off the
+  browser's network; only those ports are forwarded, never the sandbox's exec API.
 - **CLI sign-ins (connect.py):** a CLI's browser login runs in the sandbox with a private `HOME`. `cdp.approve`
   approves it in the shared browser with generic page rules: fill the one-time code, click Continue/Authorize
   with real mouse events, only on the provider's own domains; never a Cancel/Deny/switch-account button, never on

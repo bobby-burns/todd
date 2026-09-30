@@ -16,6 +16,7 @@ import asyncio
 import os
 import signal
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -26,7 +27,60 @@ TOKEN = os.getenv("SANDBOX_TOKEN", "change-me-sandbox-token")
 MAX_OUTPUT = int(os.getenv("SANDBOX_MAX_OUTPUT", "20000"))
 SKIP = {"node_modules", ".git", ".next", "dist", "build", ".turbo", ".venv", "__pycache__", ".vercel"}
 
-app = FastAPI(title="todd-sandbox")
+# Previews: 0.0.0.0:BASE+i -> 127.0.0.1:PORT, so the agents' browser (through the API's relay) can open a dev server
+# running here even if it only listens on localhost. The same list and base as the API and the browser container.
+PREVIEW_PORTS = [int(p) for p in os.getenv("PREVIEW_PORTS", "3000,3001,4173,4321,5000,5173,8000,8080,8081,19006")
+                 .replace(" ", "").split(",") if p.isdigit()]
+PREVIEW_BASE = int(os.getenv("PREVIEW_RELAY_BASE", "17000"))
+EXEC_PORT = 7000  # this server: never exposed as a preview
+
+
+async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+        if writer.can_write_eof():
+            writer.write_eof()
+    except (ConnectionError, OSError, asyncio.IncompleteReadError):
+        pass
+
+
+async def _relay(listen_port: int, target_port: int):
+    async def handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        try:
+            tr, tw = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", target_port), 5)
+        except (OSError, asyncio.TimeoutError):
+            w.close()
+            return
+        try:
+            await asyncio.gather(_pipe(r, tw), _pipe(tr, w))
+        finally:
+            for x in (w, tw):
+                try:
+                    x.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    return await asyncio.start_server(handle, "0.0.0.0", listen_port)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    servers = []
+    for i, port in enumerate(PREVIEW_PORTS):
+        if port == EXEC_PORT:
+            continue
+        try:
+            servers.append(await _relay(PREVIEW_BASE + i, port))
+        except OSError as e:
+            print(f"preview relay for port {port} not started: {e}", flush=True)
+    yield
+    for s in servers:
+        s.close()
+
+
+app = FastAPI(title="todd-sandbox", lifespan=lifespan)
 ROOT.mkdir(parents=True, exist_ok=True)
 
 

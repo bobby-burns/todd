@@ -7,6 +7,8 @@
 #   core        postgres, api, web          (sandbox and browser can't reach the DB or the dashboard)
 #   sandbox_net api ↔ sandbox               (agent-run code can reach the API port, but every API call needs a
 #   browser_net api ↔ browser                token that only api and web have: see the api-token volume)
+#   previews    localhost:3000 (and other dev ports) in the browser → api:17000+ → the same port in the sandbox, so
+#               agents can look at what they're building without deploying it (PREVIEW_PORTS / PREVIEW_RELAY_BASE)
 # Published ports bind to 127.0.0.1 only. Todd can spend money: don't expose it publicly without adding auth.
 name: todd
 

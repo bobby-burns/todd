@@ -21,7 +21,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from .. import llm
+from .. import llm, usage
 from ..sdk import execute_tool_calls, get_ctx, todd_tool
 
 
@@ -111,6 +111,8 @@ def build_agent(
         ai: AIMessage = await model.ainvoke([SystemMessage(system_prompt), *history])
         cost = llm.cost_of(role, getattr(ai, "usage_metadata", None))
         ctx.add_llm_cost(cost)
+        usage.record(ctx.run_id, agent_id, llm.model_for(role).model, cost_usd=cost,
+                     **usage.from_langchain(getattr(ai, "usage_metadata", None)))
         if on_cost:
             on_cost(cost)
         thinking = reasoning_text(ai)

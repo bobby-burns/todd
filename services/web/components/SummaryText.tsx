@@ -1,14 +1,14 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { BookOpen, CircleCheck, ExternalLink, Info, Lightbulb, ListChecks, Package, Users, Wrench } from "lucide-react";
+import { BookOpen, CircleCheck, ExternalLink, Info, Lightbulb, ListChecks, Package, Sparkles, Users, Wrench } from "lucide-react";
 import { inline, makeGlossary, parseBlocks, prettyUrl, renderBlocks, BULLET, type Entry, type Glossed } from "./Markdown";
 
 /* An agent's or run's recap ("In plain words: … / Done: … / Outputs: … / How: … / Left / needs you: … / Terms: …"),
    rendered as sections instead of a wall of text. Each section's body is Markdown; older one-line recaps with
    " · " between items still read as lists. Technical words get a plain-language explanation on hover. */
 
-type Kind = "plain" | "done" | "outputs" | "agents" | "how" | "next" | "terms" | "other";
+type Kind = "plain" | "done" | "outputs" | "agents" | "how" | "next" | "terms" | "suggest" | "other";
 type Section = { kind: Kind; label: string; body: string };
 
 const KINDS: Record<string, Kind> = {
@@ -20,6 +20,7 @@ const KINDS: Record<string, Kind> = {
   "left / needs you": "next", left: "next", next: "next", "next steps": "next", "needs you": "next",
   "left/needs you": "next",
   terms: "terms", "words to know": "terms", glossary: "terms",
+  "try next": "suggest", "next prompts": "suggest", "suggested prompts": "suggest", suggestions: "suggest",
 };
 
 const LOOK: Record<Kind, { title: string; short: string; icon: typeof Info; color: string }> = {
@@ -30,6 +31,7 @@ const LOOK: Record<Kind, { title: string; short: string; icon: typeof Info; colo
   how: { title: "How it was done", short: "How", icon: Wrench, color: "var(--fg-3)" },
   next: { title: "What's next for you", short: "Next", icon: ListChecks, color: "var(--orange)" },
   terms: { title: "Words to know", short: "Terms", icon: BookOpen, color: "var(--purple)" },
+  suggest: { title: "Try next", short: "Try next", icon: Sparkles, color: "var(--accent)" },
   other: { title: "", short: "", icon: Info, color: "var(--fg-3)" },
 };
 
@@ -133,7 +135,8 @@ function fullView(sections: Section[], gloss: Glossed, terms: Entry[], className
   const wide = (k: Kind) =>
     k === "outputs" ? !has("next") : k === "next" ? !has("outputs") : k === "agents" ? !has("terms") : k === "terms" ? !has("agents") : true;
   const order: Kind[] = ["plain", "other", "done", "outputs", "next", "agents", "terms", "how"];
-  const sorted = [...sections].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+  // "Try next" is shown by the run page as prompts you can tap (see NextSteps), not as a section
+  const sorted = sections.filter((s) => s.kind !== "suggest").sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
   return (
     <div className={`grid gap-3 md:grid-cols-2 ${className}`}>
       {sorted.map((s, i) => {

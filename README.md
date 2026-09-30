@@ -84,6 +84,11 @@ Open source and self-hosted: `docker compose up` and it's yours.
 - **A recap anyone can read.** When a run finishes you get **In plain words** first, then what got done, what you
   got (links you can click), what's next for you, and **Words to know**. Technical words in the recap explain
   themselves when you hover or tap them.
+- **Know what's happening and what it cost.** A live *Right now* card says what each agent is trying to do; the
+  Usage view and page show tokens, calls, tool calls, time and cost per run and per day. Finished runs suggest
+  next steps, starting with getting things production ready.
+- **Secrets stay out of the models' context.** Keys are scrubbed from everything an agent reads, pages are
+  blurred before screenshots, and new keys go straight to the vault. See [SECURITY.md](SECURITY.md).
 - **Your Claude plan, or your own keys.** By default every agent (planner included) runs as a headless
   [Claude Code](https://code.claude.com) session signed in with your Claude account, so usage counts toward
   your Pro/Max plan instead of API credits (Opus 5.5 by default). Or switch Settings → Engine to **API keys**

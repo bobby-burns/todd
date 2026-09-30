@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import accounts, connect, events, llm, prompts, registry, settings, vault, workspace
+from . import accounts, connect, events, llm, preview, prompts, registry, settings, usage, vault, workspace
 from .config import config
 from .db import AgentInstance, Event, Interaction, LedgerEntry, Run, init_db, select, session
 from .orchestrator import integrations_summary, manager
@@ -32,7 +32,9 @@ async def lifespan(app: FastAPI):
     init_db()
     registry.load_plugins()
     await manager.startup()
+    await preview.start()
     yield
+    await preview.stop()
     await manager.shutdown()
 
 
@@ -241,7 +243,16 @@ class Resolve(BaseModel):
 
 @app.post("/api/interactions/{interaction_id}")
 async def resolve(interaction_id: str, body: Resolve) -> dict:
-    it = resolve_interaction(interaction_id, decision=body.decision, answer=body.answer)
+    answer = body.answer
+    with session() as s:
+        pending = s.get(Interaction, interaction_id)
+    name = (pending.data or {}).get("secret_name") if pending and pending.status == "pending" else None
+    if name and answer and answer.strip():  # a secret: straight to the vault, credited to the run that asked
+        vault.set_secret(name, answer.strip(), origin=(pending.run_id, pending.agent))
+        answer = f"(saved to the vault as {name})"
+    elif answer:
+        answer = vault.scrub(answer)  # what's stored and shown back never holds a pasted secret
+    it = resolve_interaction(interaction_id, decision=body.decision, answer=answer)
     if not it:
         raise HTTPException(404, "interaction not found")
     return it.model_dump()
@@ -411,6 +422,20 @@ async def tools_catalog(include_mcp: bool = False) -> dict:
 def tools_reload() -> dict:
     registry.load_plugins()
     return registry.catalog()
+
+
+# ------------------------------------------------------------------------------------------ usage
+@app.get("/api/runs/{run_id}/usage")
+def run_usage(run_id: str) -> dict:
+    """What a run used: model tokens and calls (and cost), tool calls, browser steps and time, per agent."""
+    _get_run(run_id)
+    return usage.run_usage(run_id)
+
+
+@app.get("/api/usage")
+def usage_overview(days: int = 30) -> dict:
+    """Usage across runs: per day, the runs that used the most, and per model."""
+    return usage.overview(days)
 
 
 # ------------------------------------------------------------------------------------------ run files (read-only)

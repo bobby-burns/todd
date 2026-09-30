@@ -9,6 +9,28 @@ changes).
 
 ### Added
 
+- **Usage** for every run and across runs: model tokens (in, out, cached) and calls per agent and model, tool
+  calls, browser steps, time, and cost (billed on the API engine; on your Claude plan, what it would cost at API
+  prices). A Usage view on the run page and a Usage page with tokens per day, the runs that used the most and
+  per-model totals. API: `GET /runs/{id}/usage`, `GET /usage?days=`.
+- **Right now**: a live card on a running run showing what each agent is trying to do (its latest thought) and
+  what it's doing this moment (the tool it's running, in plain words), and who's waiting on you or paused.
+- **Suggested next steps** under a finished run: the planner's own "Try next" prompts plus production-readiness
+  steps that fit what was built (security headers and rate limits, Firestore rules, Supabase row-level security,
+  live-mode Stripe with verified webhooks, store review, CI, domain email, backups). Tap one to put it in the
+  Continue box.
+- **Sign in with Squarespace** for domains (Settings → Domain registrant, and the Accounts page): Squarespace
+  Domains (where Google Domains went) has no API, so agents set up DNS in the browser with your sign-in, following
+  a DNS playbook from `find_integrations` (e.g. Vercel's A and CNAME records). Goals that mention Squarespace or
+  Google Domains ask for the sign-in up-front.
+- **Previews on localhost:** `http://localhost:PORT` in the agents' browser reaches the same port in the sandbox
+  (ports 3000, 3001, 4173, 4321, 5000, 5173, 8000, 8080, 8081, 19006, relayed through the API), so agents look at
+  what they're building without deploying it. Agents are told never to deploy just to look at something.
+- **`git` tool**: normal git (`push -u origin main`, `pull`, `clone`, `status`…) signed in to GitHub for commands
+  that talk to a remote. `ask_human(secret_name=…)` collects a secret into the vault through a password field.
+  `shell` and `api_request` take `save_to_vault` to store a secret they return without the model seeing it.
+  `browser_type` types `{{secret:NAME}}`.
+
 - **Files** view for every run: a read-only browser over the run's folder in the sandbox (what its agents made or
   changed), live while the run works. Recently changed files, a folder tree (installed packages and build output
   listed but not opened), code with line numbers, Markdown formatted (or its source), images, and downloads.
@@ -62,6 +84,17 @@ changes).
 
 ### Changed
 
+- `git_push` pushes like a developer would: to `origin` (set from `repo` when given) with upstream tracking, the
+  current branch instead of renaming it to main, a default .gitignore when the project has none (node_modules,
+  .env, build folders, key files) and `--force-with-lease` for force. Before, agents couldn't push with plain git
+  (the sandbox has no GitHub credentials) and fell back to odd workarounds.
+- Secrets in context (security review): tool results are scrubbed string by string before serializing (JSON
+  escaping hid multi-line keys), including encoded forms and CLI sign-in tokens; secret-shaped strings are hidden
+  from models and the timeline; events are scrubbed before they're stored; the browser blurs secret-looking text
+  before every screenshot and redacts page text, console output and URLs; checkouts give the browser agent no
+  page-reading actions or form values and blank the checkout tabs afterwards; `read_file` hides `.env` values;
+  `fetch_url`/`api_request` refuse internal and private addresses and don't follow redirects with a secret; the
+  CLI blocklist sees subcommands after global flags; the vault shows only the last 4 characters. See SECURITY.md.
 - The completed-run screen is redesigned: the recap renders as Markdown (lists, bold, code, links) in sections:
   In plain words, What got done, What you got (clickable link cards), What's next for you, Who did what, Words to
   know and How. Technical words explain themselves on hover or tap (a built-in glossary plus the recap's own

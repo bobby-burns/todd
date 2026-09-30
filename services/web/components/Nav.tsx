@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, KeyRound, Monitor, Moon, Receipt, Rocket, Settings2, Sun, Zap } from "lucide-react";
+import { Check, Gauge, KeyRound, Monitor, Moon, Receipt, Rocket, Settings2, Sun, Zap } from "lucide-react";
 import { api, type Interaction, type Run } from "@/lib/api";
 import { softSpring, spring } from "@/lib/motion";
 import { RunMenu } from "./RunMenu";
@@ -13,6 +13,7 @@ import { Segmented, StatusDot } from "./ui";
 const items = [
   { href: "/", label: "Runs", icon: Zap },
   { href: "/accounts", label: "Accounts", icon: KeyRound },
+  { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/ledger", label: "Ledger", icon: Receipt },
   { href: "/settings", label: "Settings", icon: Settings2 },
   { href: "/onboarding", label: "Setup", icon: Rocket },

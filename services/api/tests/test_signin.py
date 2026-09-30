@@ -245,3 +245,15 @@ def test_gate_visits_sites_without_a_known_session_cookie(loop, monkeypatch):
         with session() as s:
             assert s.get(Interaction, it.id).status == "approved"
     loop.run_until_complete(go())
+
+
+def test_squarespace_domains(clean_vault):
+    from todd import integrations
+
+    for prompt in ("Build a landing page and point my Squarespace domain at it",
+                   "Connect my Google Domains domain to the new site"):
+        got = {s["id"]: s for s in needs.detect(prompt)}
+        assert "squarespace" in got and got["squarespace"]["use"] == "Manages your domain and its DNS", prompt
+    assert accounts.catalog()["squarespace"].category == "Domains & DNS"
+    r = integrations.assess("squarespace", {"browser", "sandbox"}, {})
+    assert r["route"] == "browser" and "dns-settings" in str(r) and "76.76.21.21" in str(r)

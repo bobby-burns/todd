@@ -13,7 +13,7 @@ import os
 import socket
 from typing import Any
 
-from .. import prompts, vault
+from .. import prompts, redact, vault
 from ..config import config
 from ..llm import model_for
 from ..policy import authorize_spend, settle
@@ -57,10 +57,28 @@ def _card_secrets(domains: list[str]) -> dict[str, dict[str, str]] | None:
     return out or None
 
 
+# Actions the browser agent doesn't get during a checkout: reading the page, running scripts, files.
+CHECKOUT_EXCLUDED = ["evaluate", "extract", "search_page", "find_elements", "find_text", "screenshot", "save_as_pdf",
+                     "read_file", "write_file", "replace_file", "upload_file"]
+
+
+async def blank_tabs(domains: list[str]) -> None:
+    """After a checkout: send every tab on the payment domains to a blank page (card details off screen)."""
+    from ..cdp import blank_tabs as _blank
+
+    try:
+        await _blank(domains)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def run_browser_task(task: str, start_url: str | None = None, payment: dict[str, Any] | None = None) -> dict:
     ctx = get_ctx()
     agent_id = get_agent_id()
     from browser_use import Agent, Browser, Tools
+    from browser_use.dom.views import DEFAULT_INCLUDE_ATTRIBUTES
+
+    from ..tools import page_guard
     from browser_use.agent.views import ActionResult
     from browser_use.llm.litellm.chat import ChatLiteLLM
 
@@ -86,7 +104,8 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
             "card_zip. Do not pay more than the approved amount; if the total differs, stop and ask_human."
         )
 
-    tools = Tools()
+    # During a checkout the model gets no page-reading or script actions (card details stay out of its context).
+    tools = Tools(exclude_actions=CHECKOUT_EXCLUDED) if sensitive is not None else Tools()
 
     async def _await_human(iid: str, question: str) -> ActionResult:
         # browser-use caps each action at ~180s, so wait in bounded slices; the question stays open between calls.
@@ -148,19 +167,24 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
             return ActionResult(extracted_content=msg, long_term_memory=f"Saved {file_name} to the vault as {name}")
 
     card_mode = sensitive is not None  # never screenshot or send images while card details may be on screen
+    from ..tools.browser_direct import _redactor
+
+    card_filter = _redactor(sensitive)  # card values in any format, in what the step log records
     shots_dir = config.data_dir / "screens" / ctx.run_id
     shots_dir.mkdir(parents=True, exist_ok=True)
 
     async def on_step(state: Any, output: Any, step: int) -> None:
-        data: dict[str, Any] = {"step": step, "url": getattr(state, "url", None), "title": getattr(state, "title", None)}
+        data: dict[str, Any] = {"step": step, "url": redact.urls(str(getattr(state, "url", "") or "")),
+                                "title": getattr(state, "title", None)}
         try:
             data["actions"] = [a.model_dump(exclude_unset=True, exclude_none=True) for a in (output.action or [])]
         except Exception:
             pass
         data["memory"] = getattr(output, "memory", None)
         data["evaluation"] = getattr(output, "evaluation_previous_goal", None)
+        data = redact.deep(data, lambda t: redact.page(card_filter(t)))
         if getattr(output, "thinking", None):
-            ctx.emit(agent_id, "thinking", str(output.thinking), {"source": "browser"})
+            ctx.emit(agent_id, "thinking", redact.page(card_filter(str(output.thinking))), {"source": "browser"})
         shot = getattr(state, "screenshot", None)
         if shot and not card_mode:
             name = f"{step:04d}.png"
@@ -169,7 +193,8 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
                 data["screenshot"] = f"/api/screens/{ctx.run_id}/{name}"
             except Exception:
                 pass
-        ctx.emit(agent_id, "browser_step", getattr(output, "next_goal", None) or f"Step {step}", data)
+        ctx.emit(agent_id, "browser_step", redact.page(card_filter(getattr(output, "next_goal", None) or f"Step {step}")),
+                 data)
 
     async def should_stop() -> bool:
         return ctx.cancelled
@@ -179,6 +204,7 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
         ctx.emit(agent_id, "status", "Waiting for the browser (another agent is using it)…")
     async with ctx.browser_lock:
         browser = Browser(cdp_url=cdp_url(), keep_alive=True)
+        page_guard.install(browser)  # secret-looking text is blurred before every screenshot
         agent = Agent(
             task=full_task,
             llm=llm,
@@ -190,7 +216,10 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
             register_should_stop_callback=should_stop,
             use_vision=not card_mode,
             use_judge=False,
+            # no form values in the page state during a checkout (a reformatted card number wouldn't match a filter)
+            include_attributes=[a for a in DEFAULT_INCLUDE_ATTRIBUTES if a != "value"] if card_mode else None,
         )
+        page_guard.guard_agent(agent)  # its LLM never sees secret-looking text from the page
         ctx.emit(agent_id, "status", f"Browser task started: {task[:200]}", {"browser": "start"})
 
         async def pause_bridge() -> None:
@@ -212,14 +241,24 @@ async def run_browser_task(task: str, start_url: str | None = None, payment: dic
             raise
         finally:
             bridge.cancel()
+            if card_mode:  # don't leave card details on screen for the next agent's screenshots
+                await blank_tabs([d for d in (payment or {}).get("domains") or []])
             try:
                 await browser.stop()
             except Exception:
                 pass
 
     try:
-        cost = float(getattr(getattr(history, "usage", None), "total_cost", 0) or 0)
+        u = getattr(history, "usage", None)
+        cost = float(getattr(u, "total_cost", 0) or 0)
         ctx.add_llm_cost(cost)
+        from .. import usage
+
+        cached = int(getattr(u, "total_prompt_cached_tokens", 0) or 0)
+        usage.record(ctx.run_id, agent_id, spec.model, calls=int(getattr(u, "entry_count", 0) or len(history.history)),
+                     input_tokens=max(0, int(getattr(u, "total_prompt_tokens", 0) or 0) - cached),
+                     output_tokens=int(getattr(u, "total_completion_tokens", 0) or 0),
+                     cache_read_tokens=cached, cost_usd=cost)
     except Exception:
         pass
 

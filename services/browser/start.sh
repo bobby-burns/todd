@@ -25,6 +25,15 @@ websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 # Chrome only binds CDP to localhost; expose it to the compose network via socat.
 socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 &
 
+# Previews: http://localhost:PORT here reaches the same port in the sandbox, relayed by the API (the sandbox isn't on
+# this network). Agents look at what they're building without deploying it. Same ports and base as api and sandbox.
+PREVIEW_PORTS=${PREVIEW_PORTS:-3000,3001,4173,4321,5000,5173,8000,8080,8081,19006}
+i=0
+for port in ${PREVIEW_PORTS//,/ }; do
+  socat TCP-LISTEN:"$port",bind=127.0.0.1,fork,reuseaddr TCP:"${PREVIEW_RELAY_HOST:-api}":$((${PREVIEW_RELAY_BASE:-17000} + i)) &
+  i=$((i + 1))
+done
+
 # Keep Chromium running even if a human closes the window in the live view.
 while true; do
   "${CHROME_BIN:-chromium}" \

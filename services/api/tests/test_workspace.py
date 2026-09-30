@@ -158,3 +158,33 @@ def test_vault_keys_are_credited_to_the_run_that_saved_them(monkeypatch):
         for n in names:
             vault.delete_secret(n)
     assert not [r for r in vault.list_secrets() if r["name"] in names]
+
+
+def test_usage_totals_per_run_agent_and_day(monkeypatch):
+    from todd import main, usage
+    from todd.db import Event, session
+
+    rid = new_run("usage")
+    usage.record(rid, "planner", "claude-opus-5-5", **usage.from_anthropic(
+        {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 7}))
+    usage.record(rid, "planner", "claude-opus-5-5", calls=0, plan_usd=0.25)
+    usage.record(rid, "a_x", "gpt-5", cost_usd=0.5, **usage.from_langchain(
+        {"input_tokens": 300, "output_tokens": 40, "input_token_details": {"cache_read": 200}}))
+    usage.record(rid, "a_x", "gpt-5", calls=0)  # nothing to add
+    with session() as s:
+        s.add(Event(run_id=rid, agent="a_x", kind="tool_call", text="shell: ls", data={"tool": "shell"}))
+        s.add(Event(run_id=rid, agent="a_x", kind="browser_step", text="Opened", data={}))
+        s.commit()
+    u = usage.run_usage(rid)
+    t = u["total"]
+    assert (t["calls"], t["input_tokens"], t["output_tokens"], t["cache_read_tokens"], t["cache_write_tokens"]) == \
+        (2, 110, 45, 300, 7)
+    assert t["cost_usd"] == 0.5 and t["plan_usd"] == 0.25 and t["tool_calls"] == 1 and t["browser_steps"] == 1
+    x = next(a for a in u["agents"] if a["id"] == "a_x")
+    assert x["top_tools"] == [["shell", 1]] or x["top_tools"] == [("shell", 1)]
+    monkeypatch.setattr(config, "api_token", "")
+    c = TestClient(main.app)
+    assert c.get(f"/api/runs/{rid}/usage").json()["total"]["tokens"] == 462
+    o = c.get("/api/usage", params={"days": 7}).json()
+    assert len(o["series"]) == 7 and o["series"][-1]["tokens"] >= 462
+    assert any(r["run_id"] == rid and r["title"] == "usage" for r in o["runs"])
