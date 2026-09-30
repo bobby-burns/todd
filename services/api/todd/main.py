@@ -6,21 +6,23 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import accounts, connect, events, llm, prompts, registry, settings, vault
+from . import accounts, connect, events, llm, prompts, registry, settings, vault, workspace
 from .config import config
 from .db import AgentInstance, Event, Interaction, LedgerEntry, Run, init_db, select, session
 from .orchestrator import integrations_summary, manager
 from .runtime import resolve_interaction
+from .sdk import ToolError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -363,8 +365,9 @@ class SecretBody(BaseModel):
 
 
 @app.get("/api/secrets")
-def secrets_list() -> list[dict]:
-    return vault.list_secrets()
+def secrets_list(run_id: str | None = None) -> list[dict]:
+    """Names and masked values, each with the run that saved it (or `source`); `run_id` for one run's keys."""
+    return vault.list_secrets(run_id)
 
 
 @app.put("/api/secrets/{name}")
@@ -408,6 +411,43 @@ async def tools_catalog(include_mcp: bool = False) -> dict:
 def tools_reload() -> dict:
     registry.load_plugins()
     return registry.catalog()
+
+
+# ------------------------------------------------------------------------------------------ run files (read-only)
+async def _workspace_call(coro):
+    try:
+        return await coro
+    except ToolError as e:
+        msg = str(e)
+        for code in (404, 400, 413):
+            if f"-> {code}" in msg:
+                raise HTTPException(code, msg.split(": ", 1)[-1][:300])
+        if "unreachable" in msg:
+            raise HTTPException(503, "the sandbox isn't reachable")
+        raise HTTPException(400, msg[:300])
+
+
+@app.get("/api/runs/{run_id}/files")
+async def run_files(run_id: str) -> dict:
+    """Everything the run's agents made or changed in its folder (read-only)."""
+    _get_run(run_id)
+    return await _workspace_call(workspace.tree(run_id))
+
+
+@app.get("/api/runs/{run_id}/files/view")
+async def run_file_view(run_id: str, path: str, reveal: bool = False) -> dict:
+    """One file: text with vault values masked (and `.env` values unless `reveal`), an image, or a note."""
+    _get_run(run_id)
+    return await _workspace_call(workspace.view(run_id, path, reveal=reveal))
+
+
+@app.get("/api/runs/{run_id}/files/download")
+async def run_file_download(run_id: str, path: str) -> Response:
+    _get_run(run_id)
+    name, data = await _workspace_call(workspace.download(run_id, path))
+    safe_name = re.sub(r"[^\w.\- ]", "_", name) or "file"
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
 
 
 # ------------------------------------------------------------------------------------------ agents

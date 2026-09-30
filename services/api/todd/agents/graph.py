@@ -39,7 +39,8 @@ async def finish(summary: str, success: bool = True) -> str:
 
     Args:
         summary: recap as plain lines — "Done: …", "Outputs: …" (URLs, IDs, paths, values), "How: …" (APIs/MCPs/CLIs,
-            browser only if needed), "Left / needs you: …"
+            browser only if needed), "Left / needs you: …" (the planner's also starts with "In plain words: …" and
+            may end with "Terms: …"); several items under a label as "- " lines
         success: whether the task was fully achieved
     """
     return "ok"

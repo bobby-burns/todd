@@ -7,7 +7,7 @@ import os
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import config
-from .db import Secret, select, session, utcnow
+from .db import Run, Secret, SecretOrigin, select, session, utcnow
 
 
 def _load_key() -> bytes:
@@ -25,14 +25,32 @@ def _load_key() -> bytes:
 _fernet = Fernet(_load_key())
 
 
-def set_secret(name: str, value: str) -> None:
+def set_secret(name: str, value: str, *, source: str | None = None, track: bool = True) -> None:
+    """Store a secret. It's credited to the run (and agent) saving it, or to `source` outside a run ("you" by
+    default); `track=False` keeps the current credit (e.g. a CLI refreshing its own sign-in)."""
     token = _fernet.encrypt(value.encode()).decode()
     with session() as s:
         row = s.get(Secret, name) or Secret(name=name, ciphertext=token)
         row.ciphertext = token
         row.updated_at = utcnow()
         s.add(row)
+        origin = s.get(SecretOrigin, name)
+        if track or origin is None:
+            origin = origin or SecretOrigin(name=name)
+            origin.run_id, origin.agent, origin.source = _saver(source)
+            origin.updated_at = utcnow()
+            s.add(origin)
         s.commit()
+
+
+def _saver(source: str | None) -> tuple[str | None, str | None, str]:
+    from .runtime import current_agent_id
+    from .sdk import _current_ctx
+
+    ctx = _current_ctx.get()
+    if ctx is not None:
+        return ctx.run_id, current_agent_id(), "run"
+    return None, None, source or "you"
 
 
 def get_secret(name: str, default: str | None = None) -> str | None:
@@ -50,21 +68,36 @@ def get_secret(name: str, default: str | None = None) -> str | None:
 def delete_secret(name: str) -> bool:
     with session() as s:
         row = s.get(Secret, name)
+        origin = s.get(SecretOrigin, name)
+        if origin:
+            s.delete(origin)
         if not row:
+            s.commit()
             return False
         s.delete(row)
         s.commit()
         return True
 
 
-def list_secrets() -> list[dict]:
+def list_secrets(run_id: str | None = None) -> list[dict]:
+    """Names and masked values (never the values), each with where it came from: {run_id, run_title, agent,
+    source}. `run_id` limits it to the keys that run saved."""
     with session() as s:
         rows = s.exec(select(Secret).order_by(Secret.name)).all()
+        origins = {o.name: o for o in s.exec(select(SecretOrigin)).all()}
+        run_ids = {o.run_id for o in origins.values() if o.run_id}
+        titles = {r.id: r.title for r in s.exec(select(Run).where(Run.id.in_(run_ids))).all()} if run_ids else {}
     out = []
     for r in rows:
+        o = origins.get(r.name)
+        if run_id and (not o or o.run_id != run_id):
+            continue
         value = get_secret(r.name) or ""
         masked = (value[:3] + "…" + value[-4:]) if len(value) > 10 else "••••"
-        out.append({"name": r.name, "masked": masked, "updated_at": r.updated_at})
+        rid = o.run_id if o else None
+        out.append({"name": r.name, "masked": masked, "updated_at": r.updated_at, "run_id": rid,
+                    "run_title": titles.get(rid) if rid else None, "agent": o.agent if o else None,
+                    "source": o.source if o else None})  # None: saved before Todd kept track
     return out
 
 

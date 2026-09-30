@@ -362,13 +362,13 @@ async def _store(c: Connector, state: str) -> None:
         token = (r.get("output") or "").strip()
         if r.get("exit_code") != 0 or not token or any(ch.isspace() for ch in token):
             raise ToolError(f"{c.name} signed in, but its token couldn't be read.")
-        vault.set_secret(c.secret, token)  # type: ignore[arg-type]
+        vault.set_secret(c.secret, token, source="sign-in")  # type: ignore[arg-type]
         return
     await _sh(f"STATE={q(state)}\n" + _SNAPSHOT)
     blob = (await _read(f"{state}/state.b64")).strip()
     if not blob:
         raise ToolError(f"{c.name} signed in, but its sign-in files couldn't be saved.")
-    vault.set_secret(state_name(c.service), blob)
+    vault.set_secret(state_name(c.service), blob, source="sign-in")
 
 
 # ------------------------------------------------------------------------------------------ using a connected CLI
@@ -409,7 +409,7 @@ async def run(service: str, command: str, cwd: str, timeout: int = 600, env: dic
             try:  # keep tokens the CLI refreshed during the command
                 fresh = (await _read(f"{tmp}/state.b64")).strip()
                 if fresh and fresh != blob:
-                    vault.set_secret(state_name(c.service), fresh)
+                    vault.set_secret(state_name(c.service), fresh, track=False)
             finally:
                 await _sh(f"rm -rf {q(tmp)}")
         rc = int(m.group(1)) if m else r.get("exit_code")

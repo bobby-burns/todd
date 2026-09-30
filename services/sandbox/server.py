@@ -5,7 +5,9 @@ Endpoints (all POST, JSON, require X-Sandbox-Token):
   /files/write {path, content}           -> {ok}
   /files/read  {path}                    -> {content}
   /files/list  {path, depth}             -> {entries}
-All paths are confined to WORKSPACE_ROOT.
+  /files/tree  {base}                    -> {exists, entries: [{path, dir, size, mtime, …}], truncated}
+  /files/view  {base, path, raw}         -> {kind: text|image|binary|raw, size, mtime, content | data}
+All paths are confined to WORKSPACE_ROOT (tree and view to `base`, one run's folder).
 """
 
 from __future__ import annotations
@@ -167,6 +169,99 @@ def listdir(req: PathReq) -> dict:
 
     walk(base, max(1, req.depth))
     return {"entries": entries[:800], "truncated": len(entries) > 800}
+
+
+# ------------------------------------------------------------------ read-only browsing (the dashboard's Files view)
+# Confined to one run's folder (`base`): a path that resolves outside it, e.g. through a symlink, is refused.
+TREE_MAX = 5000
+VIEW_MAX = 400_000  # characters of text shown at once
+RAW_MAX = 25_000_000  # bytes for images and downloads
+IMAGES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+          ".webp": "image/webp", ".avif": "image/avif", ".ico": "image/x-icon", ".bmp": "image/bmp",
+          ".svg": "image/svg+xml"}
+
+
+def _within(base: str, path: str = "") -> tuple[Path, Path]:
+    root = safe(base)
+    p = (root / path.lstrip("/")).resolve()
+    if p != root and root not in p.parents:
+        raise HTTPException(400, "path outside this run's folder")
+    return root, p
+
+
+class TreeReq(BaseModel):
+    base: str
+
+
+@app.post("/files/tree", dependencies=[Depends(auth)])
+def tree(req: TreeReq) -> dict:
+    """Every file and folder under `base` (dependency and build folders are listed but not opened)."""
+    root, _ = _within(req.base)
+    if not root.is_dir():
+        return {"exists": False, "entries": [], "truncated": False}
+    entries: list[dict] = []
+    for dirpath, dirnames, filenames in os.walk(root):  # doesn't follow symlinked folders
+        here = Path(dirpath)
+        dirnames.sort()
+        for name in list(dirnames):
+            p = here / name
+            skipped = name in SKIP or p.is_symlink()
+            entries.append({"path": str(p.relative_to(root)), "dir": True, "skipped": skipped,
+                            "mtime": _mtime(p)})
+            if skipped:
+                dirnames.remove(name)
+        for name in sorted(filenames):
+            p = here / name
+            try:
+                st = p.lstat()
+            except OSError:
+                continue
+            entries.append({"path": str(p.relative_to(root)), "dir": False, "size": st.st_size,
+                            "mtime": st.st_mtime, "link": p.is_symlink()})
+        if len(entries) >= TREE_MAX:
+            return {"exists": True, "entries": entries[:TREE_MAX], "truncated": True}
+    return {"exists": True, "entries": entries, "truncated": False}
+
+
+def _mtime(p: Path) -> float | None:
+    try:
+        return p.lstat().st_mtime
+    except OSError:
+        return None
+
+
+class ViewReq(BaseModel):
+    base: str
+    path: str
+    raw: bool = False  # the whole file as base64 (downloads)
+
+
+@app.post("/files/view", dependencies=[Depends(auth)])
+def view(req: ViewReq) -> dict:
+    """One file: text (up to VIEW_MAX characters), an image, or just its size when it's binary."""
+    import base64
+
+    _, p = _within(req.base, req.path)
+    if not p.is_file():
+        raise HTTPException(404, f"no such file: {req.path}")
+    st = p.stat()
+    out: dict = {"size": st.st_size, "mtime": st.st_mtime}
+    if req.raw:
+        if st.st_size > RAW_MAX:
+            raise HTTPException(413, "file too large to download here")
+        return {**out, "kind": "raw", "data": base64.b64encode(p.read_bytes()).decode()}
+    mime = IMAGES.get(p.suffix.lower())
+    if mime:
+        if st.st_size > RAW_MAX:
+            return {**out, "kind": "binary"}
+        return {**out, "kind": "image", "mime": mime, "data": base64.b64encode(p.read_bytes()).decode()}
+    with p.open("rb") as f:
+        head = f.read(VIEW_MAX * 4 + 4)
+    if b"\0" in head[:8192]:
+        return {**out, "kind": "binary"}
+    text = head.decode(errors="replace")
+    truncated = len(text) > VIEW_MAX or st.st_size > len(head)
+    return {**out, "kind": "text", "content": text[:VIEW_MAX], "truncated": truncated}
 
 
 @app.get("/health")

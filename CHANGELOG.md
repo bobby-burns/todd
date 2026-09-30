@@ -9,6 +9,19 @@ changes).
 
 ### Added
 
+- **Files** view for every run: a read-only browser over the run's folder in the sandbox (what its agents made or
+  changed), live while the run works. Recently changed files, a folder tree (installed packages and build output
+  listed but not opened), code with line numbers, Markdown formatted (or its source), images, and downloads.
+  Vault values are masked everywhere, `.env` values are hidden until you show them, and private key files are
+  never shown. Nothing outside the run's folder is reachable, symlinks included. API: `GET /runs/{id}/files`,
+  `…/files/view`, `…/files/download`; sandbox: `/files/tree`, `/files/view`.
+- Vault keys by run: each secret remembers the run and agent that saved it (or that you added it, or that it came
+  from a CLI sign-in). Settings → Vault groups keys that way, the Files view lists the keys its run saved, and
+  `GET /secrets?run_id=` filters by run.
+- Plain-language recaps: the planner's summary starts with **In plain words** (what now exists and what you can do
+  with it) and ends with **Terms** for any jargon; every agent is told to explain technical words the first time
+  it uses them with you.
+
 - Accounts up-front: when a run starts, Todd reads which accounts the goal needs (services you name, plus what
   the work implies, e.g. an iPhone app → Expo, App Store Connect, Apple Developer, GitHub), skips those it can
   already use through a key or connected CLI, and pauses on one **Sign in to continue** card: a Sign in button per
@@ -49,6 +62,10 @@ changes).
 
 ### Changed
 
+- The completed-run screen is redesigned: the recap renders as Markdown (lists, bold, code, links) in sections:
+  In plain words, What got done, What you got (clickable link cards), What's next for you, Who did what, Words to
+  know and How. Technical words explain themselves on hover or tap (a built-in glossary plus the recap's own
+  Terms). Agent recaps in windows use the same renderer, including older one-line recaps.
 - The **Sign in to continue** card says why: a short "Why these accounts" line from the goal (e.g. "You're making
   an iPhone app, so Todd needs to build it, sign it and upload it to the App Store."), and each account's row says
   what Todd uses it for ("Builds the app in the cloud").

@@ -4,7 +4,7 @@ import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
-import { ArrowUp, Bot, Brain, ChevronLeft, CircleCheck, CircleX, Globe, LayoutGrid, Pause, Play, RotateCcw, Rows3, Square, X } from "lucide-react";
+import { ArrowUp, Bot, Brain, ChevronLeft, CircleCheck, CircleX, FolderOpen, Globe, LayoutGrid, Pause, Play, RotateCcw, Rows3, Square, X } from "lucide-react";
 import { agentColor, api, usd, type AgentInfo, type Interaction, type Run, type TEvent } from "@/lib/api";
 import { softSpring, spring } from "@/lib/motion";
 import { ActivityIndicator, AgentAvatar, Segmented, StatusPill } from "@/components/ui";
@@ -12,9 +12,10 @@ import { buildFeed, EventRow } from "@/components/EventRow";
 import { InteractionCard } from "@/components/InteractionCard";
 import { AgentWindow } from "@/components/AgentWindow";
 import { LiveBrowser } from "@/components/LiveBrowser";
-import { SummaryText } from "@/components/SummaryText";
+import { RunFiles } from "@/components/RunFiles";
+import { recapLine, SummaryText } from "@/components/SummaryText";
 
-type View = "windows" | "timeline";
+type View = "windows" | "timeline" | "files";
 
 const FINISHED = ["succeeded", "failed", "cancelled", "interrupted"];
 
@@ -219,6 +220,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                 options={[
                   { value: "windows", icon: LayoutGrid, label: <span className="hidden sm:inline">Windows</span>, title: "One window per agent" },
                   { value: "timeline", icon: Rows3, label: <span className="hidden sm:inline">Timeline</span>, title: "Everything in order" },
+                  { value: "files", icon: FolderOpen, label: <span className="hidden sm:inline">Files</span>, title: "What the agents made (read-only)" },
                 ]}
               />
               <div className="flex rounded-full bg-fill p-[3px]">
@@ -283,7 +285,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
 
         {/* Run summary */}
         <AnimatePresence>
-          {run.summary && !run.active && (
+          {run.summary && !run.active && view !== "files" && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -331,7 +333,9 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           )}
         </AnimatePresence>
 
-        {view === "windows" ? (
+        {view === "files" ? (
+          <RunFiles runId={id} active={run.active} agents={agents} />
+        ) : view === "windows" ? (
           <LayoutGroup>
             {(tray.length > 0 || hiddenCount > 0) && (
               <motion.div layout transition={softSpring} className="mb-4">
@@ -431,10 +435,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
 
 /** A finished agent, folded down to one line: open it to see its window again, or hide it from this view. */
 function FinishedCard({ agent, color, onOpen, onHide }: { agent: AgentInfo; color: string; onOpen: () => void; onHide: () => void }) {
-  const line = (agent.summary ?? "")
-    .split("\n")
-    .map((l) => l.replace(/^[-*\s]*(\*\*)?done:?(\*\*)?\s*/i, "").trim())
-    .find(Boolean);
+  const line = recapLine(agent.summary ?? "");
   return (
     <motion.div
       layout

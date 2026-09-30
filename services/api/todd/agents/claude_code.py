@@ -163,7 +163,9 @@ FINISH_SCHEMA = {
     "name": "finish",
     "description": ("Finish your task with a short recap. Call this once everything is done (or you cannot "
                     "continue). The summary is plain lines: \"Done: …\", \"Outputs: …\" (URLs, IDs, paths, values), "
-                    "\"How: …\" (APIs/MCPs/CLIs; browser only if needed), \"Left / needs you: …\"."),
+                    "\"How: …\" (APIs/MCPs/CLIs; browser only if needed), \"Left / needs you: …\" (the planner's "
+                    "also starts with \"In plain words: …\" and may end with \"Terms: …\"); several items under a "
+                    "label as \"- \" lines."),
     "inputSchema": {"type": "object", "properties": {
         "summary": {"type": "string", "description": "the recap"},
         "success": {"type": "boolean", "description": "whether the task was fully achieved", "default": True}},

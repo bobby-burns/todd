@@ -87,6 +87,17 @@ class Secret(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class SecretOrigin(SQLModel, table=True):
+    """Where a vault secret came from, for the dashboard (keys grouped by run): the run and agent that last saved it,
+    or `source` when no run did (you: added in Settings; sign-in: a CLI sign-in from the Accounts page)."""
+
+    name: str = Field(primary_key=True)
+    run_id: str | None = Field(default=None, index=True)
+    agent: str | None = None
+    source: str = "you"
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Setting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: Any = Field(default=None, sa_column=Column(JSON))
@@ -157,6 +168,7 @@ __all__ = [
     "Interaction",
     "AgentInstance",
     "Secret",
+    "SecretOrigin",
     "Setting",
     "LedgerEntry",
     "engine",

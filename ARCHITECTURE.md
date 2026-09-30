@@ -42,7 +42,10 @@ prompts.py         Prompt resolution (dashboard → ./prompts file → built-in)
 policy.py          Spend policy + ledger; the only path to spending money
 runtime.py         RunContext: events, human-in-the-loop waits, current agent id, pause gates, cancellation
 llm.py             Model tiers via LiteLLM (LangChain ChatLiteLLM), optional native reasoning, cost tracking
-vault.py           Fernet-encrypted secrets in Postgres (env var fallback), output scrubbing
+vault.py           Fernet-encrypted secrets in Postgres (env var fallback), output scrubbing; each secret is credited
+                   to the run and agent that saved it (SecretOrigin), so Settings → Vault groups keys by run
+workspace.py       The run's folder in the sandbox, read-only for the dashboard's Files view (sandbox /files/tree
+                   and /files/view): vault values masked, `.env` values hidden until asked, private keys never shown
 ```
 
 ## A run, end to end
@@ -85,6 +88,9 @@ vault.py           Fernet-encrypted secrets in Postgres (env var fallback), outp
    Code session with `--resume`) with the message and a note that earlier agents have stopped. `DELETE /runs/{id}`
    stops a run if needed and removes its events, agents, interactions, screenshots, checkpoints and Claude Code
    session files; ledger entries and workspace files stay. `PATCH /runs/{id}` renames it.
+9. The run's files: every agent in a run works in `/workspace/<run_id>` in the sandbox. `GET /runs/{id}/files`
+   lists it, `…/files/view?path=` shows one file and `…/files/download?path=` downloads it (read-only; confined
+   to that folder, symlinks included). `GET /secrets?run_id=` lists the vault keys that run saved.
 
 ## Engines
 

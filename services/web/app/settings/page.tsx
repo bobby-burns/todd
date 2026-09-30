@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Blocks,
@@ -11,8 +12,11 @@ import {
   Cpu,
   CreditCard,
   Globe,
+  KeyRound,
   Link2,
   Lock,
+  PlayCircle,
+  UserRound,
   Plus,
   RefreshCw,
   ScrollText,
@@ -27,7 +31,17 @@ import { ActivityIndicator, IconTile, PageHeader, Section, Segmented, Switch, To
 import { ThemeSwitch } from "@/components/Nav";
 import { ClaudeSignIn } from "@/components/ClaudeCode";
 
-type Secret = { name: string; masked: string; updated_at: string };
+/** `run_id`/`run_title`: the run that saved it; else `source`: "you" (added here), "sign-in" (a CLI sign-in on the
+ *  Accounts page), or null (saved before Todd kept track). */
+type Secret = {
+  name: string;
+  masked: string;
+  updated_at: string;
+  run_id?: string | null;
+  run_title?: string | null;
+  agent?: string | null;
+  source?: string | null;
+};
 type Settings = {
   engine: "claude_code" | "api";
   claude_code: { models: Record<"planner" | "worker" | "fast", string> };
@@ -271,7 +285,7 @@ export default function SettingsPage() {
             "vault",
             undefined,
             <>
-              Every stored secret. Tools reference them as <code className="font-mono text-[12px]">{"{{secret:NAME}}"}</code>.
+              Every stored secret, grouped by where it came from. Tools reference them as <code className="font-mono text-[12px]">{"{{secret:NAME}}"}</code>.
             </>,
             <VaultPanel secrets={secrets} onChange={load} />,
           )}
@@ -755,31 +769,91 @@ function McpSuggestions({ current, onAdd }: { current: Record<string, unknown>; 
   );
 }
 
+type KeyGroup = { id: string; title: string; hint: string; href?: string; icon: LucideIcon; color: string; items: Secret[] };
+
+/** Keys grouped by where they came from: yours, then each run's (newest first), then CLI sign-ins and older keys. */
+function groupKeys(secrets: Secret[]): KeyGroup[] {
+  const runs = new Map<string, KeyGroup>();
+  const mine: Secret[] = [];
+  const signins: Secret[] = [];
+  const earlier: Secret[] = [];
+  for (const x of secrets) {
+    if (x.run_id) {
+      const g = runs.get(x.run_id) ?? {
+        id: x.run_id,
+        title: x.run_title ?? "A deleted run",
+        hint: x.run_title ? "Saved by this run's agents" : "The run is gone; its keys stay until you delete them",
+        href: x.run_title ? `/runs/${x.run_id}` : undefined,
+        icon: PlayCircle,
+        color: "var(--indigo)",
+        items: [],
+      };
+      g.items.push(x);
+      runs.set(x.run_id, g);
+    } else if (x.source === "you") mine.push(x);
+    else if (x.source === "sign-in") signins.push(x);
+    else earlier.push(x);
+  }
+  const newest = (g: KeyGroup) => Math.max(...g.items.map((i) => new Date(i.updated_at).getTime()));
+  return [
+    { id: "you", title: "Added by you", hint: "Keys you saved here", icon: UserRound, color: "var(--accent)", items: mine },
+    ...[...runs.values()].sort((a, b) => newest(b) - newest(a)),
+    { id: "sign-in", title: "From sign-ins", hint: "Command-line tools you signed in on the Accounts page", icon: KeyRound, color: "var(--pink)", items: signins },
+    { id: "earlier", title: "Earlier keys", hint: "Saved before Todd kept track of where keys came from", icon: Lock, color: "var(--fg-3)", items: earlier },
+  ].filter((g) => g.items.length);
+}
+
 function VaultPanel({ secrets, onChange }: { secrets: Secret[]; onChange: () => void }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const groups = useMemo(() => groupKeys(secrets), [secrets]);
   return (
-    <div>
-      <Group>
-        {secrets.length === 0 && <div className="px-4 py-3 text-[13px] text-fg-2">Empty</div>}
-        {secrets.map((x) => (
-          <div key={x.name} className={`${listSep} flex items-center gap-3 px-4 py-2.5 [--inset:16px]`}>
-            <Lock size={13} className="text-fg-3" />
-            <span className="font-mono text-[12.5px] font-medium">{x.name}</span>
-            <span className="font-mono text-[12px] text-fg-3">{x.masked}</span>
-            <button
-              className="ml-auto text-fg-3 transition-colors hover:text-red"
-              onClick={async () => {
-                await api(`/secrets/${x.name}`, { method: "DELETE" });
-                onChange();
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
+    <div className="space-y-4">
+      {secrets.length === 0 && (
+        <Group>
+          <div className="px-4 py-3 text-[13px] text-fg-2">Empty</div>
+        </Group>
+      )}
+      {groups.map((g) => (
+        <div key={g.id}>
+          <div className="mb-1.5 flex items-center gap-2 px-1">
+            <IconTile icon={g.icon} color={g.color} size={22} />
+            <div className="min-w-0 flex-1">
+              {g.href ? (
+                <Link href={g.href} className="block truncate text-[13.5px] font-semibold hover:text-accent">
+                  {g.title}
+                </Link>
+              ) : (
+                <div className="truncate text-[13.5px] font-semibold">{g.title}</div>
+              )}
+            </div>
+            <span className="shrink-0 text-[11.5px] text-fg-3 tabular">
+              {g.items.length} key{g.items.length === 1 ? "" : "s"}
+            </span>
           </div>
-        ))}
-      </Group>
-      <div className="mt-3 flex flex-wrap gap-2">
+          <p className="mb-2 px-1 text-[12px] text-fg-3">{g.hint}</p>
+          <Group>
+            {g.items.map((x) => (
+              <div key={x.name} className={`${listSep} flex items-center gap-3 px-4 py-2.5 [--inset:16px]`}>
+                <Lock size={13} className="shrink-0 text-fg-3" />
+                <span className="min-w-0 truncate font-mono text-[12.5px] font-medium">{x.name}</span>
+                <span className="shrink-0 font-mono text-[12px] text-fg-3">{x.masked}</span>
+                <button
+                  className="ml-auto shrink-0 text-fg-3 transition-colors hover:text-red"
+                  title={`Delete ${x.name}`}
+                  onClick={async () => {
+                    await api(`/secrets/${x.name}`, { method: "DELETE" });
+                    onChange();
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </Group>
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-2">
         <input className="field w-56 font-mono text-[12.5px]" placeholder="NAME" value={name} onChange={(e) => setName(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))} />
         <input className="field min-w-48 flex-1 font-mono text-[12.5px]" type="password" placeholder="value" value={value} onChange={(e) => setValue(e.target.value)} />
         <button

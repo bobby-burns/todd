@@ -251,7 +251,7 @@ def _apple_env() -> tuple[dict[str, str], str]:
                     "up in the browser first, see find_integrations([\"app store connect\"]).")
     pem = normalize_pem(key)
     if pem.strip() != key.strip():  # store it as EAS sees it, so the vault's output scrubbing matches it exactly
-        vault.set_secret("ASC_PRIVATE_KEY", pem.strip())
+        vault.set_secret("ASC_PRIVATE_KEY", pem.strip(), track=False)
     env = {"TODD_ASC_KEY": pem, "EXPO_ASC_KEY_ID": key_id.strip(), "EXPO_ASC_ISSUER_ID": issuer.strip()}
     team = vault.get_secret("APPLE_TEAM_ID")
     if team:

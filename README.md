@@ -78,6 +78,12 @@ Open source and self-hosted: `docker compose up` and it's yours.
   the browser itself; you only step in for a password or 2FA page, or for the one final Authorize/Allow click some
   sites only accept from a person (Todd scrolls to it and highlights it), and only then, while you're there.
   Credentials go straight into the encrypted vault; nobody copies tokens, and runs never stop for a login.
+- **See what it made.** Each run has a **Files** view: everything its agents created or changed, live while they
+  work, read-only (code with line numbers, Markdown formatted, images shown, `.env` values hidden until you ask),
+  plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
+- **A recap anyone can read.** When a run finishes you get **In plain words** first, then what got done, what you
+  got (links you can click), what's next for you, and **Words to know**. Technical words in the recap explain
+  themselves when you hover or tap them.
 - **Your Claude plan, or your own keys.** By default every agent (planner included) runs as a headless
   [Claude Code](https://code.claude.com) session signed in with your Claude account, so usage counts toward
   your Pro/Max plan instead of API credits (Opus 5.5 by default). Or switch Settings → Engine to **API keys**
