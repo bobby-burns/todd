@@ -25,6 +25,12 @@ class Config:
     signedin_token = _env("SIGNEDIN_TOKEN", "")
     signedin_token_file = _env("SIGNEDIN_TOKEN_FILE", "")  # generated on first start if missing (shared with it)
 
+    # The media service (image embeddings, captioned slides for the video toolset): only the API reaches it, with a
+    # random token the API makes (media-token volume). It mounts the workspace, so it reads and writes run folders.
+    media_url = _env("MEDIA_URL", "http://media:7000")
+    media_token = _env("MEDIA_TOKEN", "")
+    media_token_file = _env("MEDIA_TOKEN_FILE", "")  # generated on first start if missing (shared with it)
+
     browser_cdp_host = _env("BROWSER_CDP_HOST", "browser")
     browser_cdp_port = int(_env("BROWSER_CDP_PORT", "9223"))
     browser_live_url = _env(
@@ -77,6 +83,8 @@ class Config:
             self.api_token = _token_file(Path(self.api_token_file))
         if self.signedin_url and not self.signedin_token and self.signedin_token_file:
             self.signedin_token = _token_file(Path(self.signedin_token_file))
+        if self.media_url and not self.media_token and self.media_token_file:
+            self.media_token = _token_file(Path(self.media_token_file))
         if not self.database_url:
             self.database_url = f"sqlite:///{(self.data_dir / 'todd.db').resolve()}"
 

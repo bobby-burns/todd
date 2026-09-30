@@ -9,6 +9,20 @@ changes).
 
 ### Added
 
+- **Slideshows (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`, `video_render`)
+  that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across Pexels stock
+  photos and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to the shot and to
+  the look of the shots already picked (`text_score`, `style_score`, a small same-photographer bonus), and renders
+  captioned 1080×1920 slides (`video/<slug>/slides/NN.png`; stock photos fill the slide, the run's own screenshots
+  are shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`.
+  Stock photos need a free `PEXELS_API_KEY` in the vault; Pexels is in the integrations catalog. MP4 rendering is
+  the next step.
+- **`media` service:** a new container for image embeddings (CLIP ViT-B/32 via fastembed, ONNX on CPU, models
+  baked into the image) and slide composition (Pillow). Own network to the API, token auth, the shared workspace,
+  no vault; downloads only from `MEDIA_FETCH_HOSTS`. Embeddings are cached in a new `MediaAsset` table (a stock photo
+  is embedded once, whichever run finds it) and searched in Python, or with pgvector when the database has the
+  extension (the compose Postgres image is unchanged for now: see media_index.py).
+
 - **Launch plan** for website goals: at the start, one card asks where it should live (your domain, a new domain,
   or a free address for now), whether the GitHub repository is private (default) or public, and whether to ask
   before deploying. Agents keep building meanwhile. Enforced in code: deploys (previews too), connecting a domain,
@@ -99,6 +113,9 @@ changes).
   rows that need you have an **Open browser** button.
 
 ### Changed
+
+- The sandbox's `agent` user now has an explicit uid (1001, the same it had), which the `media` container shares so
+  both can write run folders.
 
 - **Agents work side by side without touching the same code:** one agent writes the code; helpers run alongside it
   for work that feeds it without editing it (content or data in their own files, like a questions file the site

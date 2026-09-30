@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import accounts, connect, events, llm, preview, prompts, registry, settings, usage, vault, workspace
+from . import accounts, connect, events, llm, media_index, preview, prompts, registry, settings, usage, vault, workspace
 from .config import config
 from .db import AgentInstance, Event, Interaction, LedgerEntry, Run, init_db, select, session
 from .orchestrator import integrations_summary, manager
@@ -30,6 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    media_index.ensure()
     registry.load_plugins()
     await manager.startup()
     await preview.start()

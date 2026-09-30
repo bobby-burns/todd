@@ -37,7 +37,8 @@ Especially interested in:
 - **Secret exposure:** vault values, integration tokens, model keys or card details reaching a prompt, event,
   log, screenshot or an unapproved host
 - **Isolation breaks:** code in the `sandbox` or a page in the `browser` calling the API, reading the
-  database, reaching the dashboard or stealing browser cookies
+  database, reaching the dashboard or stealing browser cookies; the `media` service fetching a host outside
+  `MEDIA_FETCH_HOSTS` or touching files outside a run's folder
 - **Approval bypass:** posting, messaging or publishing from a user's account without the approval flow
 - **Prompt injection that defeats a code-level control:** content that gets an agent past a guard enforced
   in code (not just one that makes the model misbehave)
@@ -124,6 +125,10 @@ held back only by the agents' instructions. Now (`todd/gates.py`):
   sign-ins. It shares the workspace with the sandbox but nothing else, so a dev server or an npm install script
   running in the sandbox can't read their tokens or sign-in files. npm-based CLIs run from the runner's own install,
   never from the project's `node_modules` (which the project's code could replace).
+- **The media service is fenced in** (`media`, used by the video toolset): it has no vault access and only the API
+  can call it (a random token the API makes). It downloads only over https from `MEDIA_FETCH_HOSTS` (default
+  `images.pexels.com`; redirects to other hosts are refused, 20 MB cap, and anything that isn't an image is
+  dropped), and it reads and writes only inside run folders, symlinks included.
 - **One browser, one driver.** The browser lock covers every run and the Accounts page's CLI sign-ins, not just
   one run.
 

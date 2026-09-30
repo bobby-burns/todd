@@ -1,6 +1,6 @@
 """Toolsets: the building blocks the planner hands to the agents it spawns.
 
-  * built-in toolsets (sandbox, browser, vercel, github, web, vault, accounts)
+  * built-in toolsets (sandbox, browser, vercel, github, web, video, vault, accounts)
   * plugin toolsets: every LangChain tool found in ./plugins/*.py (module-level BaseTool instances or a `TOOLS`
     list). A tool's toolset is `todd_tool(toolset=...)`, defaulting to the plugin file's name.
   * MCP toolsets: one per MCP server configured in Settings ("mcp_<server>").
@@ -32,6 +32,7 @@ from .tools.cli_login import CLI_LOGIN_TOOLS
 from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
 from .tools.sandbox_tools import SANDBOX_TOOLS
+from .tools.video import VIDEO_TOOLS
 from .tools.web import WEB_TOOLS
 
 log = logging.getLogger("todd.registry")
@@ -78,6 +79,16 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                    "read docs and public pages. The default way to work with services that have an API.", WEB_TOOLS,
                    guide="Look up the right API with find_integrations, read its docs with fetch_url, then call it with "
                          "api_request. Check status codes and report IDs/URLs from responses."),
+    "video": Toolset("video", "Short vertical slideshows (9:16) from stock photos (Pexels) and the run's own images: "
+                     "storyboard, search each shot by meaning, pick, render captioned 1080×1920 slide images into the "
+                     "run folder (a TikTok photo post).", VIDEO_TOOLS,
+                     guide="Write the storyboard first (video_new): 3–8 shots, one idea per slide, captions under 12 "
+                           "words. For each shot call video_find_shots and pick with video_pick. Scores already favour "
+                           "images that match earlier picks, so pick in order. You can't see the images: go by score "
+                           "and alt text, and search again with a more concrete query when the top ones don't fit. Put "
+                           "the product's own screenshots in video/library/ (or pass workspace_paths) and use them for "
+                           "at least one shot. Render once with video_render and report the slide and preview paths. "
+                           "Don't post anything: posting is a separate, approved step."),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",

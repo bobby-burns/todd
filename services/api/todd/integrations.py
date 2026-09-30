@@ -137,6 +137,11 @@ CATALOG: list[Integration] = [
       browser_note="The API is read-mostly; scheduling a launch is done in the browser."),
     I("shopify", "Shopify", [], api_docs="https://shopify.dev/docs/api/admin-graphql",
       api_secrets=["SHOPIFY_ADMIN_TOKEN"], cli="npx @shopify/cli (sandbox)"),
+    I("pexels", "Pexels", ["stock photos", "stock images"], toolset="video",
+      api_docs="https://www.pexels.com/api/documentation/", api_secrets=["PEXELS_API_KEY"],
+      browser_note="Needs a free API key from https://www.pexels.com/api/: ask the human for it with "
+                   "ask_human(..., secret_name=\"PEXELS_API_KEY\"). Without it, the `video` toolset can still use the "
+                   "run's own images (sources=[\"workspace\"])."),
     I("openai", "OpenAI", [], api_docs="https://platform.openai.com/docs/api-reference", api_secrets=["OPENAI_API_KEY"]),
     I("anthropic", "Anthropic", ["claude"], api_docs="https://docs.claude.com/en/api/overview",
       api_secrets=["ANTHROPIC_API_KEY"]),
