@@ -12,7 +12,7 @@ and asks you before it spends money or posts anything.
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)
 ![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
-[![M8ven Score](https://m8ven.ai/badge/mcp/bobby-burns/todd)](https://m8ven.ai/mcp/bobby-burns/todd)
+[![M8ven Score](https://m8ven.ai/badge/mcp/bobby-burns-todd-1f9kxw?v=ce4e81334fca7ede4c0bc0308654af45)](https://m8ven.ai/mcp/bobby-burns-todd-1f9kxw)
 
 [Quick start](#quick-start) · [Features](#features) · [Architecture](#architecture) ·
 [Extending](#extending-todd) · [Contributing](#contributing) · [Security](#security)
