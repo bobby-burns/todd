@@ -1,13 +1,16 @@
 """The media server on a temp folder with fake embeddings (MEDIA_FAKE_EMBED=1): auth, confinement to the run's folder,
-the fetch allowlist, embeddings and slide composition. Needs Pillow, numpy and the DejaVu fonts; no models, no network."""
+the fetch allowlist, embeddings, slide composition and MP4 rendering. Needs Pillow, numpy, the DejaVu fonts and FFmpeg;
+no models, no network."""
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 import io
+import json
 import math
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -224,3 +227,90 @@ def test_contain_shows_the_whole_screenshot_clear_of_the_caption(media):
                 assert text and min(text) > max(green)
             else:
                 assert not text
+
+
+def ffprobe(path: Path) -> dict:
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,"
+                        "width,height,pix_fmt,r_frame_rate,duration", "-of", "json", str(path)],
+                       capture_output=True, text=True, check=True)
+    return json.loads(r.stdout)
+
+
+def tone(path: Path, seconds: float) -> None:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+                    str(path)], check=True)
+
+
+def test_render_makes_an_mp4_as_long_as_the_slides(media):
+    _, c, run = media
+    for i, color in enumerate([(200, 30, 30), (30, 200, 30), (30, 30, 200)]):
+        (run / f"{i}.png").write_bytes(png(color=color, size=(1080, 1920)))
+    (run / "wide.jpg").write_bytes(jpeg(size=(1920, 1080)))  # not 9:16: cover-cropped like a slide
+    for motion in ("kenburns", "none"):
+        r = c.post("/render/slideshow", json={"run_id": RUN, "slides": ["0.png", "1.png", "2.png", "wide.jpg"],
+                                              "durations_s": [1.5, 2.5, 2.0, 1.5], "out": "v/show.mp4",
+                                              "motion": motion}, headers=H)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["path"] == "v/show.mp4" and out["size_bytes"] == (run / "v" / "show.mp4").stat().st_size
+        info = ffprobe(run / "v" / "show.mp4")
+        assert abs(float(info["format"]["duration"]) - 7.5) <= 0.2 and abs(out["duration_s"] - 7.5) <= 0.2
+        (video,) = info["streams"]  # no music: no audio track
+        assert (video["codec_name"], video["width"], video["height"], video["pix_fmt"], video["r_frame_rate"]) == \
+            ("h264", 1080, 1920, "yuv420p", "30/1")
+        assert sorted(p.name for p in (run / "v").iterdir()) == ["show.mp4"]  # the clips' temp folder is gone
+    data = (run / "v" / "show.mp4").read_bytes()
+    assert 0 < data.find(b"moov") < data.find(b"mdat")  # +faststart: the index comes first, so playback starts at once
+
+
+def test_render_trims_the_music_to_the_video(media):
+    _, c, run = media
+    for i in range(3):
+        (run / f"{i}.png").write_bytes(png(size=(1080, 1920)))
+    tone(run / "song.wav", 12)
+    r = c.post("/render/slideshow", json={"run_id": RUN, "slides": ["0.png", "1.png", "2.png"],
+                                          "durations_s": [2, 2, 2.5], "out": "v/with-music.mp4", "music": "song.wav",
+                                          "music_volume": 0.5}, headers=H)
+    assert r.status_code == 200, r.text
+    info = ffprobe(run / "v" / "with-music.mp4")
+    video = next(s for s in info["streams"] if s["codec_type"] == "video")
+    audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
+    assert audio["codec_name"] == "aac" and abs(float(audio["duration"]) - 6.5) <= 0.2
+    assert abs(float(video["duration"]) - 6.5) <= 0.2 and abs(float(info["format"]["duration"]) - 6.5) <= 0.2
+
+    tone(run / "short.wav", 2)  # shorter than the video: looped, and the video keeps its length
+    r = c.post("/render/slideshow", json={"run_id": RUN, "slides": ["0.png", "1.png", "2.png"],
+                                          "durations_s": [2, 2, 2.5], "out": "v/loop.mp4", "music": "short.wav"},
+               headers=H)
+    assert r.status_code == 200, r.text
+    assert abs(r.json()["duration_s"] - 6.5) <= 0.2
+
+
+def test_render_refuses_bad_input(media, tmp_path):
+    _, c, run = media
+    (run / "a.png").write_bytes(png(size=(1080, 1920)))
+    (tmp_path / "outside.png").write_bytes(png())
+    os.symlink(tmp_path / "outside.png", run / "peek.png")
+    # a "song" that is really a playlist pointing at another file: never opened as one
+    (run / "song.mp3").write_text("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nfile:///etc/passwd\n#EXT-X-ENDLIST\n")
+    (run / "notes.txt").write_text("not an image")
+
+    def render(**kw):
+        return c.post("/render/slideshow", json={"run_id": RUN, "slides": ["a.png"], "durations_s": [2],
+                                                 "out": "v/x.mp4", **kw}, headers=H)
+
+    assert render(out="../../escape.mp4").status_code == 400
+    assert render(out="v/x.gif").status_code == 400
+    assert render(slides=["peek.png"]).status_code == 400
+    assert render(slides=["missing.png"]).status_code == 404
+    assert render(slides=["notes.txt"]).status_code == 400
+    assert render(durations_s=[2, 2]).status_code == 400
+    assert render(durations_s=[0.1]).status_code == 400
+    assert render(width=1081).status_code == 400
+    assert render(music="../../etc/passwd").status_code == 400
+    r = render(music="song.mp3")
+    assert r.status_code == 400 and "isn't an audio file" in r.json()["detail"]
+    assert not (run / "v" / "x.mp4").exists() and not (tmp_path / "escape.mp4").exists()
+    assert not any((run / "v").iterdir())  # nothing left behind, not even the clips' temp folder
+    assert c.post("/render/slideshow", json={"run_id": RUN, "slides": ["a.png"], "durations_s": [2], "out": "v/x.mp4"},
+                  headers={"X-Media-Token": "nope"}).status_code == 401

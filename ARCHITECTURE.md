@@ -9,7 +9,7 @@
 | `postgres` | Runs, events, approvals, vault, ledger, settings, LangGraph checkpoints     | internal           |
 | `sandbox`  | node 22 / pnpm / git / python / vercel + firebase + eas CLIs, with a small exec API | internal   |
 | `signedin` | Same image and workspace; runs only the commands that use your sign-ins     | internal (token)   |
-| `media`    | Image embeddings (CLIP, fastembed on CPU) and captioned slides (Pillow) for the video toolset; shares the workspace | internal (token) |
+| `media`    | Image embeddings (CLIP, fastembed on CPU), captioned slides (Pillow) and MP4 slideshows (FFmpeg) for the video toolset; shares the workspace | internal (token) |
 | `browser`  | Headful Chromium on Xvfb; CDP (via socat :9223) + noVNC live view           | 127.0.0.1:6080     |
 | `ollama`   | Optional (`--profile local`) for local models                               | internal           |
 
@@ -36,8 +36,8 @@ tools/browser_direct.py `browser` toolset (Claude Code engine): browser_start �
 tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
 tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), search each shot by meaning (Pexels +
-                   the run's own images) ranked with the picked shots in view, pick, render captioned slides
-tools/media.py     Client for the media container (embeddings, fetch, slide composition)
+                   the run's own images) ranked with the picked shots in view, pick, render captioned slides + MP4
+tools/media.py     Client for the media container (embeddings, fetch, slide composition, MP4 render)
 media_index.py     Nearest-neighbour search over MediaAsset embeddings: pgvector when the DB has it, else Python
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
 tools/human.py     ask_human, request_approval, authorize_purchase (every agent)
@@ -102,8 +102,9 @@ workspace.py       The run's folder in the sandbox, read-only for the dashboard'
    stops a run if needed and removes its events, agents, interactions, screenshots, checkpoints and Claude Code
    session files; ledger entries and workspace files stay. `PATCH /runs/{id}` renames it.
 9. The run's files: every agent in a run works in `/workspace/<run_id>` in the sandbox. `GET /runs/{id}/files`
-   lists it, `…/files/view?path=` shows one file and `…/files/download?path=` downloads it (read-only; confined
-   to that folder, symlinks included). `GET /secrets?run_id=` lists the vault keys that run saved.
+   lists it, `…/files/view?path=` shows one file, `…/files/download?path=` downloads it and `…/files/media?path=`
+   streams a video for the Files view's player (inline, single byte ranges; read-only; confined to that folder,
+   symlinks included). `GET /secrets?run_id=` lists the vault keys that run saved.
 
 ## Engines
 
@@ -231,7 +232,9 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   Expo's `app.config.js`) runs it with the sign-in present.
 - **Media service:** `media` has no vault access, only answers the API (a random token the API makes, `media-token`
   volume), downloads only over https from `MEDIA_FETCH_HOSTS` (default `images.pexels.com`; redirects elsewhere
-  refused, 20 MB cap, images only) and reads and writes only inside run folders (symlinks resolved).
+  refused, 20 MB cap, images only) and reads and writes only inside run folders (symlinks resolved). FFmpeg runs
+  with an argument list, opens only local files, gets slides as images the service wrote itself and music only
+  through a named audio demuxer (a "song" that is really a playlist is refused).
 - **Previews:** the browser's `localhost:PORT` (common dev ports) is relayed through the API to the same port on the
   sandbox's localhost (`preview.py`, relays in the sandbox and browser containers). The sandbox stays off the
   browser's network; only those ports are forwarded, never the sandbox's exec API.

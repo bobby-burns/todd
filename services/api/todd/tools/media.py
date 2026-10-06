@@ -1,5 +1,5 @@
-"""Client for the media container (image embeddings and captioned slides for the video toolset). It mounts the
-workspace, so every path here is relative to the run's folder."""
+"""Client for the media container (image embeddings, captioned slides and MP4 slideshows for the video toolset). It
+mounts the workspace, so every path here is relative to the run's folder."""
 
 from __future__ import annotations
 
@@ -44,3 +44,14 @@ async def compose(run_id: str, slides: list[dict[str, Any]], out_dir: str, width
     """Captioned slides as out_dir/01.png, 02.png, … (and all of them side by side in `sheet`)."""
     return await call("/slides/compose", {"run_id": run_id, "width": width, "height": height, "slides": slides,
                                           "out_dir": out_dir, "sheet": sheet}, timeout=300)
+
+
+async def render(run_id: str, slides: list[str], durations_s: list[float], out: str, fps: int = 30,
+                 motion: str = "kenburns", music: str | None = None, music_volume: float = 0.8, width: int = 1080,
+                 height: int = 1920) -> dict[str, Any]:
+    """The slides as one MP4 (H.264, `fps`, a slow zoom per slide unless motion is "none", the music trimmed to fit):
+    {path, duration_s, size_bytes}."""
+    return await call("/render/slideshow", {"run_id": run_id, "slides": slides, "durations_s": durations_s, "out": out,
+                                            "fps": fps, "motion": motion, "music": music,
+                                            "music_volume": music_volume, "width": width, "height": height},
+                      timeout=600)

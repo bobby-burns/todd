@@ -9,6 +9,8 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
   /fetch          {run_id, url, save_dir, sha256?}      -> {path, sha256}
   /slides/compose {run_id, width, height, slides: [{image, caption, caption_position, fit}], out_dir, sheet?}
                                                         -> {slides: [path], sheet}
+  /render/slideshow {run_id, slides: [path], durations_s, out, fps, motion, music?, music_volume, width, height}
+                                                        -> {path, duration_s, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
 """
 
@@ -18,9 +20,13 @@ import asyncio
 import hashlib
 import hmac
 import io
+import json
 import math
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from typing import Literal
@@ -444,6 +450,157 @@ def _compose(req: ComposeReq) -> dict:
 @app.post("/slides/compose", dependencies=[Depends(auth)])
 async def compose(req: ComposeReq) -> dict:
     return await asyncio.to_thread(_compose, req)
+
+
+# ------------------------------------------------------------------------------------------ video
+FFMPEG = os.getenv("MEDIA_FFMPEG", "ffmpeg")
+FFPROBE = os.getenv("MEDIA_FFPROBE", "ffprobe")
+FFMPEG_TIMEOUT = 300
+ZOOM = 0.06  # Ken Burns: how far a slide zooms in (or out) over its time on screen
+MUSIC_MAX = 50_000_000
+# Music is opened only with one of these demuxers, named explicitly, and FFmpeg may open only local files: a "music"
+# file that is really a playlist (HLS, concat) can't make it read other files or reach the network.
+AUDIO_FORMATS = {"mp3": "mp3", "mov,mp4,m4a,3gp,3g2,mj2": "mov", "wav": "wav", "ogg": "ogg", "flac": "flac",
+                 "aac": "aac"}
+LOCAL_ONLY = ("-protocol_whitelist", "file")
+_renders = threading.BoundedSemaphore(2)  # FFmpeg uses every core: two renders at a time at most
+
+
+class RenderReq(BaseModel):
+    run_id: str
+    slides: list[str] = Field(min_length=1, max_length=20)  # images, shown in order (cover-cropped to width×height)
+    durations_s: list[float] = Field(min_length=1, max_length=20)
+    out: str  # an .mp4 path
+    fps: int = Field(30, ge=12, le=60)
+    motion: Literal["kenburns", "none"] = "kenburns"
+    music: str | None = None  # an audio file in the run folder: looped or trimmed to the video, faded out at the end
+    music_volume: float = Field(0.8, ge=0, le=2)
+    width: int = Field(1080, ge=240, le=2160)
+    height: int = Field(1920, ge=240, le=3840)
+
+
+def ffmpeg(*args: str, timeout: float = FFMPEG_TIMEOUT) -> None:
+    """Run FFmpeg with an argument list (never a shell)."""
+    try:
+        r = subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args],
+                           capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as e:
+        raise HTTPException(500, "ffmpeg isn't installed in the media container") from e
+    except subprocess.TimeoutExpired as e:
+        raise HTTPException(504, f"ffmpeg took longer than {timeout:g}s") from e
+    if r.returncode != 0:
+        raise HTTPException(500, "ffmpeg failed: " + " | ".join(r.stderr.strip().splitlines()[-3:])[:600])
+
+
+def probe(path: Path, *args: str) -> dict:
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", *LOCAL_ONLY, *args, "-of", "json", str(path)],
+                           capture_output=True, text=True, timeout=60)
+    except FileNotFoundError as e:
+        raise HTTPException(500, "ffprobe isn't installed in the media container") from e
+    except subprocess.TimeoutExpired as e:
+        raise HTTPException(504, "ffprobe timed out") from e
+    if r.returncode != 0:
+        raise HTTPException(400, f"can't read {path.name}: {r.stderr.strip()[:300]}")
+    return json.loads(r.stdout or "{}")
+
+
+def audio_format(path: Path) -> str:
+    """The demuxer to open a music file with, or 400 when it isn't an audio file in a format on AUDIO_FORMATS."""
+    demuxers = ",".join(f.split(",")[0] for f in AUDIO_FORMATS)
+    try:
+        info = probe(path, "-format_whitelist", demuxers, "-show_entries", "format=format_name:stream=codec_type")
+    except HTTPException as e:
+        raise HTTPException(400, f"{path.name} isn't an audio file (mp3, m4a, aac, wav, ogg or flac)") from e
+    name = (info.get("format") or {}).get("format_name", "")
+    if name not in AUDIO_FORMATS or not any(s.get("codec_type") == "audio" for s in info.get("streams") or []):
+        raise HTTPException(400, f"{path.name} isn't an audio file (mp3, m4a, aac, wav, ogg or flac)")
+    return AUDIO_FORMATS[name]
+
+
+def duration(path: Path) -> float:
+    return float((probe(path, "-show_entries", "format=duration").get("format") or {}).get("duration") or 0)
+
+
+def clip_args(i: int, frame: Path, frames: int, req: RenderReq) -> list[str]:
+    """FFmpeg arguments for one slide's clip: `frames` frames of the image, zooming slowly (in on odd slides, out on
+    even ones) unless motion is "none"."""
+    w, h, fps = req.width, req.height, req.fps
+    if req.motion == "kenburns":
+        # one input frame, `frames` output frames; upscaling first keeps zoompan's whole-pixel crop from jittering
+        t = f"on/{max(frames - 1, 1)}"
+        z = f"1+{ZOOM}*{t}" if i % 2 else f"{1 + ZOOM}-{ZOOM}*{t}"
+        vf = (f"scale={2 * w}:{2 * h},zoompan=z='{z}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d={frames}"
+              f":s={w}x{h}:fps={fps},format=yuv420p")
+        source = [*LOCAL_ONLY, "-i", str(frame)]
+    else:
+        vf = "format=yuv420p"
+        source = [*LOCAL_ONLY, "-loop", "1", "-framerate", str(fps), "-i", str(frame)]
+    return [*source, "-vf", vf, "-frames:v", str(frames), "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "20", "-g", str(2 * fps), "-pix_fmt", "yuv420p", "-an"]
+
+
+def _render(req: RenderReq) -> dict:
+    if len(req.durations_s) != len(req.slides):
+        raise HTTPException(400, "one duration per slide")
+    if any(not 0.5 <= d <= 30 for d in req.durations_s):
+        raise HTTPException(400, "each slide is on screen 0.5–30 seconds")
+    if req.width % 2 or req.height % 2:
+        raise HTTPException(400, "width and height must be even")
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".mp4":
+        raise HTTPException(400, "out must be an .mp4 path")
+    sources = []
+    for s in req.slides:
+        p = within(req.run_id, s)
+        if not p.is_file():
+            raise HTTPException(404, f"no such file: {s}")
+        sources.append(p)
+    music, music_fmt = None, ""
+    if req.music:
+        music = within(req.run_id, req.music)
+        if not music.is_file():
+            raise HTTPException(404, f"no such file: {req.music}")
+        if music.stat().st_size > MUSIC_MAX:
+            raise HTTPException(413, "music file too large")
+        music_fmt = audio_format(music)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".render-", dir=out.parent))  # in the run folder, removed below
+    try:
+        with _renders:
+            clips, frames_total = [], 0
+            for i, (src, d) in enumerate(zip(sources, req.durations_s), 1):
+                img, _ = decode(src.read_bytes())  # FFmpeg only ever sees images this server wrote
+                frame = tmp / f"slide_{i:02d}.png"
+                cover(img, req.width, req.height).save(frame, "PNG")
+                frames = max(1, round(d * req.fps))
+                frames_total += frames
+                clip = tmp / f"clip_{i:02d}.mp4"
+                ffmpeg(*clip_args(i, frame, frames, req), str(clip))
+                clips.append(clip)
+            listing = tmp / "clips.txt"
+            listing.write_text("".join(f"file '{c.name}'\n" for c in clips))
+            total = frames_total / req.fps
+            args = [*LOCAL_ONLY, "-f", "concat", "-i", str(listing)]
+            if music:
+                args += [*LOCAL_ONLY, "-f", music_fmt, "-stream_loop", "-1", "-i", str(music),
+                         "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                         "-af", f"volume={req.music_volume:g},afade=t=out:st={max(0.0, total - 1):.3f}:d=1",
+                         "-c:a", "aac", "-b:a", "128k", "-t", f"{total:.3f}", "-shortest"]
+            else:
+                args += ["-c", "copy"]
+            final = tmp / "final.mp4"
+            ffmpeg(*args, "-movflags", "+faststart", str(final))
+            final.replace(out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return {"path": rel(req.run_id, out), "duration_s": round(duration(out), 3), "size_bytes": out.stat().st_size}
+
+
+@app.post("/render/slideshow", dependencies=[Depends(auth)])
+async def render(req: RenderReq) -> dict:
+    return await asyncio.to_thread(_render, req)
 
 
 @app.get("/health")

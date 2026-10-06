@@ -5,7 +5,8 @@ view and survives restarts:
   video_new         write the storyboard: 3–12 shots, each a visual description and a caption
   video_find_shots  search images for one shot by meaning, ranked with the shots already picked in view
   video_pick        use one candidate for a shot (its file is copied to video/<slug>/assets/)
-  video_render      captioned 1080×1920 slides (video/<slug>/slides/NN.png), a contact sheet and CREDITS.md
+  video_render      captioned 1080×1920 slides (video/<slug>/slides/NN.png), the MP4 (video/<slug>/<slug>.mp4), a
+                    contact sheet and CREDITS.md
 
 Ranking (the "story state"), for an image vector v:
   score = cos(v, text) + STYLE_WEIGHT·cos(v, mean of the picked images) + CREATOR_BONUS (same photographer as a pick)
@@ -44,6 +45,9 @@ MIN_DURATION, MAX_DURATION, DEFAULT_DURATION = 1.5, 6.0, 2.5
 MAX_CAPTION = 90
 SOURCES = ("pexels", "workspace")
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
+AUDIO_EXT = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac")
+MOTIONS = ("kenburns", "none")
+FPS = 30
 LIBRARY_DIR = "video/library"  # the run's own images (app screenshots, product shots), searched on every call
 LIBRARY_MAX = 60
 CACHE_DIR = "video/_cache"  # downloaded stock photos, as <sha256>.<ext>
@@ -244,18 +248,18 @@ async def _pexels(run_id: str, key: str, query: str, model: str) -> tuple[list[M
     return [have[str(p["id"])] for p in photos if str(p["id"]) in have], problems
 
 
-def _rel(path: str) -> str:
-    """An image path from the agent, relative to the run folder; refused if it points outside it."""
+def _rel(path: str, ext: tuple[str, ...] = IMAGE_EXT, what: str = "images") -> str:
+    """An image (or audio) path from the agent, relative to the run folder; refused if it points outside it."""
     root = _root()
     try:
         p = _abs(path)
     except ToolError as e:
         raise ToolError(f"{path}: outside this run's folder") from e
     if p == root:
-        raise ToolError(f"{path}: not an image file")
+        raise ToolError(f"{path}: not a file")
     rel = p[len(root) + 1:]
-    if not rel.lower().endswith(IMAGE_EXT):
-        raise ToolError(f"{path}: only {'/'.join(IMAGE_EXT)} images")
+    if not rel.lower().endswith(ext):
+        raise ToolError(f"{path}: only {'/'.join(ext)} {what}")
     return rel
 
 
@@ -497,15 +501,22 @@ def _credits(board: dict[str, Any], assets: dict[str, MediaAsset]) -> str:
 
 
 @todd_tool(toolset="video")
-async def video_render(slug: str) -> dict:
-    """Render the slideshow once every shot is picked: captioned 1080×1920 slides (video/<slug>/slides/01.png, …,
-    ready for a TikTok photo post), all of them side by side in video/<slug>/preview.png, and CREDITS.md. Stock
+async def video_render(slug: str, music_path: str | None = None, motion: str = "kenburns") -> dict:
+    """Render the slideshow once every shot is picked: the MP4 (video/<slug>/<slug>.mp4, 1080×1920, 30 fps, each
+    slide on screen for its duration_s), the captioned slides it's made of (video/<slug>/slides/01.png, …, also
+    usable as a TikTok photo post), all of them side by side in video/<slug>/preview.png, and CREDITS.md. Stock
     photos fill the slide; the run's own images (screenshots) are shown whole. Rendering again replaces them.
 
     Args:
         slug: the storyboard, from video_new
+        music_path: an audio file in the run folder to play under it (trimmed to the video, faded out at the end).
+            Only music the human gave you or that you know is licensed for this use; default none.
+        motion: "kenburns" (a slow zoom on every slide, the default) or "none" (still slides)
     """
     run_id = get_ctx().run_id
+    if motion not in MOTIONS:
+        raise ToolError(f"motion is {' or '.join(MOTIONS)}")
+    music = _rel(music_path, AUDIO_EXT, "audio files") if music_path else None
     board = await _load(slug)
     open_shots = [s["id"] for s in board["shots"] if not s.get("pick")]
     if open_shots:
@@ -519,8 +530,15 @@ async def video_render(slug: str) -> dict:
                             sheet=f"video/{slug}/preview.png")
     credits = f"video/{slug}/CREDITS.md"
     await sandbox.write(_abs(credits), _credits(board, assets))
-    out = {"slides": r["slides"], "preview": r.get("sheet"), "credits": credits, "storyboard": _board_path(slug)}
-    _emit(f"Rendered {len(r['slides'])} slides for {slug}", out)
+    try:
+        v = await media.render(run_id, r["slides"], [float(s["duration_s"]) for s in board["shots"]],
+                               f"video/{slug}/{slug}.mp4", fps=FPS, motion=motion, music=music,
+                               width=board["width"], height=board["height"])
+    except ToolError as e:
+        raise ToolError(f"the slides are ready in video/{slug}/slides/, but the MP4 failed: {e}") from e
+    out = {"video": v["path"], "duration_s": v["duration_s"], "slides": r["slides"], "preview": r.get("sheet"),
+           "credits": credits, "storyboard": _board_path(slug)}
+    _emit(f"Rendered {slug}.mp4: {len(r['slides'])} slides, {v['duration_s']:g}s", {**out, "music": music})
     return out
 
 

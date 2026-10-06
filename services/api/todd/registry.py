@@ -79,16 +79,17 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                    "read docs and public pages. The default way to work with services that have an API.", WEB_TOOLS,
                    guide="Look up the right API with find_integrations, read its docs with fetch_url, then call it with "
                          "api_request. Check status codes and report IDs/URLs from responses."),
-    "video": Toolset("video", "Short vertical slideshows (9:16) from stock photos (Pexels) and the run's own images: "
-                     "storyboard, search each shot by meaning, pick, render captioned 1080×1920 slide images into the "
-                     "run folder (a TikTok photo post).", VIDEO_TOOLS,
+    "video": Toolset("video", "Short vertical slideshow videos (9:16) from stock photos (Pexels) and the run's own "
+                     "images: storyboard, search each shot by meaning, pick, render captioned 1080×1920 slides and an "
+                     "MP4 into the run folder.", VIDEO_TOOLS,
                      guide="Write the storyboard first (video_new): 3–8 shots, one idea per slide, captions under 12 "
                            "words. For each shot call video_find_shots and pick with video_pick. Scores already favour "
                            "images that match earlier picks, so pick in order. You can't see the images: go by score "
                            "and alt text, and search again with a more concrete query when the top ones don't fit. Put "
                            "the product's own screenshots in video/library/ (or pass workspace_paths) and use them for "
-                           "at least one shot. Render once with video_render and report the slide and preview paths. "
-                           "Don't post anything: posting is a separate, approved step."),
+                           "at least one shot. Render once with video_render and report the MP4 path (the slides are "
+                           "also a TikTok photo post). Add music only if the human gave you a file for it. Don't post "
+                           "anything: posting is a separate, approved step."),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",

@@ -9,19 +9,23 @@ changes).
 
 ### Added
 
-- **Slideshows (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`, `video_render`)
-  that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across Pexels stock
-  photos and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to the shot and to
-  the look of the shots already picked (`text_score`, `style_score`, a small same-photographer bonus), and renders
-  captioned 1080×1920 slides (`video/<slug>/slides/NN.png`; stock photos fill the slide, the run's own screenshots
-  are shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`.
-  Stock photos need a free `PEXELS_API_KEY` in the vault; Pexels is in the integrations catalog. MP4 rendering is
-  the next step.
+- **Slideshow videos (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`,
+  `video_render`) that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across
+  Pexels stock photos and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to
+  the shot and to the look of the shots already picked (`text_score`, `style_score`, a small same-photographer
+  bonus), and renders a 1080×1920 MP4 (`video/<slug>/<slug>.mp4`: H.264, 30 fps, a slow zoom on each slide or
+  `motion="none"`, optional music from the run folder trimmed and faded to fit), the captioned slides it's made of
+  (`video/<slug>/slides/NN.png`, also a TikTok photo post; stock photos fill the slide, the run's own screenshots
+  are shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a
+  free `PEXELS_API_KEY` in the vault; Pexels is in the integrations catalog.
+- **Videos play in the Files view:** `.mp4`, `.webm`, `.mov` and `.m4v` files get a player, streamed by
+  `GET /api/runs/{id}/files/media?path=` with byte ranges (Safari needs them).
 - **`media` service:** a new container for image embeddings (CLIP ViT-B/32 via fastembed, ONNX on CPU, models
-  baked into the image) and slide composition (Pillow). Own network to the API, token auth, the shared workspace,
-  no vault; downloads only from `MEDIA_FETCH_HOSTS`. Embeddings are cached in a new `MediaAsset` table (a stock photo
-  is embedded once, whichever run finds it) and searched in Python, or with pgvector when the database has the
-  extension (the compose Postgres image is unchanged for now: see media_index.py).
+  baked into the image), slide composition (Pillow) and MP4 rendering (FFmpeg). Own network to the API, token auth,
+  the shared workspace, no vault; downloads only from `MEDIA_FETCH_HOSTS`. Embeddings are cached in a new
+  `MediaAsset` table (a stock photo is embedded once, whichever run finds it) and searched in Python, or with
+  pgvector when the database has the extension (the compose Postgres image is unchanged for now: see
+  media_index.py).
 
 - **Launch plan** for website goals: at the start, one card asks where it should live (your domain, a new domain,
   or a free address for now), whether the GitHub repository is private (default) or public, and whether to ask

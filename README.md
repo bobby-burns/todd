@@ -80,14 +80,16 @@ Open source and self-hosted: `docker compose up` and it's yours.
   sites only accept from a person (Todd scrolls to it and highlights it), and only then, while you're there.
   Credentials go straight into the encrypted vault; nobody copies tokens, and runs never stop for a login.
 - **See what it made.** Each run has a **Files** view: everything its agents created or changed, live while they
-  work, read-only (code with line numbers, Markdown formatted, images shown, `.env` values hidden until you ask),
+  work, read-only (code with line numbers, Markdown formatted, images shown, videos playable, `.env` values hidden
+  until you ask),
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
-- **Slideshows for launch posts.** The `video` toolset turns a product into a short vertical slideshow: a
-  storyboard of 3–12 shots, each searched by meaning across Pexels stock photos and the run's own images (put app
-  screenshots in `video/library/`), ranked so every pick also matches the look of the shots already chosen, then
-  captioned 1080×1920 slides ready for a TikTok photo post, a contact sheet and photo credits, all in the run's
-  `video/<slug>/` folder (Files view). Stock photos need a free [Pexels API key](https://www.pexels.com/api/) in
-  Settings → Vault as `PEXELS_API_KEY`; without one it uses only the run's own images. MP4 rendering comes next.
+- **Slideshow videos.** The `video` toolset turns a product into a short vertical slideshow video: a storyboard of
+  3–12 shots, each searched by meaning across Pexels stock photos and the run's own images (put app screenshots in
+  `video/library/`), ranked so every pick also matches the look of the shots already chosen, then a 1080×1920 MP4
+  (a slow zoom on each captioned slide, optional music you provide), the slides on their own for a TikTok photo
+  post, a contact sheet and photo credits, all in the run's `video/<slug>/` folder; the video plays in the Files
+  view. Stock photos need a free [Pexels API key](https://www.pexels.com/api/) in Settings → Vault as
+  `PEXELS_API_KEY`; without one it uses only the run's own images. Nothing is posted.
 - **Built to launch, not just to demo.** When a goal makes a website, Todd asks at the start, on one card, where it
   should live (your domain, a new one, or a free address for now), whether the code is private (the default) or
   public, and whether to ask you before deploying. Agents keep building while you decide. Deploying (previews too),

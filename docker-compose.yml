@@ -10,7 +10,7 @@
 #   signedin_net api ↔ signedin              commands that use your sign-ins (git push, gh, deploy CLIs, EAS, CLI
 #                sign-ins) run here, in their own container with the same workspace: nothing running in the sandbox
 #                (a dev server, an npm install script) can read their tokens
-#   media_net    api ↔ media                 image embeddings and slides for the video toolset: the shared workspace,
+#   media_net    api ↔ media                 embeddings, slides and MP4s for the video toolset: the shared workspace,
 #                a random token only the API has (media-token volume), no vault, fetches only MEDIA_FETCH_HOSTS
 #   previews     localhost:3000 (and other dev ports) in the browser → api:17000+ → the same port in the sandbox, so
 #                agents can look at what they're building without deploying it (PREVIEW_PORTS / PREVIEW_RELAY_BASE)
@@ -105,8 +105,8 @@ services:
     networks: [signedin_net]
     security_opt: ["no-new-privileges:true"]
 
-  # Image embeddings (CLIP) and captioned slides for the video toolset. Only the API reaches it, with a random token the
-  # API makes (media-token volume); it mounts the workspace and never sees the vault.
+  # Image embeddings (CLIP), captioned slides and MP4s for the video toolset. Only the API reaches it, with a random
+  # token the API makes (media-token volume); it mounts the workspace and never sees the vault.
   media:
     build: ./services/media
     restart: unless-stopped

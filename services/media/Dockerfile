@@ -1,10 +1,10 @@
-# The media service: image embeddings (CLIP via fastembed, ONNX on CPU) and captioned slides (Pillow) for the video
-# toolset. Only the API can reach it (no published ports). It never sees the vault, fetches only allow-listed hosts
-# (MEDIA_FETCH_HOSTS) and reads and writes only inside run folders of the shared workspace.
+# The media service: image embeddings (CLIP via fastembed, ONNX on CPU), captioned slides (Pillow) and MP4 slideshows
+# (FFmpeg) for the video toolset. Only the API can reach it (no published ports). It never sees the vault, fetches
+# only allow-listed hosts (MEDIA_FETCH_HOSTS) and reads and writes only inside run folders of the shared workspace.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/media

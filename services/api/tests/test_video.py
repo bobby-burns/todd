@@ -1,6 +1,6 @@
-"""The video toolset: storyboard, story-state ranking, the asset cache, pick and render. The real sandbox server on a
-temp folder, a fake media service (vectors chosen by the test, placeholder slides) and a fake Pexels: no FFmpeg, no
-models, no network."""
+"""The video toolset: storyboard, story-state ranking, the asset cache, pick and render, and the Files view's video
+route. The real sandbox server on a temp folder, a fake media service (vectors chosen by the test, placeholder slides
+and MP4) and a fake Pexels: no FFmpeg, no models, no network."""
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ class FakeMedia:
         self.urls: dict[str, list[float]] = {}  # substring of the URL -> vector
         self.paths: dict[str, list[float]] = {}  # workspace path -> vector
         self.calls: list[tuple[str, dict]] = []
+        self.render_error: str | None = None  # make /render/slideshow fail with this
 
     def _file(self, run_id: str, save_dir: str, url: str) -> tuple[str, str]:
         data = f"image:{url.split('?')[0]}".encode()
@@ -107,6 +108,15 @@ class FakeMedia:
                 slides.append(f"{payload['out_dir']}/{i:02d}.png")
             (self.root / payload["run_id"] / payload["sheet"]).write_bytes(b"\x89PNG sheet")
             return {"slides": slides, "sheet": payload["sheet"]}
+        if path == "/render/slideshow":
+            if self.render_error:
+                raise ToolError(f"media /render/slideshow -> 500: {self.render_error}")
+            for s in payload["slides"]:
+                assert (self.root / payload["run_id"] / s).is_file()
+            out = self.root / payload["run_id"] / payload["out"]
+            out.write_bytes(b"\x00\x00\x00\x20ftypisom placeholder mp4")
+            return {"path": payload["out"], "duration_s": round(sum(payload["durations_s"]), 3),
+                    "size_bytes": out.stat().st_size}
         raise AssertionError(f"unexpected media call {path}")
 
     def count(self, path: str, kind: str | None = None) -> int:
@@ -431,9 +441,11 @@ def test_render_needs_every_shot_and_credits_the_photographers(loop, studio):
             if sid == "s2":
                 with pytest.raises(ToolError, match="s3 still open"):
                     await video.video_render.ainvoke({"slug": slug})
-                assert m.count("/slides/compose") == 0
+                assert m.count("/slides/compose") == 0 and m.count("/render/slideshow") == 0
             await video.video_pick.ainvoke({"slug": slug, "shot_id": sid, "asset_id": picks[sid]})
         r = await video.video_render.ainvoke({"slug": slug})
+        assert r["video"] == f"video/{slug}/{slug}.mp4" and (studio["dir"] / r["video"]).is_file()
+        assert r["duration_s"] == 8.0  # 2.5 + 2.5 + 3
         assert r["slides"] == [f"video/{slug}/slides/0{i}.png" for i in (1, 2, 3)]
         assert r["preview"] == f"video/{slug}/preview.png" and r["credits"] == f"video/{slug}/CREDITS.md"
         req = next(body for p, body in m.calls if p == "/slides/compose")
@@ -442,11 +454,33 @@ def test_render_needs_every_shot_and_credits_the_photographers(loop, studio):
             (f"video/{slug}/assets/s1.jpg", "Pickup hockey, tonight", "middle", "cover"),
             (f"video/{slug}/assets/s2.jpg", "No group chat needed", "top", "cover"),
             (f"video/{slug}/assets/s3.png", "dropin.hockey", "middle", "contain")]  # the run's own image: whole
+        req = next(body for p, body in m.calls if p == "/render/slideshow")
+        assert req["slides"] == r["slides"] and req["durations_s"] == [2.5, 2.5, 3.0]
+        assert (req["out"], req["fps"], req["motion"], req["music"]) == (r["video"], 30, "kenburns", None)
         credits = (studio["dir"] / r["credits"]).read_text()
         assert "[Ana Lee](https://www.pexels.com/@ana lee)" in credits and "Bo Kim" in credits
         assert f"https://www.pexels.com/photo/{a}/" in credits and f"https://www.pexels.com/photo/{b}/" in credits
         assert "s3: video/library/app.png" in credits
-        assert any(e.text == f"Rendered 3 slides for {slug}" for e in events_of(studio["run"]))
+        ev = [e for e in events_of(studio["run"]) if e.text == f"Rendered {slug}.mp4: 3 slides, 8s"]
+        assert len(ev) == 1 and ev[0].data["video"] == r["video"]
+
+        # music from the run folder, still slides; bad options are refused before anything is rendered
+        n = m.count("/render/slideshow")
+        for kw, msg in (({"motion": "zoom"}, "kenburns or none"),
+                        ({"music_path": "../other-run/song.mp3"}, "outside this run's folder"),
+                        ({"music_path": "notes.txt"}, "audio files")):
+            with pytest.raises(ToolError, match=msg):
+                await video.video_render.ainvoke({"slug": slug, **kw})
+        assert m.count("/render/slideshow") == n
+        r = await video.video_render.ainvoke({"slug": slug, "music_path": f"{studio['dir']}/audio/song.mp3",
+                                              "motion": "none"})
+        req = [body for p, body in m.calls if p == "/render/slideshow"][-1]
+        assert (req["music"], req["motion"]) == ("audio/song.mp3", "none")
+
+        # FFmpeg fails: the agent hears the slides are still there
+        m.render_error = "ffmpeg failed: something"
+        with pytest.raises(ToolError, match=f"slides are ready in video/{slug}/slides/, but the MP4 failed"):
+            await video.video_render.ainvoke({"slug": slug})
     loop.run_until_complete(go())
 
 
@@ -489,3 +523,34 @@ def test_video_toolset_and_pexels_routing(loop):
         vault.delete_secret("PEXELS_API_KEY")
     no_key = assess("pexels", {"video"})
     assert no_key["route"] != "toolset" and "https://www.pexels.com/api/" in no_key["recommendation"]
+
+
+def test_files_media_route_plays_video_with_ranges(studio, monkeypatch):
+    from todd import main
+
+    rid, d = studio["run"], studio["dir"]
+    data = bytes(range(256)) * 40  # 10,240 bytes standing in for an MP4
+    (d / "video" / "show").mkdir(parents=True)
+    (d / "video" / "show" / "show.mp4").write_bytes(data)
+    (d / "video" / "show" / "slide.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(config, "api_token", "")
+    c = TestClient(main.app)
+    url = f"/api/runs/{rid}/files/media"
+
+    r = c.get(url, params={"path": "video/show/show.mp4"})
+    assert r.status_code == 200 and r.content == data and r.headers["content-type"] == "video/mp4"
+    assert r.headers["accept-ranges"] == "bytes" and r.headers["content-disposition"].startswith("inline")
+    for rng, start, end in (("bytes=0-1", 0, 1), ("bytes=100-", 100, 10239), ("bytes=10000-99999", 10000, 10239),
+                            ("bytes=-40", 10200, 10239)):
+        r = c.get(url, params={"path": "video/show/show.mp4"}, headers={"Range": rng})
+        assert r.status_code == 206, rng
+        assert r.content == data[start:end + 1] and r.headers["content-range"] == f"bytes {start}-{end}/10240"
+        assert int(r.headers["content-length"]) == end - start + 1
+    r = c.get(url, params={"path": "video/show/show.mp4"}, headers={"Range": "bytes=20000-"})
+    assert r.status_code == 416 and r.headers["content-range"] == "bytes */10240"
+
+    assert c.get(url, params={"path": "video/show/slide.png"}).status_code == 400  # not a video
+    assert c.get(url, params={"path": "video/show/storyboard.json"}).status_code == 400
+    assert c.get(url, params={"path": "video/show/missing.mp4"}).status_code == 404
+    assert c.get(url, params={"path": "../other/show.mp4"}).status_code in (400, 404)
+    assert c.get("/api/runs/nope/files/media", params={"path": "a.mp4"}).status_code == 404

@@ -45,7 +45,11 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
     return Response.json({ detail: `Todd API unreachable at ${API_URL}: ${String(e)}` }, { status: 502 });
   }
   const out = new Headers(upstream.headers);
-  ["content-encoding", "content-length", "transfer-encoding", "connection"].forEach((h) => out.delete(h));
+  // A byte-range response (the Files view's video player) keeps its length: Safari won't play video without it. It's
+  // never compressed (accept-encoding was dropped above), so the length is still right.
+  const ranged = upstream.headers.has("content-range") || upstream.headers.has("accept-ranges");
+  ["content-encoding", "transfer-encoding", "connection"].forEach((h) => out.delete(h));
+  if (!ranged || upstream.headers.has("content-encoding")) out.delete("content-length");
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
