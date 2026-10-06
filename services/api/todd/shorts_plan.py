@@ -9,7 +9,9 @@ Rules (docs/video-step2-plan.md, "Locking voice to picture"):
   * each later beat cuts LEAD_FRAMES before its first word, on a frame boundary;
   * `hold_s` on a beat adds silence after its line: the take is split in the pause between lines, never stretched;
   * `sync: {word, at_s}` on a shot puts the clip's moment `at_s` on that word;
-  * captions come from the same timestamps, 1–3 words a page, never across a beat;
+  * captions come from the same timestamps, 1–4 words a page (pace.caption_words), never across a beat;
+  * pace (the human's feedback on a scaffold, e.g. "slower"): a pause after every line (beat_gap_s) and a minimum time
+    on screen for every shot (min_shot_s, reached by holding after a short line); voice_speed is applied when voicing;
   * AI shots get the shortest length the model supports that covers the slot plus HANDLE_S.
 """
 
@@ -33,6 +35,28 @@ MAX_FREEZE_S = 0.5  # holding a clip's last frame longer than this is flagged
 WORDS_PER_S = 2.8  # for estimating a script's length before it's voiced
 MIN_PAGE_S = 0.25  # a caption page shown shorter than this can't be read
 PAGE_WORDS, PAGE_CHARS = 3, 18
+
+# How fast a short moves. A person tunes it from the scaffold ("slower", "faster", or numbers); defaults are calm enough
+# to follow on a first watch.
+DEFAULT_PACE = {"voice_speed": 1.0, "beat_gap_s": 0.25, "caption_words": 3, "min_shot_s": 1.4}
+PACE_LIMITS = {"voice_speed": (0.8, 1.2), "beat_gap_s": (0.0, 1.5), "caption_words": (1, 4), "min_shot_s": (0.6, 4.0)}
+PRESETS = {"slower": {"voice_speed": -0.08, "beat_gap_s": 0.2, "min_shot_s": 0.4, "caption_words": -1},
+           "faster": {"voice_speed": 0.08, "beat_gap_s": -0.15, "min_shot_s": -0.3, "caption_words": 1}}
+
+
+def pace(script: dict[str, Any], change: dict[str, Any] | None = None, preset: str | None = None) -> dict[str, Any]:
+    """The script's pace, with a preset or explicit values applied, clamped to sane limits."""
+    out = {**DEFAULT_PACE, **(script.get("pace") or {})}
+    for k, d in (PRESETS.get(preset or "") or {}).items():
+        out[k] = out[k] + d
+    for k, v in (change or {}).items():
+        if v is not None and k in out:
+            out[k] = v
+    for k, (lo, hi) in PACE_LIMITS.items():
+        out[k] = min(max(float(out[k]), lo), hi)
+    out["caption_words"] = int(round(out["caption_words"]))
+    out["voice_speed"] = round(out["voice_speed"], 2)
+    return out
 
 # Platform rules as data: max length, the sweet spot, and safe zones (shares of the height) for text.
 PLATFORMS: dict[str, dict[str, Any]] = {
@@ -150,8 +174,18 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
     missing = [ps[k]["id"] for k in range(n) if not by_part[k]]
     if missing:
         raise ValueError(f"no words found for {', '.join(missing)}: voice the script again")
-    holds = [float(p.get("hold_s") or 0) for p in ps]
+    pc = pace(script)
+    end_hold = float(script.get("end_hold_s", 0.6))
     lead_trim = max(0.0, by_part[0][0].start - PRE_ROLL)
+    # pauses: the part's own hold, a gap after every line but the last, and whatever lifts a short shot to min_shot_s
+    holds = [float(p.get("hold_s") or 0) + (pc["beat_gap_s"] if k < n - 1 else 0.0) for k, p in enumerate(ps)]
+    lead = LEAD_FRAMES / fps  # cuts land this early, so the first shot loses it and the last one gains it
+    for k in range(n):
+        start = lead_trim if k == 0 else by_part[k][0].start - lead
+        end = by_part[k + 1][0].start - lead if k + 1 < n else by_part[k][-1].end + end_hold
+        natural = end - start
+        if natural + holds[k] < pc["min_shot_s"] + 0.5 / fps:
+            holds[k] = pc["min_shot_s"] + 0.5 / fps - natural
 
     # the take is split in the pause before each part; holds push later parts back
     splits = [lead_trim]
@@ -169,7 +203,6 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
         src_in, src_out = splits[k], (splits[k + 1] if k + 1 < n else take_end)
         segments.append({"src_in": round(src_in, 4), "src_out": round(src_out, 4), "at": round(tl(src_in, k), 4)})
 
-    end_hold = float(script.get("end_hold_s", 0.6))
     total_f = frames(tl(by_part[-1][-1].end, n - 1) + holds[-1] + end_hold, fps)
     cuts = [0]
     for k in range(1, n):
@@ -183,6 +216,7 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
     generate: list[dict[str, Any]] = []
     captions: list[dict[str, Any]] = []
     overlays: list[dict[str, Any]] = []
+    tags: list[dict[str, Any]] = []  # beat labels for the scaffold, so feedback can say "b3 is rushed"
 
     for k, p in enumerate(ps):
         start_f, end_f = cuts[k], cuts[k + 1]
@@ -199,11 +233,13 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
             notes += spec.pop("notes")
             item["label"] = (f"{AI_MODELS[spec['model']]['name']} · {spec['seconds']} s · ${spec['usd']:.2f} · "
                              f"{shot.get('prompt', '')}")[:400]
-        if slot < MIN_BEAT_S:
-            notes.append(f"only {slot:.2f}s on screen (under {MIN_BEAT_S}s)")
+        if slot < min(MIN_BEAT_S, pc["min_shot_s"]) - 1e-6:
+            notes.append(f"only {slot:.2f}s on screen (under {min(MIN_BEAT_S, pc['min_shot_s'])}s)")
+        tags.append({"text": f"{p['id']} · {slot:.1f}s", "start": round(start_s, 3), "end": round(end_s, 3),
+                     "position": "tag"})
         if p.get("text"):
             overlays.append({"text": p["text"], "start": round(start_s, 3), "end": round(end_s, 3), "position": "top"})
-        pages = _pages(by_part[k], tl, k, end_s)
+        pages = _pages(by_part[k], tl, k, end_s, pc["caption_words"])
         for pg in pages:
             if pg["end"] - pg["start"] < MIN_PAGE_S:
                 notes.append(f"caption \"{' '.join(w['text'] for w in pg['words'])}\" is on screen only "
@@ -225,10 +261,10 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
         "height": script["height"], "frames": total_f, "duration_s": round(duration, 3),
         "video": video, "voice": {"src": take_audio, "segments": segments},
         "music": {"src": music["path"], "volume": float(music.get("volume", 0.25))} if music else None,
-        "captions": captions, "overlays": overlays,
+        "captions": captions, "overlays": overlays, "tags": tags,
     }
     report = {"hook": hook_id, "duration_s": round(duration, 3), "beats": beats_report, "warnings": warnings,
-              "estimate_usd": round(sum(g["usd"] for g in generate), 2)}
+              "estimate_usd": round(sum(g["usd"] for g in generate), 2), "pace": pc}
     return Plan(timeline, report, generate)
 
 
@@ -300,13 +336,14 @@ def _generation(beat_id: str, shot: dict[str, Any], slot: float) -> dict[str, An
             "prompt": shot.get("prompt", ""), "start_image": shot.get("start_image"), "notes": notes}
 
 
-def _pages(ws: list[Word], tl, k: int, beat_end_s: float) -> list[dict[str, Any]]:
-    """Caption pages for one beat: up to PAGE_WORDS words / PAGE_CHARS characters, breaking after punctuation."""
+def _pages(ws: list[Word], tl, k: int, beat_end_s: float, per_page: int = PAGE_WORDS) -> list[dict[str, Any]]:
+    """Caption pages for one beat: up to `per_page` words (and ~6 characters a word), breaking after punctuation."""
     pages: list[list[Word]] = []
+    limit = max(PAGE_CHARS * per_page // PAGE_WORDS, 8)
     for w in ws:
         cur = pages[-1] if pages else None
         joined = " ".join(x.text for x in cur) if cur else ""
-        if cur is None or len(cur) >= PAGE_WORDS or len(joined) + 1 + len(w.text) > PAGE_CHARS \
+        if cur is None or len(cur) >= per_page or len(joined) + 1 + len(w.text) > limit \
                 or re.search(r"[.!?;:,]$", cur[-1].text):
             pages.append([w])
         else:

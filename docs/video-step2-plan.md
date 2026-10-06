@@ -160,8 +160,10 @@ with steps that are free or cost cents. The order is fixed, and each step's outp
    - A **sync report** lists each beat (line, slot, how the shot fits: trim, speed, freeze) and flags anything outside
      the limits: a recording sped up more than 2×, a clip slowed below 0.85×, a beat under 0.7 s, words faster than a
      caption can be read.
-4. **Scaffold / animatic** (free). The whole cut rendered from the plan with the voice, the real captions and Todd's
-   own screen recordings. Each AI shot is its start frame (a $0.003 still or a screenshot) with a slow zoom and a label
+4. **Scaffold / animatic** (free), **reviewed by the human** (`short_review`). The whole cut rendered from the plan
+   with the voice, the real captions and Todd's own screen recordings, numbered (v1, v2…) and labelled by beat so
+   feedback can point at one ("b3 is rushed"). The human approves or says what to change; pace has its own controls
+   (`short_pace`: voice speed, pause between lines, least time per shot, words per caption). Each AI shot is its start frame (a $0.003 still or a screenshot) with a slow zoom and a label
    (prompt, length, price). The agent reviews it frame by frame (`cut_frames`), then the human watches it. **Approving
    the animatic approves the spend**: one `authorize_spend` for the batch, at the planned price.
 5. **Generate** (expensive, once). Each AI clip is generated image-to-video from the exact still approved in the

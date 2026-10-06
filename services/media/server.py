@@ -789,7 +789,7 @@ class TLOverlay(BaseModel):
     text: str = Field(max_length=120)
     start: float = Field(ge=0)
     end: float = Field(ge=0)
-    position: Literal["top", "middle"] = "top"
+    position: Literal["top", "middle", "tag"] = "top"  # tag: a small label in the corner (scaffold beat ids)
 
 
 class TimelineReq(BaseModel):
@@ -802,7 +802,7 @@ class TimelineReq(BaseModel):
     voice: TLVoice | None = None
     music: TLMusic | None = None
     captions: list[TLCaption] = Field(default_factory=list, max_length=200)
-    overlays: list[TLOverlay] = Field(default_factory=list, max_length=60)
+    overlays: list[TLOverlay] = Field(default_factory=list, max_length=120)
 
 
 def ass_time(t: float) -> str:
@@ -834,11 +834,14 @@ def ass_script(req: TimelineReq) -> str:
         f"{round(box * 0.28)},0,8,{round(w * 0.1)},{round(w * 0.1)},{round(h * OVERLAY_Y)},1",
         f"Style: BoxMid,DejaVu Sans,{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,"
         f"{round(box * 0.28)},0,5,{round(w * 0.1)},{round(w * 0.1)},0,1",
+        # beat labels on a scaffold: small, bottom-left, clear of captions and text boxes
+        f"Style: Tag,DejaVu Sans,{round(28 * w / 1080)},&H00FFFFFF,&H00FFFFFF,&H90000000,&H00000000,-1,0,0,0,100,100,"
+        f"0,0,3,{round(8 * w / 1080)},0,1,{round(w * 0.04)},{round(w * 0.04)},{round(h * 0.03)},1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for o in req.overlays:
         if o.end > o.start and ass_text(o.text):
-            style = "Box" if o.position == "top" else "BoxMid"
+            style = {"top": "Box", "middle": "BoxMid", "tag": "Tag"}[o.position]
             lines.append(f"Dialogue: 1,{ass_time(o.start)},{ass_time(o.end)},{style},,0,0,0,,{ass_text(o.text)}")
     for c in req.captions:
         words = [ass_text(wd.text) for wd in c.words]

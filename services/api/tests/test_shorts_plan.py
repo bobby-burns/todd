@@ -13,6 +13,7 @@ FPS = 30
 def script(**kw) -> dict:
     base = {
         "slug": "demo", "platform": "tiktok", "width": 1080, "height": 1920, "end_hold_s": 0.6,
+        "pace": {"beat_gap_s": 0, "min_shot_s": 0.6},  # the timing tests below check the take's own pauses
         "hooks": [{"id": "h1", "vo": "Every drop-in has five guys.", "text": "5 guys",
                    "shot": {"source": "image", "path": "shots/bench.png"}},
                   {"id": "h2", "vo": "Rating every guy at drop-in.",
@@ -204,3 +205,36 @@ def test_platform_length_and_estimates():
     bad = take([("Every", 0.4, 0.7)])  # a take that stops after one word
     with pytest.raises(ValueError, match="no words found"):
         sp.plan(script(), "h1", bad, MEDIA, "x.mp3")
+
+
+def test_pace_adds_breathing_room_and_holds_short_shots():
+    base = run()
+    s = script(pace={"beat_gap_s": 0.4, "min_shot_s": 0.6})
+    gap = sp.plan(s, "h1", take(H1), MEDIA, "x.mp3")
+    segs_b, segs_g = base.timeline["voice"]["segments"], gap.timeline["voice"]["segments"]
+    # every later line starts 0.4 s later per gap before it; the voice itself isn't touched
+    assert segs_g[1]["at"] == pytest.approx(segs_b[1]["at"] + 0.4)
+    assert segs_g[2]["at"] == pytest.approx(segs_b[2]["at"] + 0.8)
+    assert [g["src_in"] for g in segs_g] == [b["src_in"] for b in segs_b]
+    assert gap.timeline["frames"] == base.timeline["frames"] + 24  # two gaps of 0.4 s (none after the last line)
+    # a short line is held until it has had min_shot_s on screen
+    held = sp.plan(script(pace={"beat_gap_s": 0, "min_shot_s": 2.0}), "h1", take(H1), MEDIA, "x.mp3")
+    slots = [b["slot_s"] for b in held.report["beats"]]
+    assert all(x >= 2.0 - 1 / 30 for x in slots) and slots[1] > [b["slot_s"] for b in base.report["beats"]][1]
+    assert held.report["pace"]["min_shot_s"] == 2.0
+
+
+def test_caption_size_presets_and_limits():
+    pages = run(script(pace={"beat_gap_s": 0, "min_shot_s": 0.6, "caption_words": 1})).timeline["captions"]
+    assert all(len(pg["words"]) == 1 for pg in pages)
+    base = sp.pace({})
+    assert base == sp.DEFAULT_PACE
+    slower = sp.pace({}, preset="slower")
+    assert slower["voice_speed"] < 1 and slower["beat_gap_s"] > base["beat_gap_s"] and slower["caption_words"] == 2
+    assert slower["min_shot_s"] > base["min_shot_s"]
+    faster = sp.pace({"pace": {"voice_speed": 1.2, "beat_gap_s": 0}}, preset="faster")
+    assert faster["voice_speed"] == 1.2 and faster["beat_gap_s"] == 0  # clamped, never past the limits
+    assert sp.pace({}, change={"caption_words": 9, "voice_speed": 0.1}) == {**base, "caption_words": 4,
+                                                                           "voice_speed": 0.8}
+    tags = run().timeline["tags"]
+    assert [t["text"].split(" · ")[0] for t in tags] == ["h1", "b1", "b2"] and tags[0]["position"] == "tag"

@@ -21,6 +21,12 @@ changes).
   `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
   searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
   renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
+- **Feedback on the free scaffold before anything is spent:** `short_review` renders a numbered scaffold version
+  (beats labelled b1, b2… in the corner) and asks the human through the usual question card: approve (with the
+  generation price), "Slower", "Faster", or anything in their own words; every answer is kept with the version it
+  was about, presets are applied, and the agent acts on the rest and reviews again. `short_pace` sets how fast a
+  short moves: voice speed, a pause after every line, the least time any shot stays on screen (short lines are held
+  automatically) and words per caption page. The default pace is calmer than before.
 - **What's working, as data (`trends` toolset):** `trend_scan` pulls recent TikToks for a niche's hashtags through
   Apify (`APIFY_API_TOKEN` in the vault; one priced spend per scan, the actual cost recorded) and ranks them by reach
   (plays ÷ the creator's followers) and share rate, so videos that broke out of small accounts come first;

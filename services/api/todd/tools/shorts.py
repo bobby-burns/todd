@@ -7,6 +7,8 @@ Order (docs/video-step2-plan.md, "Locking voice to picture"):
                            ElevenLabs for the final (the voice lock)
   short_plan               every cut, caption, hold and clip length from the take, a sync report, the generation price
   short_render             the scaffold/animatic (AI shots as labelled start frames) or the final cut
+  short_review             show the human a numbered scaffold version and get their call: approve, or what to change
+  short_pace               how fast it moves (voice speed, pause between lines, time per shot, words per caption)
 
 Everything lives in the run folder under video/<slug>/: script.json, audio/vo-<hook>.mp3 + .json (the take and its
 timestamps), timeline-<hook>.json (the plan), and the MP4s. Nothing here generates AI video yet; AI shots stay
@@ -20,6 +22,7 @@ import base64
 import json
 import math
 import re
+import time
 import uuid
 from typing import Any
 
@@ -155,7 +158,8 @@ def _check_length(script: dict[str, Any]) -> list[str]:
 
 @todd_tool(toolset="shorts")
 async def short_new(title: str, hooks: list[dict], beats: list[dict], platform: str = "tiktok",
-                    voice_id: str | None = None, voice_model: str | None = None, end_hold_s: float = 0.6) -> dict:
+                    voice_id: str | None = None, voice_model: str | None = None, end_hold_s: float = 0.6,
+                    pace: dict | None = None) -> dict:
     """Start a short: writes its script to video/<slug>/script.json. Write it the way people in the niche talk.
 
     Args:
@@ -173,6 +177,8 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], platform: 
         voice_id: an ElevenLabs voice (see short_voices); chosen at voiceover time if not given
         voice_model: ElevenLabs model, default eleven_multilingual_v2
         end_hold_s: seconds after the last word before the video ends
+        pace: optional {"voice_speed": 0.8–1.2, "beat_gap_s": pause after each line, "min_shot_s": least time any
+            shot stays on screen, "caption_words": 1–4}; defaults are calm enough to follow on a first watch
     """
     if platform not in sp.PLATFORMS:
         raise ToolError(f"platform is one of {', '.join(sp.PLATFORMS)}")
@@ -190,7 +196,8 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], platform: 
               "fps": sp.FPS, "end_hold_s": float(end_hold_s),
               "voice": {"voice_id": voice_id, "model_id": voice_model or elevenlabs.DEFAULT_MODEL},
               "hooks": [_part(h, f"h{i}") for i, h in enumerate(hooks, 1)],
-              "beats": [_part(b, f"b{i}") for i, b in enumerate(beats, 1)], "takes": {}}
+              "beats": [_part(b, f"b{i}") for i, b in enumerate(beats, 1)], "takes": {}, "reviews": []}
+    script["pace"] = sp.pace(script, change={k: v for k, v in (pace or {}).items() if k in sp.DEFAULT_PACE})
     warnings = _check_length(script)
     base = _slugify(title)
     slug, n = base, 1
@@ -254,10 +261,12 @@ async def short_edit(slug: str, part: str, vo: str | None = None, text: str | No
 
 
 def _take_stale(script: dict[str, Any], hook: str, take: dict[str, Any]) -> bool:
+    """The take no longer matches the script: a line changed, or the voice speed did."""
     try:
-        return sp.take_text(script, hook)[0] != take.get("text")
+        text = sp.take_text(script, hook)[0]
     except ValueError:
         return True
+    return text != take.get("text") or abs(float(take.get("speed", 1.0)) - sp.pace(script)["voice_speed"]) > 1e-6
 
 
 # ------------------------------------------------------------------------------------------ the voice
@@ -325,7 +334,8 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, provider: s
     done: dict[str, Any] = {}
     try:
         for h in todo:
-            r = await elevenlabs.speak(key, voice, texts[h], model)
+            r = await elevenlabs.speak(key, voice, texts[h], model,
+                                       settings={"speed": min(max(sp.pace(script)["voice_speed"], 0.7), 1.2)})
             audio = f"{_dir(slug)}/audio/vo-{h}.mp3"
             await media.put(ctx.run_id, audio, r["audio"])
             take = {"provider": "elevenlabs", "text": texts[h], "voice_id": voice, "model_id": model,
@@ -344,7 +354,8 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, provider: s
         script["voice"] = {**(script.get("voice") or {}), "voice_id": voice}
         takes = script.setdefault("takes", {})
         for h, d in done.items():
-            takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": texts[h], "provider": "elevenlabs"}
+            takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": texts[h], "provider": "elevenlabs",
+                        "speed": sp.pace(script)["voice_speed"]}
         await _write_json(f"{_dir(slug)}/script.json", script)
     _emit(f"Voiced {slug}: {', '.join(done)}", {"slug": slug, "takes": done, "usd": usd})
     return {"takes": done, "voice_id": voice, "usd": usd, "next": f"short_plan(\"{slug}\")"}
@@ -354,11 +365,12 @@ async def _voice_local(slug: str, todo: list[str]) -> dict:
     """The free scaffold voice: Piper in the media service, timed by a local recogniser."""
     run_id = get_ctx().run_id
     script = await _load(slug)
+    speed = sp.pace(script)["voice_speed"]
     done: dict[str, Any] = {}
     for h in todo:
         text = sp.take_text(script, h)[0]
         audio = f"{_dir(slug)}/audio/vo-{h}.wav"
-        r = await media.tts_local(run_id, text, audio)
+        r = await media.tts_local(run_id, text, audio, speed=speed)
         await _write_json(f"{_dir(slug)}/audio/vo-{h}.json", {"provider": "local", "text": text, "voice": r["voice"],
                                                              "audio": audio, "alignment": r["alignment"]})
         done[h] = {"audio": audio, "timestamps": f"{_dir(slug)}/audio/vo-{h}.json", "spoken_s": r["duration_s"]}
@@ -367,7 +379,7 @@ async def _voice_local(slug: str, todo: list[str]) -> dict:
         takes = script.setdefault("takes", {})
         for h, d in done.items():
             takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": sp.take_text(script, h)[0],
-                        "provider": "local"}
+                        "provider": "local", "speed": speed}
         await _write_json(f"{_dir(slug)}/script.json", script)
     _emit(f"Voiced {slug} (free scaffold voice): {', '.join(done)}", {"slug": slug, "takes": done})
     return {"takes": done, "provider": "local", "usd": 0,
@@ -446,7 +458,7 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
         raise ToolError(f"{', '.join(pending)} aren't generated yet: render the animatic and get it approved first")
     await _write_json(f"{_dir(slug)}/timeline-{hook}.json", {**p.timeline, "report": p.report})
     out = f"{_dir(slug)}/{slug}-{hook}{'-animatic' if mode == 'animatic' else ''}.mp4"
-    r = await media.render_timeline(get_ctx().run_id, out, p.timeline)
+    r = await media.render_timeline(get_ctx().run_id, out, _with_tags(p.timeline) if mode == "animatic" else p.timeline)
     warnings = list(p.report["warnings"])
     script = await _load(slug)
     if mode == "final" and (script.get("takes") or {}).get(hook, {}).get("provider") == "local":
@@ -507,4 +519,93 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
                     "word with \"sync\": {\"word\": …, \"at_s\": a mark's t}"}
 
 
-SHORTS_TOOLS = [short_record, short_new, short_edit, short_voices, short_voiceover, short_plan, short_render]
+def _with_tags(timeline: dict[str, Any]) -> dict[str, Any]:
+    """A scaffold carries beat labels (b1 · 2.4s) so the human's feedback can point at a beat."""
+    return {**timeline, "overlays": [*timeline.get("overlays", []), *timeline.get("tags", [])]}
+
+
+@todd_tool(toolset="shorts")
+async def short_pace(slug: str, preset: str | None = None, voice_speed: float | None = None,
+                     beat_gap_s: float | None = None, min_shot_s: float | None = None,
+                     caption_words: int | None = None) -> dict:
+    """Change how fast the short moves, usually from the human's feedback on a scaffold. A preset nudges everything;
+    numbers set one thing exactly. A new voice speed means voicing again (short_voiceover); the rest only needs
+    short_plan.
+
+    Args:
+        slug: the short, from short_new
+        preset: "slower" or "faster"
+        voice_speed: 0.8–1.2 (1 = the voice's natural pace)
+        beat_gap_s: pause after every line, 0–1.5 seconds
+        min_shot_s: the least time any shot stays on screen, 0.6–4 seconds
+        caption_words: words per caption page, 1–4
+    """
+    if preset not in (None, "slower", "faster"):
+        raise ToolError("preset is \"slower\" or \"faster\"")
+    async with _lock(slug):
+        script = await _load(slug)
+        before = sp.pace(script)
+        script["pace"] = sp.pace(script, preset=preset, change={
+            "voice_speed": voice_speed, "beat_gap_s": beat_gap_s, "min_shot_s": min_shot_s,
+            "caption_words": caption_words})
+        await _write_json(f"{_dir(slug)}/script.json", script)
+    revoice = abs(script["pace"]["voice_speed"] - before["voice_speed"]) > 1e-6 and bool(script.get("takes"))
+    return {"pace": script["pace"], "before": before,
+            "next": "short_voiceover (the voice speed changed), then short_plan" if revoice else "short_plan"}
+
+
+@todd_tool(toolset="shorts")
+async def short_review(slug: str, hook: str = "h1") -> dict:
+    """Show the human a free scaffold and get their call before anything costs money. Renders a numbered version
+    (video/<slug>/<slug>-<hook>-scaffold-v<N>.mp4, beats labelled b1, b2… in the corner), asks them, and records their
+    answer. "Slower" / "Faster" are applied for you; anything else is feedback for you to act on (short_edit,
+    short_pace, a new recording), then voice, plan and review again. Only an approved scaffold goes on to the paid
+    voice and generation.
+
+    Args:
+        slug: the short, from short_new
+        hook: the hook variant to show
+    """
+    ctx = get_ctx()
+    script, plans = await _plan(slug, [hook])
+    p = plans[hook]
+    version = len(script.get("reviews") or []) + 1
+    out = f"{_dir(slug)}/{slug}-{hook}-scaffold-v{version}.mp4"
+    r = await media.render_timeline(ctx.run_id, out, _with_tags(p.timeline))
+    price = sp.total_usd(p.generate)
+    shots = ", ".join(f"{g['beat']} ({g['seconds']}s)" for g in p.generate)
+    pc = p.report["pace"]
+    question = (f"Scaffold v{version} of \"{script['title']}\" is ready to watch in Files: {out} "
+                f"({r['duration_s']:.1f}s, free so far; beats are labelled b1, b2… in the corner). "
+                + (f"Approving it means paying about ${price:.2f} to generate {len(p.generate)} AI shot(s): {shots}. "
+                   if p.generate else "It's all real footage: nothing to generate. ")
+                + f"Pace now: voice {pc['voice_speed']}×, {pc['beat_gap_s']}s between lines, at least "
+                  f"{pc['min_shot_s']}s a shot. Approve, or tell me what to change (pace, a line, a shot, the hook).")
+    options = ["Looks good: generate it" if p.generate else "Looks good", "Slower", "Faster"]
+    answer = (await ctx.ask_human(question, agent=get_agent_id(), data={"options": options, "file": out})).strip()
+    approved = answer.lower().startswith("looks good")
+    applied = next((k for k in ("slower", "faster") if answer.lower() == k), None)
+    async with _lock(slug):
+        script = await _load(slug)
+        if applied:
+            script["pace"] = sp.pace(script, preset=applied)
+        script.setdefault("reviews", []).append({
+            "version": version, "hook": hook, "video": out, "duration_s": r["duration_s"], "price_usd": price,
+            "pace": pc, "answer": answer, "approved": approved,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        await _write_json(f"{_dir(slug)}/script.json", script)
+    _emit(f"Scaffold v{version} of {slug}: {'approved' if approved else 'changes asked'}",
+          {"slug": slug, "version": version, "video": out, "answer": answer[:300]})
+    if approved:
+        nxt = ("short_voiceover(provider=\"elevenlabs\"), short_plan, then generate the AI shots" if p.generate
+               else "short_voiceover(provider=\"elevenlabs\"), short_plan, short_render(mode=\"final\")")
+    elif applied:
+        nxt = f"applied \"{applied}\": short_voiceover (the voice speed changed), short_plan, short_review again"
+    else:
+        nxt = "act on the feedback (short_edit, short_pace, short_record), voice, plan, then short_review again"
+    return {"approved": approved, "feedback": answer, "version": version, "video": out, "applied": applied,
+            "pace": script["pace"], "next": nxt}
+
+
+SHORTS_TOOLS = [short_record, short_new, short_edit, short_pace, short_voices, short_voiceover, short_plan,
+                short_render, short_review]

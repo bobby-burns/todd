@@ -259,8 +259,9 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
 
 def test_shorts_toolset_and_elevenlabs_routing(loop):
     ts = registry.all_toolsets()
-    assert [t.name for t in ts["shorts"].tools] == ["short_record", "short_new", "short_edit", "short_voices",
-                                                    "short_voiceover", "short_plan", "short_render"]
+    assert [t.name for t in ts["shorts"].tools] == ["short_record", "short_new", "short_edit", "short_pace",
+                                                    "short_voices", "short_voiceover", "short_plan", "short_render",
+                                                    "short_review"]
     assert ts["shorts"].source == "builtin" and "scaffold" in ts["shorts"].guide
     vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
     try:
@@ -343,4 +344,42 @@ def test_live_recording_in_the_agents_browser(loop):
         rec = await screencast.record("https://example.com/", [{"wait": 0.5}, {"scroll": 300}, {"mark": "end"}])
         assert rec["frames"] and (rec["width"], rec["height"]) == (1080, 1920)
         assert [m["step"] for m in rec["marks"]][-1] == "mark end" and rec["duration_s"] > 1
+    loop.run_until_complete(go())
+
+
+def test_review_shows_a_free_scaffold_and_applies_feedback(loop, studio, monkeypatch):
+    from todd.sdk import get_ctx
+    m = studio["media"]
+    answers = iter(["Slower", "Shorter hook please", "Looks good: generate it"])
+    asked: list[tuple[str, dict]] = []
+
+    async def ask(question, agent=None, data=None):
+        asked.append((question, data))
+        return next(answers)
+
+    async def go():
+        monkeypatch.setattr(get_ctx(), "ask_human", ask)
+        slug = await make()
+        await shorts.short_voiceover.ainvoke({"slug": slug})
+        r1 = await shorts.short_review.ainvoke({"slug": slug})
+        assert r1["version"] == 1 and not r1["approved"] and r1["applied"] == "slower"
+        assert r1["video"] == f"video/{slug}/{slug}-h1-scaffold-v1.mp4"
+        q, data = asked[0]
+        assert "free so far" in q and "b1, b2" in q and "$" in q and data["options"][1:] == ["Slower", "Faster"]
+        body = m.last("/render/timeline")
+        assert body["out"] == r1["video"] and any(o["position"] == "tag" for o in body["overlays"])  # beat labels
+        assert r1["pace"]["voice_speed"] < 1  # slower: the voice must be redone before planning again
+        with pytest.raises(ToolError, match="voiced"):
+            await shorts.short_plan.ainvoke({"slug": slug})
+        await shorts.short_voiceover.ainvoke({"slug": slug})
+        r2 = await shorts.short_review.ainvoke({"slug": slug})
+        assert r2["version"] == 2 and r2["feedback"] == "Shorter hook please" and r2["applied"] is None
+        assert "act on the feedback" in r2["next"]
+        r3 = await shorts.short_review.ainvoke({"slug": slug})
+        assert r3["approved"] and "elevenlabs" in r3["next"]
+        reviews = script_of(studio, slug)["reviews"]
+        assert [(x["version"], x["approved"]) for x in reviews] == [(1, False), (2, False), (3, True)]
+        assert reviews[1]["pace"]["voice_speed"] == r1["pace"]["voice_speed"]
+        p = await shorts.short_pace.ainvoke({"slug": slug, "beat_gap_s": 0.6})
+        assert p["pace"]["beat_gap_s"] == 0.6 and p["next"] == "short_plan"
     loop.run_until_complete(go())
