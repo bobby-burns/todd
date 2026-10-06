@@ -147,6 +147,10 @@ CATALOG: list[Integration] = [
       browser_note="Pexels has paused new API keys: an existing PEXELS_API_KEY still works, otherwise use Pixabay "
                    "(a free PIXABAY_API_KEY from https://pixabay.com/api/docs/) or the run's own images "
                    "(sources=[\"workspace\"])."),
+    I("apify", "Apify", ["tiktok trends", "trending videos", "viral videos"], toolset="trends",
+      api_docs="https://docs.apify.com/api/v2", api_secrets=["APIFY_API_TOKEN"],
+      browser_note="Needs an API token: the human finds it at https://console.apify.com/settings/integrations (the "
+                   "free plan includes $5 a month). Ask for it with ask_human(..., secret_name=\"APIFY_API_TOKEN\")."),
     I("elevenlabs", "ElevenLabs", ["voiceover", "voice over", "text to speech", "tts"], toolset="shorts",
       api_docs="https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps",
       api_secrets=["ELEVENLABS_API_KEY"],

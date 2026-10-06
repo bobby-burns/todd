@@ -21,6 +21,14 @@ changes).
   `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
   searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
   renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
+- **What's working, as data (`trends` toolset):** `trend_scan` pulls recent TikToks for a niche's hashtags through
+  Apify (`APIFY_API_TOKEN` in the vault; one priced spend per scan, the actual cost recorded) and ranks them by reach
+  (plays ÷ the creator's followers) and share rate, so videos that broke out of small accounts come first;
+  `trend_analyze` studies a few: TikTok's subtitles or a free local transcription, caption, sound, metrics and a frame
+  contact sheet, with the downloaded video deleted once its frames are taken; `format_save` / `format_search` keep a
+  shared library of format cards (hook, beats, why it works, how a product fits in without becoming an ad, the real
+  examples with their numbers). Apify's token only ever goes to api.apify.com. Recordings can start positioned on a
+  section (`start_at`).
 - **Todd films its own products:** `short_record` opens a 9:16 phone tab (or a desktop one) in the agents' browser,
   runs simple steps (wait, scroll, scroll to, tap, type, go to, mark) with real touch gestures, and saves a 30 fps
   recording with the time of every step, so a shot can land a recorded moment on a spoken word. Todd built the

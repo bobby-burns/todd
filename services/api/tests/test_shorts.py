@@ -298,8 +298,9 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
     m = studio["media"]
     seen = {}
 
-    async def record(url, steps, device="phone", max_s=45):
+    async def record(url, steps, device="phone", max_s=45, start_at=None):
         seen["locked"] = studio_lock().locked()
+        seen["start_at"] = start_at
         frames = [(round(k * 0.05, 3), b"\xff\xd8 jpeg %d" % k) for k in range(90)]
         return {"frames": frames, "marks": [{"t": 0.0, "step": f"open {url}"}, {"t": 1.2, "step": "tap 'Games'"}],
                 "duration_s": 4.6, "width": 1080, "height": 1920}
@@ -311,7 +312,8 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         from todd.sdk import get_ctx
         studio["ctx_lock"] = get_ctx().browser_lock
         r = await shorts.short_record.ainvoke({"name": "week-view", "url": "https://dropin-hockey.vercel.app/",
-                                               "steps": [{"wait": 1}, {"tap": "Games"}]})
+                                               "steps": [{"wait": 1}, {"tap": "Games"}], "start_at": "Today"})
+        assert seen["start_at"] == "Today"
         assert r["path"] == "video/recordings/week-view.mp4" and r["marks"][1] == {"t": 1.2, "step": "tap 'Games'"}
         assert seen["locked"] and not studio["ctx_lock"].locked()  # held while recording, released after
         puts = [b for p, b in m.calls if p == "/screencast/put"]
@@ -324,7 +326,7 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
             with pytest.raises(ToolError, match=msg):
                 await shorts.short_record.ainvoke({"name": "x", "url": "https://a.b/", "steps": [], **bad})
 
-        async def refuse(url, steps, device="phone", max_s=45):
+        async def refuse(url, steps, device="phone", max_s=45, start_at=None):
             raise screencast.RecordError('"Buy now" looks like it buys')
         monkeypatch.setattr(screencast, "record", refuse)
         with pytest.raises(ToolError, match="recording shop stopped: .*Buy now"):

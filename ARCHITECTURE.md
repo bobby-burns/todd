@@ -40,6 +40,8 @@ tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), s
 tools/shorts.py    `shorts` toolset: record the product → script (hooks + beats) → voiceover take (free local voice or
                    ElevenLabs) → timing plan → scaffold / final cut
 screencast.py      Todd films its own product: a 9:16 tab in the agents' browser, scripted steps, CDP screencast
+tools/trends.py    `trends` toolset: trend_scan (outliers by reach), trend_analyze (transcript + frames), format cards
+tools/apify.py     Apify client: run an actor, read its dataset, fetch its stored files (token only to api.apify.com)
 shorts_plan.py     The timing plan, pure: the take's character timestamps decide every cut, caption, hold, synced
                    moment and AI clip length (docs/video-step2-plan.md, "Locking voice to picture")
 tools/elevenlabs.py ElevenLabs client: text to speech with character timestamps (voiceover only)

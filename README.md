@@ -83,6 +83,9 @@ Open source and self-hosted: `docker compose up` and it's yours.
   work, read-only (code with line numbers, Markdown formatted, images shown, videos playable, `.env` values hidden
   until you ask),
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
+- **Shorts based on what's working now.** Todd scans recent TikToks in your niche (through Apify), finds the ones that
+  broke out of small accounts, studies their hooks and structure, and keeps what it learns as format cards to build
+  your videos from, never copying a video.
 - **Short videos with a voiceover, timed from the voice.** Todd films the products it built in its own browser,
   writes a script (2–3 hook variants and beats), voices it, and plans every cut, caption and clip length from the
   voice's own timestamps, so nothing drifts. The first version is a free scaffold (a local voice, real captions, its

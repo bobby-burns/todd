@@ -574,3 +574,21 @@ def test_local_voice_writes_a_wav_and_its_alignment(media):
     first_tone = loud_spans(run / "video" / "s" / "audio" / "vo-h1.wav")[0]
     assert abs(first_tone[0] - al["character_start_times_seconds"][0]) <= 0.02  # the times match the audio
     assert c.post("/tts/local", json={"run_id": RUN, "text": "x", "out": "a.mp3"}, headers=H).status_code == 400
+
+
+def test_frames_make_a_contact_sheet_and_delete_the_reference(media):
+    _, c, run = media
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=540x960:r=30:d=4",
+                    "-pix_fmt", "yuv420p", str(run / "ref.mp4")], check=True)
+    r = c.post("/frames", json={"run_id": RUN, "src": "ref.mp4", "out": "research/ref.png", "count": 4,
+                                "delete_source": True}, headers=H)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["times"] == [0.5, 1.5, 2.5, 3.5] and abs(out["duration_s"] - 4) < 0.1
+    with Image.open(run / "research" / "ref.png") as im:
+        assert im.width > 4 * 270 and im.height > 480
+    assert not (run / "ref.mp4").exists()  # the reference is gone once studied
+    assert c.post("/frames", json={"run_id": RUN, "src": "../x.mp4", "out": "a.png"}, headers=H).status_code == 400
+    (run / "song.mp3").write_text("#EXTM3U\nfile:///etc/passwd\n")
+    assert c.post("/frames", json={"run_id": RUN, "src": "song.mp3", "out": "a.png"}, headers=H).status_code == 400
+    assert c.post("/transcribe", json={"run_id": RUN, "src": "nope.mp4"}, headers=H).status_code == 404

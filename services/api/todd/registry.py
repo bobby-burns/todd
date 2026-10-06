@@ -1,6 +1,6 @@
 """Toolsets: the building blocks the planner hands to the agents it spawns.
 
-  * built-in toolsets (sandbox, browser, vercel, github, web, video, shorts, vault, accounts)
+  * built-in toolsets (sandbox, browser, vercel, github, web, video, shorts, trends, vault, accounts)
   * plugin toolsets: every LangChain tool found in ./plugins/*.py (module-level BaseTool instances or a `TOOLS`
     list). A tool's toolset is `todd_tool(toolset=...)`, defaulting to the plugin file's name.
   * MCP toolsets: one per MCP server configured in Settings ("mcp_<server>").
@@ -33,6 +33,7 @@ from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
 from .tools.sandbox_tools import SANDBOX_TOOLS
 from .tools.shorts import SHORTS_TOOLS
+from .tools.trends import TRENDS_TOOLS
 from .tools.video import VIDEO_TOOLS
 from .tools.web import WEB_TOOLS
 
@@ -105,6 +106,15 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                             "word) and plan again. 3) short_render the scaffold and give the human its path and the "
                             "generation price: it costs nothing so far. Only after they approve: "
                             "short_voiceover(provider=\"elevenlabs\"), plan again, and (later) generate. Never post."),
+    "trends": Toolset("trends", "What's working right now in a niche: recent TikToks for its hashtags ranked by how "
+                      "far they outperformed their creator's audience, their transcripts and frames, and a shared "
+                      "library of format cards (hook, beats, why it works) to build shorts from.", TRENDS_TOOLS,
+                      guide="1) format_search first: the library may already know this niche. 2) Map the niche: who "
+                            "it's for and the hashtags they really use (not the product's name). 3) trend_scan 3–6 "
+                            "hashtags. 4) trend_analyze the 3–5 strongest (high reach and share rate; skip ads and big "
+                            "accounts). 5) format_save one card per format you see, with the mechanism in `why` and "
+                            "how a product fits in `adapt` without becoming an ad. Report the cards, not the videos. "
+                            "Never copy a video: learn its shape."),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",

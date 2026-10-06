@@ -278,10 +278,11 @@ async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any]) -> str:
     raise RecordError(f"unknown step {key}")
 
 
-async def record(url: str, steps: list[dict[str, Any]], device: str = "phone",
-                 max_s: float = MAX_S) -> dict[str, Any]:
+async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", max_s: float = MAX_S,
+                 start_at: str | None = None) -> dict[str, Any]:
     """Record `url` while running `steps`. Returns {frames: [(t, jpeg)], marks: [{t, step}], duration_s, width,
-    height}; t is seconds from the start of the recording. The caller holds the browser lock."""
+    height}; t is seconds from the start of the recording. `start_at`: visible text to bring to the top of the screen
+    before filming starts (off camera). The caller holds the browser lock."""
     if device not in DEVICES:
         raise RecordError(f"device is one of {', '.join(DEVICES)}")
     if not url.startswith(("http://", "https://")):
@@ -307,6 +308,14 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone",
             await tab.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
             await tab.send("Emulation.setUserAgentOverride", {"userAgent": PHONE_UA, "platform": "iPhone"})
         await _load(tab, url)
+        if start_at:  # position the page off camera
+            if not await tab.js(FIND_JS, start_at, "text"):
+                raise RecordError(f"nothing on the page says {start_at!r}")
+            # 'instant': a page with `scroll-behavior: smooth` would otherwise animate, and the next scroll cut it short
+            await tab.js("() => document.querySelector('[data-todd-rec]').scrollIntoView({block: 'start', "
+                         "behavior: 'instant'})")
+            await tab.js("() => window.scrollBy({top: -Math.round(innerHeight * 0.12), behavior: 'instant'})")
+            await asyncio.sleep(0.4)
         w, h = round(dev["width"] * dev["scale"]), round(dev["height"] * dev["scale"])
         start = time.time()
         await tab.send("Page.startScreencast", {"format": "jpeg", "quality": 82, "maxWidth": w, "maxHeight": h,
@@ -324,10 +333,11 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone",
         end = time.time()
         await tab.send("Page.stopScreencast", {})
         await asyncio.sleep(0.2)
-        frames = [(round(ts - start, 4), data) for ts, data in tab.frames if ts <= end]
+        length = round(end - start, 3)  # frame times are clamped into [0, length], so rounding never pushes one past it
+        frames = [(min(max(round(ts - start, 4), 0.0), length), data) for ts, data in tab.frames if ts <= end]
         if not frames:
             raise RecordError("the browser sent no frames (is the page blank?)")
-        return {"frames": frames, "marks": marks, "duration_s": round(end - start, 3), "width": w, "height": h}
+        return {"frames": frames, "marks": marks, "duration_s": length, "width": w, "height": h}
     finally:
         if target:
             try:

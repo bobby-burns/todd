@@ -161,6 +161,21 @@ class MediaAsset(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class FormatCard(SQLModel, table=True):
+    """A short-video format learned from what's working (tools/trends.py): the hook, the beats, why it works, and the
+    real videos it came from. Shared by every run, so later shorts start from what's known."""
+
+    id: str = Field(default_factory=short_id, primary_key=True)
+    name: str = Field(index=True)
+    platform: str = Field(default="tiktok", index=True)
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))  # niche words and hashtags, lowercase
+    card: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))  # hook, beats, length, sound, why
+    examples: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))  # {url, plays, reach}
+    run_id: str | None = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 _connect_args = {"check_same_thread": False} if config.database_url.startswith("sqlite") else {}
 engine = create_engine(config.database_url, connect_args=_connect_args, pool_pre_ping=True)
 
@@ -217,6 +232,7 @@ __all__ = [
     "Setting",
     "LedgerEntry",
     "MediaAsset",
+    "FormatCard",
     "engine",
     "init_db",
     "session",

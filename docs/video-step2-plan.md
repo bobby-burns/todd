@@ -254,7 +254,12 @@ clip. A per-video cap; AI-generated content is flagged in the run so it's labele
    timeline renderer with word captions (scaffold and final modes), the ElevenLabs client, Todd filming its own product
    (`short_record`), and the free scaffold voice. Still to do: `cut_frames`, the format library table, and the eval
    harness with the two frozen fixtures.
-2. **Trend scan and format cards** with Apify; freeze the two fixtures' data for the eval.
+2. **Trend scan and format cards** with Apify. Done (2026-10-06): `trend_scan`, `trend_analyze`, `format_save`,
+   `format_search`. Learned on the real scans: TikTok blocks keyword search on the scraper (its mobile API refused a
+   device), so the scan works from hashtags, which the niche map produces anyway; a hashtag can be off-niche
+   (#hockeyboys is half book-fandom edits, #oranjehockey is field hockey), so the research agent has to judge, not
+   just rank; two scans of ~60 videos cost $0.22 each, studying 4 videos ~$0.02. Still to do: freeze the two
+   fixtures' scan data for the eval, Instagram Reels and YouTube Shorts actors.
 3. **ElevenLabs:** voiceover takes with character timestamps (the voice lock).
 4. **Higgsfield:** clips with spend gates, start-frame consistency.
 5. **Eval both test cases end to end**, fix what the rubric flags, then step 4 (posting and the performance loop).

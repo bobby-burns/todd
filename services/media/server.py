@@ -17,6 +17,8 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
                                                         -> {path, duration_s, frames, size_bytes}
   /screencast/put {run_id, session, frames: [{i, data_b64}]} -> {stored}   (JPEG frames of a browser recording)
   /tts/local      {run_id, text, out, speed}            -> {path, duration_s, alignment, voice}
+  /frames         {run_id, src, out, count, delete_source} -> {sheet, duration_s, times}  (a reference's contact sheet)
+  /transcribe     {run_id, src}                         -> {text, words: [{word, start, end}]}  (local, free)
                                                            (the free scaffold voice)
   /screencast/assemble {run_id, session, times, end_s, out, fps}            -> {path, duration_s, frames, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
@@ -1252,6 +1254,90 @@ def _tts(req: TTSReq) -> dict:
 @app.post("/tts/local", dependencies=[Depends(auth)])
 async def tts_local(req: TTSReq) -> dict:
     return await asyncio.to_thread(_tts, req)
+
+
+# ------------------------------------------------------------------------------------------ studying references
+# Trend analysis looks at what a reference video does, never republishes it: a contact sheet of frames at fixed times
+# and a transcript; the downloaded file is deleted once they're made (delete_source).
+class FramesReq(BaseModel):
+    run_id: str
+    src: str
+    out: str  # .png
+    count: int = Field(8, ge=2, le=16)
+    delete_source: bool = False
+
+
+def _frames(req: FramesReq) -> dict:
+    src, out = within(req.run_id, req.src), within(req.run_id, req.out)
+    if out.suffix.lower() != ".png":
+        raise HTTPException(400, "out must be a .png path")
+    if not src.is_file():
+        raise HTTPException(404, f"no such file: {req.src}")
+    try:
+        fmt = video_format(src)
+        total = duration(src)
+        if total <= 0:
+            raise HTTPException(400, "the video has no length")
+        times = [round(total * (k + 0.5) / req.count, 2) for k in range(req.count)]
+        tiles = []
+        font = ImageFont.truetype(FONT, 22)
+        with tempfile.TemporaryDirectory(dir=src.parent) as td:
+            for k, t in enumerate(times):
+                f = Path(td) / f"{k:02d}.png"
+                ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{t:.2f}", "-i", str(src), "-frames:v", "1", "-vf",
+                       "scale=270:-2", str(f))
+                im = Image.open(f).convert("RGB")
+                tile = Image.new("RGB", (im.width, im.height + 30), (16, 16, 18))
+                tile.paste(im, (0, 0))
+                ImageDraw.Draw(tile).text((6, im.height + 4), f"{t:.1f}s", fill="white", font=font)
+                tiles.append(tile)
+        cols = min(8, len(tiles))
+        tw, th = max(t.width for t in tiles), max(t.height for t in tiles)
+        rows = math.ceil(len(tiles) / cols)
+        sheet = Image.new("RGB", (cols * (tw + 6) + 6, rows * (th + 6) + 6), (0, 0, 0))
+        for k, tile in enumerate(tiles):
+            sheet.paste(tile, (6 + k % cols * (tw + 6), 6 + k // cols * (th + 6)))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(out, "PNG")
+    finally:
+        if req.delete_source:
+            src.unlink(missing_ok=True)
+    return {"sheet": rel(req.run_id, out), "duration_s": round(total, 2), "times": times}
+
+
+@app.post("/frames", dependencies=[Depends(auth)])
+async def frames(req: FramesReq) -> dict:
+    return await asyncio.to_thread(_frames, req)
+
+
+class TranscribeReq(BaseModel):
+    run_id: str
+    src: str
+
+
+def _transcribe(req: TranscribeReq) -> dict:
+    src = within(req.run_id, req.src)
+    if not src.is_file():
+        raise HTTPException(404, f"no such file: {req.src}")
+    fmt = video_format(src) if PUT_KINDS.get(src.suffix.lower()) == "video" else audio_format(src)
+    if FAKE_TTS:
+        return {"text": "", "words": []}
+    with tempfile.TemporaryDirectory(dir=src.parent) as td:  # 16 kHz mono PCM for the recogniser
+        wav = Path(td) / "a.wav"
+        ffmpeg(*LOCAL_ONLY, "-f", fmt, "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", str(wav))
+        with wave.open(str(wav)) as w:
+            a = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
+    _, asr = local_voice._models()
+    with local_voice._lock:
+        segs, _ = asr.transcribe(a, word_timestamps=True, beam_size=1)
+        words = [{"word": w.word.strip(), "start": round(w.start, 2), "end": round(w.end, 2)}
+                 for sg in segs for w in sg.words]
+    return {"text": " ".join(w["word"] for w in words), "words": words}
+
+
+@app.post("/transcribe", dependencies=[Depends(auth)])
+async def transcribe(req: TranscribeReq) -> dict:
+    return await asyncio.to_thread(_transcribe, req)
 
 
 @app.get("/health")

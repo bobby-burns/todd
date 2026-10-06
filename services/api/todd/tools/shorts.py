@@ -459,7 +459,8 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
 
 
 @todd_tool(toolset="shorts")
-async def short_record(name: str, url: str, steps: list[dict], device: str = "phone") -> dict:
+async def short_record(name: str, url: str, steps: list[dict], device: str = "phone",
+                       start_at: str | None = None) -> dict:
     """Film the product in the agents' browser. Todd built it, so record its real pages (the live site, or the local
     preview at http://localhost:PORT) and its real flows: opens `url` in a phone-sized 9:16 tab (or "desktop"), runs the
     steps, and saves video/recordings/<name>.mp4 plus the time of every step, so a shot can land a moment on a spoken
@@ -472,6 +473,8 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
             {"tap": "button or link text"}, {"type": "text", "into": "field label or placeholder"}, {"goto": url},
             {"mark": "a name for this moment"}
         device: "phone" (1080×1920) or "desktop" (1440×810)
+        start_at: visible text to bring to the top of the screen before filming starts, so the recording opens on
+            the right part of the page (e.g. "Card checkouts")
     """
     if not NAME.fullmatch(name or ""):
         raise ToolError("name is lowercase letters, digits and dashes, e.g. \"week-view\"")
@@ -485,7 +488,7 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     lock = ctx.browser_lock
     await lock.acquire(holder)
     try:
-        rec = await screencast.record(url, steps, device)
+        rec = await screencast.record(url, steps, device, start_at=start_at)
     except screencast.RecordError as e:
         raise ToolError(f"recording {name} stopped: {e}") from e
     finally:
@@ -494,7 +497,8 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     out = f"video/recordings/{name}.mp4"
     await media.cast_upload(ctx.run_id, session, [f for _, f in rec["frames"]])
     r = await media.cast_assemble(ctx.run_id, session, [t for t, _ in rec["frames"]], rec["duration_s"], out)
-    meta = {"url": url, "device": device, "steps": steps, "marks": rec["marks"], "duration_s": r["duration_s"],
+    meta = {"url": url, "device": device, "start_at": start_at, "steps": steps, "marks": rec["marks"],
+            "duration_s": r["duration_s"],
             "frames": len(rec["frames"]), "width": rec["width"], "height": rec["height"]}
     await _write_json(f"video/recordings/{name}.json", meta)
     _emit(f"Recorded {name}: {r['duration_s']:g}s", {"path": out, "marks": rec["marks"]})
