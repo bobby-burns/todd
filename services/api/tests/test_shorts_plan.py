@@ -238,3 +238,15 @@ def test_caption_size_presets_and_limits():
                                                                            "voice_speed": 0.8}
     tags = run().timeline["tags"]
     assert [t["text"].split(" · ")[0] for t in tags] == ["h1", "b1", "b2"] and tags[0]["position"] == "tag"
+
+
+def test_emoji_are_left_out_of_on_screen_text():
+    s = script()
+    s["beats"][0]["text"] = "1. pro gear 🔥🤔"
+    s["hooks"][0]["text"] = "🧠"
+    p = sp.plan(s, "h1", take(H1), MEDIA, "x.mp3")
+    texts = [o["text"] for o in p.timeline["overlays"]]
+    assert "1. pro gear" in texts and not any("🔥" in t or "🧠" in t for t in texts)
+    assert "🧠" not in texts and len(texts) == 1  # an emoji-only text box is dropped
+    assert any("emoji left out" in w for w in p.report["warnings"])
+    assert sp.plain("TRUE ✅ ok") == "TRUE ok"

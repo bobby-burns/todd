@@ -383,3 +383,33 @@ def test_review_shows_a_free_scaffold_and_applies_feedback(loop, studio, monkeyp
         p = await shorts.short_pace.ainvoke({"slug": slug, "beat_gap_s": 0.6})
         assert p["pace"]["beat_gap_s"] == 0.6 and p["next"] == "short_plan"
     loop.run_until_complete(go())
+
+
+def test_a_script_follows_a_format_card_and_review_says_which(loop, studio, monkeypatch):
+    from todd.db import FormatCard, session
+    from todd.sdk import get_ctx
+    with session() as db:
+        card = FormatCard(name="question-first quiz", tags=["quiz"], card={"why": "x"},
+                          examples=[{"id": "1", "plays": 50000}, {"id": "2", "plays": 90000}])
+        db.add(card)
+        db.commit()
+        db.refresh(card)
+    asked = []
+
+    async def ask(question, agent=None, data=None):
+        asked.append(question)
+        return "Looks good"
+
+    async def go():
+        monkeypatch.setattr(get_ctx(), "ask_human", ask)
+        with pytest.raises(ToolError, match="no format card"):
+            await shorts.short_new.ainvoke({"title": "q", "hooks": HOOKS, "beats": BEATS, "format_id": "nope"})
+        loose = await shorts.short_new.ainvoke({"title": "loose", "hooks": HOOKS, "beats": BEATS})
+        assert any("no format card" in w for w in loose["warnings"])
+        r = await shorts.short_new.ainvoke({"title": "quiz", "hooks": HOOKS, "beats": BEATS, "format_id": card.id})
+        assert script_of(studio, r["slug"])["format"] == {"id": card.id, "name": "question-first quiz",
+                                                         "examples": 2, "plays": [50000, 90000]}
+        await shorts.short_voiceover.ainvoke({"slug": r["slug"]})
+        await shorts.short_review.ainvoke({"slug": r["slug"]})
+        assert "Format: question-first quiz, from 2 real video(s)." in asked[-1]
+    loop.run_until_complete(go())

@@ -157,13 +157,17 @@ def _check_length(script: dict[str, Any]) -> list[str]:
 
 
 @todd_tool(toolset="shorts")
-async def short_new(title: str, hooks: list[dict], beats: list[dict], platform: str = "tiktok",
-                    voice_id: str | None = None, voice_model: str | None = None, end_hold_s: float = 0.6,
-                    pace: dict | None = None) -> dict:
-    """Start a short: writes its script to video/<slug>/script.json. Write it the way people in the niche talk.
+async def short_new(title: str, hooks: list[dict], beats: list[dict], format_id: str | None = None,
+                    platform: str = "tiktok", voice_id: str | None = None, voice_model: str | None = None,
+                    end_hold_s: float = 0.6, pace: dict | None = None) -> dict:
+    """Start a short: writes its script to video/<slug>/script.json. Follow a format card (format_search, or a fresh
+    trend scan): its hook, its beats, its sound. Write the way people in the niche talk. Not a feature tour: the
+    product is the payoff of the format, not a list of what it does.
 
     Args:
         title: what it is, e.g. "drop-in roster skit"
+        format_id: the format card this script follows (from format_search / format_save); shown to the human at
+            review. Leave it out only if the human asked for something else.
         hooks: 1–3 variants of the opening (each becomes its own cut for A/B): {"vo": spoken line, "text": optional
             on-screen text, "shot": {...}}
         beats: 1–10 beats after the hook, in order: {"vo": one spoken line (max 160 chars), "text": optional on-screen
@@ -199,6 +203,18 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], platform: 
               "beats": [_part(b, f"b{i}") for i, b in enumerate(beats, 1)], "takes": {}, "reviews": []}
     script["pace"] = sp.pace(script, change={k: v for k, v in (pace or {}).items() if k in sp.DEFAULT_PACE})
     warnings = _check_length(script)
+    if format_id:
+        from ..db import FormatCard, session
+
+        with session() as db:
+            card = db.get(FormatCard, format_id)
+        if card is None:
+            raise ToolError(f"no format card {format_id!r}: use an id from format_search or format_save")
+        script["format"] = {"id": card.id, "name": card.name, "examples": len(card.examples),
+                            "plays": [e.get("plays") for e in card.examples][:5]}
+    else:
+        warnings.append("no format card: shorts that follow a format seen working in the niche do better than "
+                        "feature tours (trends: format_search)")
     base = _slugify(title)
     slug, n = base, 1
     while (await _read_json(f"{_dir(slug)}/script.json")) is not None \
@@ -575,8 +591,10 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
     price = sp.total_usd(p.generate)
     shots = ", ".join(f"{g['beat']} ({g['seconds']}s)" for g in p.generate)
     pc = p.report["pace"]
+    fmt = script.get("format")
     question = (f"Scaffold v{version} of \"{script['title']}\" is ready to watch in Files: {out} "
                 f"({r['duration_s']:.1f}s, free so far; beats are labelled b1, b2… in the corner). "
+                + (f"Format: {fmt['name']}, from {fmt['examples']} real video(s). " if fmt else "No format card. ")
                 + (f"Approving it means paying about ${price:.2f} to generate {len(p.generate)} AI shot(s): {shots}. "
                    if p.generate else "It's all real footage: nothing to generate. ")
                 + f"Pace now: voice {pc['voice_speed']}×, {pc['beat_gap_s']}s between lines, at least "

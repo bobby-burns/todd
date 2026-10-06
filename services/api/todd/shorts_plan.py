@@ -75,6 +75,14 @@ AI_MODELS: dict[str, dict[str, Any]] = {
 DEFAULT_AI_MODEL = "seedance-2.5"
 
 
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u20E3]")
+
+
+def plain(text: str) -> str:
+    """On-screen text without emoji: the render font can't draw them (they'd show as empty boxes)."""
+    return " ".join(_EMOJI.sub("", text).split())
+
+
 def frames(t: float, fps: int = FPS) -> int:
     return int(round(t * fps))
 
@@ -238,7 +246,12 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
         tags.append({"text": f"{p['id']} · {slot:.1f}s", "start": round(start_s, 3), "end": round(end_s, 3),
                      "position": "tag"})
         if p.get("text"):
-            overlays.append({"text": p["text"], "start": round(start_s, 3), "end": round(end_s, 3), "position": "top"})
+            text = plain(p["text"])
+            if text != p["text"]:
+                notes.append("emoji left out of the on-screen text (the font can't draw them): add them in the app "
+                             "when posting")
+            if text:
+                overlays.append({"text": text, "start": round(start_s, 3), "end": round(end_s, 3), "position": "top"})
         pages = _pages(by_part[k], tl, k, end_s, pc["caption_words"])
         for pg in pages:
             if pg["end"] - pg["start"] < MIN_PAGE_S:
@@ -353,7 +366,7 @@ def _pages(ws: list[Word], tl, k: int, beat_end_s: float, per_page: int = PAGE_W
         start = tl(pg[0].start, k)
         end = tl(pages[i + 1][0].start, k) if i + 1 < len(pages) else min(tl(pg[-1].end, k) + 0.3, beat_end_s)
         out.append({"start": round(start, 3), "end": round(max(end, start + 0.05), 3),
-                    "words": [{"text": _caption_text(w.text), "start": round(tl(w.start, k), 3),
+                    "words": [{"text": plain(_caption_text(w.text)) or "·", "start": round(tl(w.start, k), 3),
                                "end": round(tl(w.end, k), 3)} for w in pg]})
     return out
 
