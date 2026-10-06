@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from todd import registry, vault
+from todd import cdp, registry, screencast, vault
 from todd.config import config
 from todd.db import LedgerEntry, select, session
 from todd.integrations import find_integrations
@@ -69,6 +69,21 @@ class FakeMedia:
                 else:
                     items.append({"ok": True, "path": q, "kind": "video", "duration_s": self.durations.get(q, 5.0)})
             return {"items": items}
+        if path == "/tts/local":
+            out = run / payload["out"]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"RIFF fake wav")
+            al = fake_take(payload["text"])
+            return {"path": payload["out"], "duration_s": al["character_end_times_seconds"][-1] + 0.3,
+                    "alignment": al, "voice": "fake"}
+        if path == "/screencast/put":
+            return {"stored": len(payload["frames"])}
+        if path == "/screencast/assemble":
+            out = run / payload["out"]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\x00\x00\x00\x20ftypisom recording")
+            return {"path": payload["out"], "duration_s": payload["end_s"], "frames": len(payload["times"]),
+                    "size_bytes": 10, "width": 1080, "height": 1920}
         if path == "/render/timeline":
             out = run / payload["out"]
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -173,9 +188,9 @@ def test_voiceover_needs_a_key_then_voices_every_hook_for_one_charge(loop, studi
     async def go():
         slug = await make()
         with pytest.raises(ToolError, match="elevenlabs.io/app/settings/api-keys"):
-            await shorts.short_voiceover.ainvoke({"slug": slug})
+            await shorts.short_voiceover.ainvoke({"slug": slug, "provider": "elevenlabs"})
         vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
-        r = await shorts.short_voiceover.ainvoke({"slug": slug})
+        r = await shorts.short_voiceover.ainvoke({"slug": slug, "provider": "elevenlabs"})
         assert set(r["takes"]) == {"h1", "h2"} and r["voice_id"] == "v-brian"  # a premade voice by default
         assert [x["text"] for x in studio["spoken"]] == [
             "Every drop-in has the same five guys. Full pro gear. Hasn't scored since high school. "
@@ -192,6 +207,7 @@ def test_voiceover_needs_a_key_then_voices_every_hook_for_one_charge(loop, studi
         take = json.loads((d / "audio" / "vo-h1.json").read_text())
         assert take["alignment"]["characters"][0] == "E" and take["voice_id"] == "v-brian"
         assert script_of(studio, slug)["takes"]["h1"]["audio"] == f"video/{slug}/audio/vo-h1.mp3"
+        assert script_of(studio, slug)["takes"]["h1"]["provider"] == "elevenlabs"
     loop.run_until_complete(go())
 
 
@@ -203,7 +219,10 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
         slug = await make()
         with pytest.raises(ToolError, match="isn't voiced yet"):
             await shorts.short_plan.ainvoke({"slug": slug})
-        await shorts.short_voiceover.ainvoke({"slug": slug})
+        v = await shorts.short_voiceover.ainvoke({"slug": slug})  # the free scaffold voice by default
+        assert v["provider"] == "local" and v["usd"] == 0 and not studio["spoken"]
+        with session() as s:
+            assert not s.exec(select(LedgerEntry).where(LedgerEntry.run_id == studio["run"])).all()  # nothing spent
         p = await shorts.short_plan.ainvoke({"slug": slug})
         assert set(p["cuts"]) == {"h1", "h2"}
         (spec,) = p["generate"]
@@ -211,7 +230,7 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
         assert p["generate_usd"] == round(spec["usd"], 2)
         tl = json.loads((studio["dir"] / "video" / slug / "timeline-h1.json").read_text())
         assert [v["kind"] for v in tl["video"]] == ["image", "placeholder", "clip"]
-        assert tl["voice"]["src"] == f"video/{slug}/audio/vo-h1.mp3" and len(tl["voice"]["segments"]) == 3
+        assert tl["voice"]["src"] == f"video/{slug}/audio/vo-h1.wav" and len(tl["voice"]["segments"]) == 3
         assert tl["overlays"][0]["text"] == "every drop-in has these 5 guys" and tl["report"]["hook"] == "h1"
 
         r = await shorts.short_render.ainvoke({"slug": slug, "hook": "h1"})
@@ -240,9 +259,9 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
 
 def test_shorts_toolset_and_elevenlabs_routing(loop):
     ts = registry.all_toolsets()
-    assert [t.name for t in ts["shorts"].tools] == ["short_new", "short_edit", "short_voices", "short_voiceover",
-                                                    "short_plan", "short_render"]
-    assert ts["shorts"].source == "builtin" and "animatic" in ts["shorts"].guide
+    assert [t.name for t in ts["shorts"].tools] == ["short_record", "short_new", "short_edit", "short_voices",
+                                                    "short_voiceover", "short_plan", "short_render"]
+    assert ts["shorts"].source == "builtin" and "scaffold" in ts["shorts"].guide
     vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
     try:
         ctx = RunContext(new_run("voiceover"))
@@ -255,3 +274,71 @@ def test_shorts_toolset_and_elevenlabs_routing(loop):
         assert [s["route"] for s in r["services"]] == ["toolset", "toolset"]
     finally:
         vault.delete_secret("ELEVENLABS_API_KEY")
+
+
+def test_recording_steps_are_checked_and_never_act_for_the_human():
+    ok = screencast.check_steps([{"wait": 1}, {"scroll": 600}, {"scroll": "bottom"}, {"scroll_to": "Saturday"},
+                                 {"tap": "Games"}, {"type": "Thursday skate", "into": "Title"}, {"mark": "typed"},
+                                 {"goto": "https://example.com/x"}])
+    assert len(ok) == 8
+    for bad in ([{"wait": 60}], [{"tap": ""}], [{"type": "x"}], [{"goto": "javascript:alert(1)"}], [{"fly": 1}],
+                [{"tap": "a", "wait": 1}], [{"wait": 1}] * 41, "tap Games"):
+        with pytest.raises(screencast.RecordError):
+            screencast.check_steps(bad)
+    assert screencast.may_act("https://dropin-hockey.vercel.app/", "Games") is None
+    assert screencast.may_act("http://localhost:3000/", "Organize a game") is None
+    assert "only reads it" in screencast.may_act("https://x.com/compose", "Next")
+    assert "only reads it" in screencast.may_act("https://checkout.stripe.com/pay", "Continue")
+    for label in ("Buy now", "Post", "Delete account", "Approve", "Subscribe", "Publish"):
+        assert "recordings don't press it" in screencast.may_act("https://dropin-hockey.vercel.app/", label)
+    assert "submit" in screencast.may_act("https://dropin-hockey.vercel.app/", "Save", "submit")
+
+
+def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypatch):
+    m = studio["media"]
+    seen = {}
+
+    async def record(url, steps, device="phone", max_s=45):
+        seen["locked"] = studio_lock().locked()
+        frames = [(round(k * 0.05, 3), b"\xff\xd8 jpeg %d" % k) for k in range(90)]
+        return {"frames": frames, "marks": [{"t": 0.0, "step": f"open {url}"}, {"t": 1.2, "step": "tap 'Games'"}],
+                "duration_s": 4.6, "width": 1080, "height": 1920}
+
+    monkeypatch.setattr(screencast, "record", record)
+    studio_lock = lambda: studio["ctx_lock"]  # noqa: E731
+
+    async def go():
+        from todd.sdk import get_ctx
+        studio["ctx_lock"] = get_ctx().browser_lock
+        r = await shorts.short_record.ainvoke({"name": "week-view", "url": "https://dropin-hockey.vercel.app/",
+                                               "steps": [{"wait": 1}, {"tap": "Games"}]})
+        assert r["path"] == "video/recordings/week-view.mp4" and r["marks"][1] == {"t": 1.2, "step": "tap 'Games'"}
+        assert seen["locked"] and not studio["ctx_lock"].locked()  # held while recording, released after
+        puts = [b for p, b in m.calls if p == "/screencast/put"]
+        assert [len(b["frames"]) for b in puts] == [40, 40, 10] and puts[2]["frames"][0]["i"] == 80
+        asm = m.last("/screencast/assemble")
+        assert asm["times"][:3] == [0.0, 0.05, 0.1] and asm["end_s"] == 4.6 and asm["session"] == puts[0]["session"]
+        meta = json.loads((studio["dir"] / "video" / "recordings" / "week-view.json").read_text())
+        assert meta["marks"][1]["t"] == 1.2 and meta["device"] == "phone" and meta["frames"] == 90
+        for bad, msg in (({"name": "Week View"}, "lowercase"), ({"steps": [{"wait": 99}]}, "0–10 seconds")):
+            with pytest.raises(ToolError, match=msg):
+                await shorts.short_record.ainvoke({"name": "x", "url": "https://a.b/", "steps": [], **bad})
+
+        async def refuse(url, steps, device="phone", max_s=45):
+            raise screencast.RecordError('"Buy now" looks like it buys')
+        monkeypatch.setattr(screencast, "record", refuse)
+        with pytest.raises(ToolError, match="recording shop stopped: .*Buy now"):
+            await shorts.short_record.ainvoke({"name": "shop", "url": "https://a.b/", "steps": [{"tap": "Buy now"}]})
+        assert not studio["ctx_lock"].locked()
+    loop.run_until_complete(go())
+
+
+def test_live_recording_in_the_agents_browser(loop):
+    if not loop.run_until_complete(cdp.online()):
+        pytest.skip("no browser reachable over CDP")
+
+    async def go():
+        rec = await screencast.record("https://example.com/", [{"wait": 0.5}, {"scroll": 300}, {"mark": "end"}])
+        assert rec["frames"] and (rec["width"], rec["height"]) == (1080, 1920)
+        assert [m["step"] for m in rec["marks"]][-1] == "mark end" and rec["duration_s"] > 1
+    loop.run_until_complete(go())

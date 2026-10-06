@@ -92,17 +92,19 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                            "also a TikTok photo post). Add music only if the human gave you a file for it. Don't post "
                            "anything: posting is a separate, approved step."),
     "shorts": Toolset("shorts", "Short vertical videos (TikTok, Reels, Shorts) with a voiceover, timed from the voice: "
-                      "write the script, voice it (ElevenLabs), plan every cut, caption and clip length from the take, "
-                      "and render an animatic to approve before any AI video is generated.", SHORTS_TOOLS,
-                      guide="1) short_new: 2–3 hook variants (the first line decides whether anyone keeps watching) "
-                            "and the beats, each one spoken line, optional on-screen text and one shot. Prefer real "
-                            "footage (screen recordings and clips in the run folder) over AI shots. Write the way "
-                            "people in the niche talk, never like an ad; the product is the payoff, not the pitch. "
-                            "2) Show the script to the human (ask_human) and adjust with short_edit. 3) "
-                            "short_voiceover, then short_plan: fix every warning (shorter lines, hold_s for a visual "
-                            "payoff, shot.sync to land a moment on a word) and plan again. 4) short_render the "
-                            "animatic and give the human its path and the generation price. AI shots stay "
-                            "placeholders: don't generate video until the human approves the animatic. Never post."),
+                      "film the product in the agents' browser, write the script, voice it (free local voice for the "
+                      "scaffold, ElevenLabs for the final), plan every cut, caption and clip length from the take, "
+                      "and render a free scaffold to approve before anything is spent.", SHORTS_TOOLS,
+                      guide="0) Todd built the product, so film it: short_record its real pages and flows (live "
+                            "site or local preview) for every beat that shows the product. 1) short_new: 2–3 hook "
+                            "variants (the first line decides whether anyone keeps watching) and the beats, each one "
+                            "spoken line, optional on-screen text and one shot. Prefer your recordings over AI shots. "
+                            "Write the way people in the niche talk, never like an ad; the product is the payoff, not "
+                            "the pitch. 2) short_voiceover (free local voice), short_plan, fix every warning "
+                            "(shorter lines, hold_s for a visual payoff, shot.sync to land a recorded moment on a "
+                            "word) and plan again. 3) short_render the scaffold and give the human its path and the "
+                            "generation price: it costs nothing so far. Only after they approve: "
+                            "short_voiceover(provider=\"elevenlabs\"), plan again, and (later) generate. Never post."),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",

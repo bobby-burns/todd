@@ -1,6 +1,7 @@
-# The media service: image embeddings (CLIP via fastembed, ONNX on CPU), captioned slides (Pillow) and MP4 slideshows
-# (FFmpeg) for the video toolset. Only the API can reach it (no published ports). It never sees the vault, fetches
-# only allow-listed hosts (MEDIA_FETCH_HOSTS) and reads and writes only inside run folders of the shared workspace.
+# The media service: image embeddings (CLIP via fastembed, ONNX on CPU), captioned slides (Pillow), MP4 slideshows and
+# shorts (FFmpeg), screen-recording assembly, and a free local voice (Piper + faster-whisper) for scaffolds. Only the
+# API can reach it (no published ports). It never sees the vault, fetches only allow-listed hosts (MEDIA_FETCH_HOSTS)
+# and reads and writes only inside run folders of the shared workspace.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
@@ -16,6 +17,12 @@ ENV MEDIA_IMAGE_MODEL=Qdrant/clip-ViT-B-32-vision MEDIA_TEXT_MODEL=Qdrant/clip-V
 RUN python -c "import os; from fastembed import ImageEmbedding, TextEmbedding; \
 ImageEmbedding(os.environ['MEDIA_IMAGE_MODEL'], cache_dir='/models'); \
 TextEmbedding(os.environ['MEDIA_TEXT_MODEL'], cache_dir='/models')" \
+    && chmod -R a+rX /models
+# The free scaffold voice (Piper) and the recogniser that times its words (faster-whisper), also baked in.
+ENV MEDIA_TTS_VOICE=/models/piper/en_US-ryan-high.onnx MEDIA_ASR_MODEL=base.en
+RUN python -m piper.download_voices en_US-ryan-high --data-dir /models/piper \
+    && python -c "from faster_whisper import WhisperModel; \
+WhisperModel('base.en', device='cpu', compute_type='int8', download_root='/models/whisper')" \
     && chmod -R a+rX /models
 ENV HF_HUB_OFFLINE=1
 

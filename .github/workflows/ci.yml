@@ -64,10 +64,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r services/media/requirements.txt pytest
 
-      # Fake embeddings: no model download, no network.
+      # Fake embeddings and a fake local voice: no model download, no network.
       - name: Run tests
         env:
           MEDIA_FAKE_EMBED: "1"
+          MEDIA_FAKE_TTS: "1"
         run: pytest -q services/media/tests
 
   web:

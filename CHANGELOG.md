@@ -21,6 +21,16 @@ changes).
   `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
   searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
   renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
+- **Todd films its own products:** `short_record` opens a 9:16 phone tab (or a desktop one) in the agents' browser,
+  runs simple steps (wait, scroll, scroll to, tap, type, go to, mark) with real touch gestures, and saves a 30 fps
+  recording with the time of every step, so a shot can land a recorded moment on a spoken word. Todd built the
+  product, so it records the real pages and flows (live site or local preview). Recordings only read: no taps on
+  social or payment sites or on buttons that buy, post, send, delete or approve, no typing into password fields, no
+  form submits. The media service assembles the frames (`/screencast/put`, `/screencast/assemble`).
+- **A free scaffold:** `short_voiceover` uses a local voice by default (Piper, timed by a local faster-whisper
+  recogniser; caption words come from the script, only the times from what was heard), so a whole scaffold (voice,
+  captions, Todd's recordings, priced AI placeholders) costs nothing. ElevenLabs (`provider="elevenlabs"`) is the final
+  voice, after the human approves. Both models are baked into the media image.
 - **Shorts timed from the voice (video, step 2 foundation):** a `shorts` toolset (`short_new`, `short_edit`,
   `short_voices`, `short_voiceover`, `short_plan`, `short_render`). The voiceover is rendered first (ElevenLabs, one
   take per hook variant with character timestamps, one charge for all takes) and is the master clock: the planner

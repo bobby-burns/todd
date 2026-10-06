@@ -81,3 +81,23 @@ async def render_timeline(run_id: str, out: str, timeline: dict[str, Any]) -> di
     if timeline.get("music"):
         body["music"] = timeline["music"]
     return await call("/render/timeline", {"run_id": run_id, "out": out, **body}, timeout=900)
+
+
+async def tts_local(run_id: str, text: str, out: str, speed: float = 1.0) -> dict[str, Any]:
+    """The free scaffold voice (Piper, timed by a local recogniser): {path, duration_s, alignment, voice}."""
+    return await call("/tts/local", {"run_id": run_id, "text": text, "out": out, "speed": speed}, timeout=300)
+
+
+async def cast_upload(run_id: str, session: str, frames: list[bytes], chunk: int = 40) -> None:
+    """Hand a browser recording's JPEG frames to the media service, a chunk at a time."""
+    import base64
+
+    for k in range(0, len(frames), chunk):
+        batch = [{"i": k + j, "data_b64": base64.b64encode(f).decode()} for j, f in enumerate(frames[k:k + chunk])]
+        await call("/screencast/put", {"run_id": run_id, "session": session, "frames": batch}, timeout=120)
+
+
+async def cast_assemble(run_id: str, session: str, times: list[float], end_s: float, out: str) -> dict[str, Any]:
+    """The uploaded frames as a 30 fps MP4, each frame held until the next one's time."""
+    return await call("/screencast/assemble", {"run_id": run_id, "session": session, "times": times,
+                                               "end_s": end_s, "out": out}, timeout=600)

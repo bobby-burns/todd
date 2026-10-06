@@ -15,6 +15,9 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
   /probe          {run_id, paths}                       -> {items: [{path, kind, duration_s, width, height, fps}]}
   /render/timeline {run_id, out, fps, width, height, video, voice?, music?, captions, overlays}
                                                         -> {path, duration_s, frames, size_bytes}
+  /screencast/put {run_id, session, frames: [{i, data_b64}]} -> {stored}   (JPEG frames of a browser recording)
+  /tts/local      {run_id, text, out, speed}            -> {path, duration_s, alignment, voice}  (the free scaffold voice)
+  /screencast/assemble {run_id, session, times, end_s, out, fps}            -> {path, duration_s, frames, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
 """
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import hashlib
 import hmac
 import io
@@ -33,6 +37,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import wave
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin, urlsplit
@@ -999,6 +1004,253 @@ def _timeline(req: TimelineReq) -> dict:
 @app.post("/render/timeline", dependencies=[Depends(auth)])
 async def render_timeline(req: TimelineReq) -> dict:
     return await asyncio.to_thread(_timeline, req)
+
+
+# ------------------------------------------------------------------------------------------ screencasts
+# The API records the product in the agents' browser (todd/screencast.py) and hands the JPEG frames over in chunks; the
+# browser sends a frame only when the page changes, so each frame is held until the next one's timestamp, which keeps
+# the recording's step times (the sync points) exact in the 30 fps MP4.
+CAST_ID = re.compile(r"[a-z0-9]{8,32}")
+CAST_DIR = ".casts"  # inside the run folder, removed once assembled
+CAST_FRAME_MAX = 3_000_000
+
+
+def cast_dir(run_id: str, session: str) -> Path:
+    if not CAST_ID.fullmatch(session or ""):
+        raise HTTPException(400, "bad session id")
+    return within(run_id, f"{CAST_DIR}/{session}")
+
+
+class CastFrame(BaseModel):
+    i: int = Field(ge=0, le=20000)
+    data_b64: str = Field(max_length=CAST_FRAME_MAX * 4 // 3 + 8)
+
+
+class CastPutReq(BaseModel):
+    run_id: str
+    session: str
+    frames: list[CastFrame] = Field(min_length=1, max_length=120)
+
+
+def _cast_put(req: CastPutReq) -> dict:
+    d = cast_dir(req.run_id, req.session)
+    d.mkdir(parents=True, exist_ok=True)
+    for f in req.frames:
+        try:
+            data = base64.b64decode(f.data_b64, validate=True)
+            with Image.open(io.BytesIO(data)) as im:
+                if im.format != "JPEG" or im.width * im.height > MAX_PIXELS:
+                    raise HTTPException(400, f"frame {f.i}: not a JPEG frame")
+                im.verify()
+        except (ValueError, OSError, SyntaxError) as e:
+            raise HTTPException(400, f"frame {f.i}: not a JPEG frame") from e
+        if len(data) > CAST_FRAME_MAX:
+            raise HTTPException(413, f"frame {f.i} too large")
+        (d / f"{f.i:05d}.jpg").write_bytes(data)
+    return {"stored": len(req.frames)}
+
+
+@app.post("/screencast/put", dependencies=[Depends(auth)])
+async def cast_put(req: CastPutReq) -> dict:
+    return await asyncio.to_thread(_cast_put, req)
+
+
+class CastAssembleReq(BaseModel):
+    run_id: str
+    session: str
+    times: list[float] = Field(min_length=1, max_length=20001)  # seconds from the start, one per frame, ascending
+    end_s: float = Field(gt=0, le=600)
+    out: str
+    fps: int = Field(30, ge=12, le=60)
+
+
+def _cast_assemble(req: CastAssembleReq) -> dict:
+    d = cast_dir(req.run_id, req.session)
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".mp4":
+        raise HTTPException(400, "out must be an .mp4 path")
+    try:
+        files = sorted(d.glob("*.jpg"))
+        if len(files) != len(req.times):
+            raise HTTPException(400, f"{len(files)} frames stored but {len(req.times)} times given")
+        if any(b < a for a, b in zip(req.times, req.times[1:])) or req.end_s < req.times[-1]:
+            raise HTTPException(400, "times must ascend and end before end_s")
+        starts = [0.0, *req.times[1:]]  # the first frame covers the start, so step times stay true
+        lines = []
+        for k, f in enumerate(files):
+            dur = (starts[k + 1] if k + 1 < len(files) else req.end_s) - starts[k]
+            lines += [f"file '{f.name}'", f"duration {max(dur, 0.001):.4f}"]
+        lines.append(f"file '{files[-1].name}'")  # the concat demuxer needs the last file again
+        (d / "frames.txt").write_text("\n".join(lines) + "\n")
+        with Image.open(files[0]) as im:
+            w, h = im.width - im.width % 2, im.height - im.height % 2
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = d / "cast.mp4"
+        ffmpeg(*LOCAL_ONLY, "-f", "concat", "-i", "frames.txt", "-vf",
+               f"fps={req.fps},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+               f"format=yuv420p", "-r", str(req.fps), *ENCODE, "-an", "-t", f"{req.end_s:.4f}",
+               "-movflags", "+faststart", "cast.mp4", cwd=d)
+        tmp.replace(out)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return {"path": rel(req.run_id, out), "duration_s": round(duration(out), 3), "frames": len(req.times),
+            "size_bytes": out.stat().st_size, "width": w, "height": h}
+
+
+@app.post("/screencast/assemble", dependencies=[Depends(auth)])
+async def cast_assemble(req: CastAssembleReq) -> dict:
+    return await asyncio.to_thread(_cast_assemble, req)
+
+
+# ------------------------------------------------------------------------------------------ local voice (free scaffold)
+# The scaffold (animatic) is free: a local voice (Piper, ONNX on CPU) reads the script, and a local speech recogniser
+# (faster-whisper) hears where each word landed. Its words come from the script, only the times from what was heard,
+# so a misheard word ("Rec" → "wreck") never reaches a caption. Times are good to about a tenth of a second, plenty for
+# a preview; the paid voice (ElevenLabs) returns exact timestamps for the final cut.
+TTS_VOICE = os.getenv("MEDIA_TTS_VOICE", "/models/piper/en_US-ryan-high.onnx")
+ASR_MODEL = os.getenv("MEDIA_ASR_MODEL", "base.en")
+FAKE_TTS = os.getenv("MEDIA_FAKE_TTS") == "1"  # tests: a tone per word at known times, no models
+
+
+class LocalVoice:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._voice = self._asr = None
+
+    def _models(self):
+        with self._lock:
+            if self._voice is None:
+                from faster_whisper import WhisperModel
+                from piper import PiperVoice
+
+                self._voice = PiperVoice.load(TTS_VOICE)
+                self._asr = WhisperModel(ASR_MODEL, device="cpu", compute_type="int8",
+                                         download_root=f"{MODELS_DIR}/whisper")
+        return self._voice, self._asr
+
+    def speak(self, text: str, speed: float) -> tuple[np.ndarray, int, list[tuple[str, float, float]]]:
+        """(int16 samples, sample rate, heard words with times)."""
+        if FAKE_TTS:
+            return fake_speech(text)
+        from piper import SynthesisConfig
+
+        voice, asr = self._models()
+        with self._lock:
+            chunks = list(voice.synthesize(text, syn_config=SynthesisConfig(length_scale=1 / speed)))
+            sr = chunks[0].sample_rate
+            pcm = np.concatenate([np.frombuffer(c.audio_int16_bytes, dtype=np.int16) for c in chunks])
+            audio = pcm.astype(np.float32) / 32768
+            a16 = np.interp(np.arange(0, len(audio) * 16000 / sr) * sr / 16000, np.arange(len(audio)), audio)
+            segs, _ = asr.transcribe(a16.astype(np.float32), word_timestamps=True, language="en", beam_size=1)
+            heard = [(w.word, float(w.start), float(w.end)) for sg in segs for w in sg.words]
+        return pcm, sr, heard
+
+
+def fake_speech(text: str) -> tuple[np.ndarray, int, list[tuple[str, float, float]]]:
+    sr, t, heard = 22050, 0.3, []
+    for w in text.split():
+        heard.append((w, t, t + 0.1 + 0.05 * len(w)))
+        t += 0.1 + 0.05 * len(w) + (0.3 if w[-1] in ".!?" else 0.06)
+    pcm = np.zeros(int((t + 0.3) * sr), dtype=np.int16)
+    for i, (_, a, b) in enumerate(heard):
+        n = np.arange(int(a * sr), int(b * sr))
+        pcm[n] = (9000 * np.sin(2 * np.pi * (300 + 40 * (i % 8)) * n / sr)).astype(np.int16)
+    return pcm, sr, heard
+
+
+local_voice = LocalVoice()
+
+
+def align_words(text: str, heard: list[tuple[str, float, float]], total: float) -> dict:
+    """An ElevenLabs-style character alignment for `text`, timed from the words that were heard. Matching is done on
+    letters and digits only, so different tokenising ("drop-in" vs "drop", "-in") or a misheard word still lines up;
+    words that weren't heard at all are placed between their neighbours by length."""
+    words = text.split(" ")
+    sc, sw = [], []  # the script's letters, and which word each belongs to
+    for wi, w in enumerate(words):
+        for ch in w:
+            if ch.isalnum():
+                sc.append(ch.lower())
+                sw.append(wi)
+    hc, ht = [], []  # what was heard, letter by letter, with times
+    for hw, a, b in heard:
+        cs = [ch.lower() for ch in hw if ch.isalnum()]
+        for k, ch in enumerate(cs):
+            hc.append(ch)
+            ht.append((a + (b - a) * k / len(cs), a + (b - a) * (k + 1) / len(cs)))
+    spans: list[list[float] | None] = [None] * len(words)
+    for blk in difflib.SequenceMatcher(None, "".join(sc), "".join(hc), autojunk=False).get_matching_blocks():
+        for k in range(blk.size):
+            wi, (t0, t1) = sw[blk.a + k], ht[blk.b + k]
+            cur = spans[wi]
+            spans[wi] = [min(cur[0], t0), max(cur[1], t1)] if cur else [t0, t1]
+    i = 0
+    while i < len(words):  # fill the gaps
+        if spans[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(words) and spans[j] is None:
+            j += 1
+        lo = spans[i - 1][1] if i > 0 else 0.0
+        hi = spans[j][0] if j < len(words) else total
+        lens = [max(1, len(w)) for w in words[i:j]]
+        t = lo
+        for k, n in enumerate(lens):
+            d = (hi - lo) * n / sum(lens)
+            spans[i + k] = [t, t + d]
+            t += d
+        i = j
+    prev = 0.0
+    for sp_ in spans:  # never backwards
+        sp_[0] = max(sp_[0], prev)
+        sp_[1] = max(sp_[1], sp_[0] + 0.02)
+        prev = sp_[1]
+    chars: list[str] = []
+    starts: list[float] = []
+    ends: list[float] = []
+    for wi, w in enumerate(words):
+        if wi:
+            chars.append(" ")
+            starts.append(round(spans[wi - 1][1], 4))
+            ends.append(round(spans[wi][0], 4))
+        a, b = spans[wi]
+        for k, ch in enumerate(w):
+            chars.append(ch)
+            starts.append(round(a + (b - a) * k / len(w), 4))
+            ends.append(round(a + (b - a) * (k + 1) / len(w), 4))
+    return {"characters": chars, "character_start_times_seconds": starts, "character_end_times_seconds": ends}
+
+
+class TTSReq(BaseModel):
+    run_id: str
+    text: str = Field(min_length=1, max_length=2000)
+    out: str
+    speed: float = Field(1.0, ge=0.7, le=1.4)
+
+
+def _tts(req: TTSReq) -> dict:
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".wav":
+        raise HTTPException(400, "out must be a .wav path")
+    text = " ".join(req.text.split())
+    pcm, sr, heard = local_voice.speak(text, req.speed)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.part")
+    with wave.open(str(tmp), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+    tmp.replace(out)
+    total = len(pcm) / sr
+    return {"path": rel(req.run_id, out), "duration_s": round(total, 3), "alignment": align_words(text, heard, total),
+            "voice": "fake" if FAKE_TTS else Path(TTS_VOICE).stem, "heard": len(heard)}
+
+
+@app.post("/tts/local", dependencies=[Depends(auth)])
+async def tts_local(req: TTSReq) -> dict:
+    return await asyncio.to_thread(_tts, req)
 
 
 @app.get("/health")

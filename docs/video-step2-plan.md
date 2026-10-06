@@ -40,8 +40,9 @@ For a product and a platform (TikTok, Reels, Shorts):
    beats, voiceover lines, on-screen text, and a shot list where every shot names its source (below). **The human picks
    or edits the script before anything is spent.**
 5. **Produce.** Footage, in this order of preference:
-   1. real product footage: screen recordings from the agents' browser (CDP `Page.startScreencast`), and the human's
-      own clips if they upload some;
+   1. real product footage, **filmed by Todd itself**: Todd built the product, so it knows its pages, its flows and its
+      local preview, and records them in the agents' browser (`short_record`: a 9:16 phone tab, scripted taps, scrolls
+      and typing, every step timestamped for sync). Plus the human's own clips if they upload some;
    2. AI clips (Higgsfield) for what can't be filmed: people, places, reactions, b-roll, often started from a real
       screenshot or a generated still so the style stays consistent;
    3. stock, last.
@@ -135,9 +136,15 @@ with steps that are free or cost cents. The order is fixed, and each step's outp
 1. **Script** (free). Hooks, beats, one voiceover line and on-screen text per beat, one shot per beat with its source.
    Validated before anything else: an estimated length from the speaking rate (about 2.8 words/s) inside the
    platform's limits, every beat has a shot, every AI shot has a prompt. The human approves it.
-2. **Voice lock** (cents). Each hook variant is voiced as one continuous take (hook + body), so the delivery flows
-   naturally, with character timestamps from the same call. The timestamps come from the model that made the audio, so
-   there is no drift to correct later. **The take is the master clock**: nothing changes the voice without re-planning.
+2. **Voice lock.** Each hook variant is voiced as one continuous take (hook + body), so the delivery flows naturally,
+   with word timestamps. **The take is the master clock**: nothing changes the voice without re-planning. Two voices:
+   - **the scaffold voice, free**: Piper (local, CPU) reads the script and a local recogniser (faster-whisper) hears
+     where each word landed. Caption words come from the script, only the times from what was heard, so a misheard
+     word never shows; times are good to about a tenth of a second, plenty for a preview;
+   - **the final voice, cents**: ElevenLabs, after the human approves the scaffold. Its character timestamps come from
+     the model that made the audio, so there is no drift at all. The plan is redone from this take before anything
+     is generated, and if the generation price moves by more than 20% from the scaffold's estimate, the human is asked
+     again.
 3. **Timing plan** (free, deterministic): `timeline-<hook>.json`, computed from the timestamps.
    - Cuts sit on frame boundaries, 2 frames before the first word of each beat, so the picture changes just ahead of
      the voice, as editors cut. The hook starts at frame 0 with the take's leading silence trimmed; the video ends
@@ -153,8 +160,8 @@ with steps that are free or cost cents. The order is fixed, and each step's outp
    - A **sync report** lists each beat (line, slot, how the shot fits: trim, speed, freeze) and flags anything outside
      the limits: a recording sped up more than 2×, a clip slowed below 0.85×, a beat under 0.7 s, words faster than a
      caption can be read.
-4. **Animatic** (cheap). The whole cut rendered from the plan with the real voice, the real captions and the real
-   screen recordings. Each AI shot is its start frame (a $0.003 still or a screenshot) with a slow zoom and a label
+4. **Scaffold / animatic** (free). The whole cut rendered from the plan with the voice, the real captions and Todd's
+   own screen recordings. Each AI shot is its start frame (a $0.003 still or a screenshot) with a slow zoom and a label
    (prompt, length, price). The agent reviews it frame by frame (`cut_frames`), then the human watches it. **Approving
    the animatic approves the spend**: one `authorize_spend` for the batch, at the planned price.
 5. **Generate** (expensive, once). Each AI clip is generated image-to-video from the exact still approved in the
@@ -179,9 +186,10 @@ explicitly excluded, so a commercial trend scan needs a data provider. Each sits
 
 | Provider | Covers | Gives | Cost | Notes |
 | --- | --- | --- | --- | --- |
+| [Apify](https://apify.com/) actors (**chosen**) | TikTok, Instagram Reels, YouTube Shorts | search by keyword or hashtag, a creator's recent videos, views, likes, shares, music, video URL | per actor run (pay as you go) | The human's choice (2026-10-06): one Apify token in the vault, an actor per platform behind the `trends` interface. Public data via scraping; the user brings their own token. |
 | [ScrapeCreators](https://docs.scrapecreators.com/) | TikTok, Instagram Reels, YouTube Shorts | keyword/hashtag search, trending feed, a creator's recent videos (for the outlier baseline), transcripts, play/like/share counts, music, download URL | about $47 per 25k credits, most calls 1 credit; credits don't expire | One key for all three platforms. Public data via scraping: the platforms' ToS don't bless it, and the user brings their own key. |
 | [YouTube Data API v3](https://developers.google.com/youtube/v3) | YouTube Shorts | `search.list` by topic, date and view count; stats via `videos.list` | free quota (10k units/day; a search is 100) | Official. No Shorts filter (filter on duration and vertical yourself), and no transcripts for other people's videos (transcribe with Scribe instead). |
-| [EnsembleData](https://ensembledata.com/) / [Apify](https://apify.com/) actors | TikTok, Instagram, YouTube | similar to ScrapeCreators | from $100/month, or per actor run | Alternatives behind the same interface. |
+| [EnsembleData](https://ensembledata.com/) | TikTok, Instagram, YouTube | similar to ScrapeCreators | from $100/month | An alternative behind the same interface. |
 
 Reference videos are used for analysis only: the transcript, ~8 sampled frames and metadata stay in `research/`, the
 downloaded file is deleted right after sampling, and nothing from them is republished.
@@ -242,22 +250,21 @@ clip. A per-video cap; AI-generated content is flagged in the run so it's labele
 
 ## Build order
 
-1. **Foundation, no paid keys needed:** the script schema and validator, the timing planner, the timeline renderer
-   with word captions (animatic and final modes), the ElevenLabs client (tested against recorded responses), CDP screen
-   recording, `cut_frames`, the format library table, and the eval harness with the two frozen fixtures. An ElevenLabs
-   key (the free tier is enough) then turns the test cases into real animatics.
-2. **Trend scan and format cards** with the chosen data provider; freeze the two fixtures' data for the eval.
+1. **Foundation, no paid keys needed.** Done (2026-10-06): the script schema and validator, the timing planner, the
+   timeline renderer with word captions (scaffold and final modes), the ElevenLabs client, Todd filming its own product
+   (`short_record`), and the free scaffold voice. Still to do: `cut_frames`, the format library table, and the eval
+   harness with the two frozen fixtures.
+2. **Trend scan and format cards** with Apify; freeze the two fixtures' data for the eval.
 3. **ElevenLabs:** voiceover takes with character timestamps (the voice lock).
 4. **Higgsfield:** clips with spend gates, start-frame consistency.
 5. **Eval both test cases end to end**, fix what the rubric flags, then step 4 (posting and the performance loop).
 
 ## Decisions needed
 
-1. **Trend data:** ScrapeCreators (all three platforms, one key, unofficial) and/or the official YouTube Data API
-   (free, Shorts only). Proposed: both, ScrapeCreators for TikTok and Reels.
+1. ~~Trend data~~: Apify (decided 2026-10-06).
 2. **Spending:** a default cap per video (proposed $5) and the rule that a script and its estimate need approval before
    any generation.
 3. **AI people:** may the engine generate AI people for skits (labeled as AI-generated when posted), or only product,
    places and objects?
-4. **Keys:** Higgsfield (key id + secret), ElevenLabs (any plan for testing; a paid plan for commercial use),
-   ScrapeCreators. All go in the vault.
+4. **Keys** (the human adds them later): Apify, ElevenLabs (any plan for testing; a paid plan for commercial use),
+   Higgsfield (key id + secret). All go in the vault. Until then the scaffold works with none of them.

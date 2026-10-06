@@ -131,6 +131,9 @@ held back only by the agents' instructions. Now (`todd/gates.py`):
   image is dropped), and it reads and writes only inside run folders, symlinks included. FFmpeg opens only local files:
   it renders slides the service re-encoded itself, and music only through a named audio demuxer, so a "song" that is
   really a playlist can't make it read other files or reach the network.
+- **Recordings only read** (`short_record`, the shorts toolset filming a product in the agents' browser, which is
+  signed in to the human's accounts): no taps on social or payment sites, none on buttons that buy, post, send,
+  delete or approve, no typing into password fields and no form submits; it holds the browser lock while it records.
 - **One browser, one driver.** The browser lock covers every run and the Accounts page's CLI sign-ins, not just
   one run.
 

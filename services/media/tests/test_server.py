@@ -27,6 +27,7 @@ H = {"X-Media-Token": "t"}
 def load(monkeypatch, tmp_path, **env):
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "ws"))
     monkeypatch.setenv("MEDIA_FAKE_EMBED", "1")
+    monkeypatch.setenv("MEDIA_FAKE_TTS", "1")
     monkeypatch.delenv("MEDIA_TOKEN_FILE", raising=False)
     monkeypatch.setenv("MEDIA_TOKEN", "t")
     for k, v in env.items():
@@ -498,3 +499,78 @@ def test_timeline_holds_split_the_voice_between_lines(media):
     (l1, l2) = loud_spans(run / "h.mp4")
     assert abs(l1[0] - 0.05) <= 1 / 30 and abs(l1[1] - 0.55) <= 1 / 30  # line 1: 0.3 − 0.25
     assert abs(l2[0] - 1.45) <= 1 / 30 and abs(l2[1] - 1.95) <= 1 / 30  # line 2: 1.3 + (1.1 − 0.95)
+
+
+
+# ------------------------------------------------------------------------------------------ screencasts, local voice
+def test_screencast_frames_become_a_steady_30fps_video(media):
+    import base64
+    mod, c, run = media
+    def jpg(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (1080, 1920), color).save(buf, "JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode()
+    # the browser sends frames only on change: red at 0.05 s, green at 1.0 s, blue at 1.6 s; recording ends at 2.5 s
+    frames = [{"i": 0, "data_b64": jpg((220, 20, 20))}, {"i": 1, "data_b64": jpg((20, 200, 20))}]
+    assert c.post("/screencast/put", json={"run_id": RUN, "session": "abc12345", "frames": frames}, headers=H).json() \
+        == {"stored": 2}
+    c.post("/screencast/put", json={"run_id": RUN, "session": "abc12345",
+                                    "frames": [{"i": 2, "data_b64": jpg((20, 20, 220))}]}, headers=H)
+    r = c.post("/screencast/assemble", json={"run_id": RUN, "session": "abc12345", "times": [0.05, 1.0, 1.6],
+                                             "end_s": 2.5, "out": "video/recordings/home.mp4"}, headers=H)
+    assert r.status_code == 200, r.text
+    out = run / "video" / "recordings" / "home.mp4"
+    assert abs(r.json()["duration_s"] - 2.5) < 0.05 and (r.json()["width"], r.json()["height"]) == (1080, 1920)
+    info = ffprobe(out)
+    assert info["streams"][0]["r_frame_rate"] == "30/1"
+    def color(n):
+        px = frame_at(out, n).getpixel((540, 960))
+        return "rgb"[max(range(3), key=lambda k: px[k])]
+    # each frame holds until the next one's time: the step times survive
+    assert [color(n) for n in (0, 29, 31, 47, 49, 74)] == ["r", "r", "g", "g", "b", "b"]
+    assert not (run / ".casts" / "abc12345").exists()  # the frames are cleaned up
+
+    bad = {"run_id": RUN, "session": "abc12345", "frames": [{"i": 0, "data_b64": base64.b64encode(png()).decode()}]}
+    assert c.post("/screencast/put", json=bad, headers=H).status_code == 400  # a PNG, not a screencast JPEG
+    bad["session"] = "../../x"
+    assert c.post("/screencast/put", json=bad, headers=H).status_code == 400
+    c.post("/screencast/put", json={"run_id": RUN, "session": "def45678", "frames": frames}, headers=H)
+    r = c.post("/screencast/assemble", json={"run_id": RUN, "session": "def45678", "times": [0.0], "end_s": 1,
+                                             "out": "x.mp4"}, headers=H)
+    assert r.status_code == 400 and "2 frames stored but 1 times" in r.text
+
+
+def test_align_words_takes_words_from_the_script_and_times_from_what_was_heard(media):
+    mod, _, _ = media
+    text = "Every drop-in at the Rec has five guys."
+    heard = [(" Every", 0.0, 0.36), (" drop", 0.36, 0.6), ("-in", 0.6, 0.76), (" at", 0.76, 0.92),
+             (" the", 0.92, 1.02), (" wreck", 1.02, 1.18), (" has", 1.18, 1.42), (" guys.", 1.9, 2.3)]  # "five" missed
+    al = mod.align_words(text, heard, 2.6)
+    assert "".join(al["characters"]) == text  # captions come from the script, never from what was misheard
+    spans = []  # (start, end) of each word
+    cur = []
+    for ch, a, b in zip(al["characters"] + [" "], al["character_start_times_seconds"] + [0],
+                        al["character_end_times_seconds"] + [0]):
+        if ch == " ":
+            spans.append((cur[0][0], cur[-1][1]))
+            cur = []
+        else:
+            cur.append((a, b))
+    assert spans[1] == pytest.approx((0.36, 0.76), abs=0.02)  # "drop-in" from "drop" + "-in"
+    assert spans[4][0] == pytest.approx(1.02 + 0.16 / 5, abs=0.03)  # "Rec" from the "rec" inside "wreck"
+    assert 1.42 <= spans[6][0] < spans[6][1] <= 1.9  # "five", never heard: between "has" and "guys"
+    assert all(b >= a for a, b in spans) and all(spans[k][0] >= spans[k - 1][1] - 1e-9 for k in range(1, len(spans)))
+
+
+def test_local_voice_writes_a_wav_and_its_alignment(media):
+    _, c, run = media
+    r = c.post("/tts/local", json={"run_id": RUN, "text": "Every drop-in has five guys. Full pro gear.",
+                                   "out": "video/s/audio/vo-h1.wav"}, headers=H)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["voice"] == "fake" and (run / "video" / "s" / "audio" / "vo-h1.wav").is_file()
+    al = out["alignment"]
+    assert "".join(al["characters"]) == "Every drop-in has five guys. Full pro gear."
+    first_tone = loud_spans(run / "video" / "s" / "audio" / "vo-h1.wav")[0]
+    assert abs(first_tone[0] - al["character_start_times_seconds"][0]) <= 0.02  # the times match the audio
+    assert c.post("/tts/local", json={"run_id": RUN, "text": "x", "out": "a.mp3"}, headers=H).status_code == 400

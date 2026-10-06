@@ -83,11 +83,11 @@ Open source and self-hosted: `docker compose up` and it's yours.
   work, read-only (code with line numbers, Markdown formatted, images shown, videos playable, `.env` values hidden
   until you ask),
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
-- **Short videos with a voiceover, timed from the voice.** The `shorts` toolset writes a script (2–3 hook
-  variants and beats), voices it with ElevenLabs, and plans every cut, caption and clip length from the voice's own
-  timestamps, so nothing drifts. It renders an animatic (the real voice, captions and recordings, with AI shots as
-  priced placeholders) for you to approve before anything expensive is generated. Needs `ELEVENLABS_API_KEY` in the
-  vault. Plan for what comes next: [docs/video-step2-plan.md](docs/video-step2-plan.md).
+- **Short videos with a voiceover, timed from the voice.** Todd films the products it built in its own browser,
+  writes a script (2–3 hook variants and beats), voices it, and plans every cut, caption and clip length from the
+  voice's own timestamps, so nothing drifts. The first version is a free scaffold (a local voice, real captions, its
+  own recordings, AI shots as priced placeholders) for you to approve before anything costs money; the final voice is
+  ElevenLabs (`ELEVENLABS_API_KEY` in the vault). Plan for what comes next: [docs/video-step2-plan.md](docs/video-step2-plan.md).
 - **Slideshow videos.** The `video` toolset turns a product into a short vertical slideshow video: a storyboard of
   3–12 shots, each searched by meaning across stock photos and the run's own images (put app screenshots in
   `video/library/`), ranked so every pick also matches the look of the shots already chosen, then a 1080×1920 MP4

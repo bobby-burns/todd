@@ -1,10 +1,12 @@
 """The `shorts` toolset: short vertical videos with a voiceover, timed from the voice.
 
 Order (docs/video-step2-plan.md, "Locking voice to picture"):
+  short_record             film the product in the agents' browser (Todd built it, so it records its own footage)
   short_new / short_edit   the script: hook variants and beats, one voiceover line, on-screen text and shot each
-  short_voiceover          the voice lock: one take per hook variant, with character timestamps (ElevenLabs)
+  short_voiceover          one take per hook variant with character timestamps: the free local voice for the scaffold,
+                           ElevenLabs for the final (the voice lock)
   short_plan               every cut, caption, hold and clip length from the take, a sync report, the generation price
-  short_render             the animatic (AI shots as labelled start frames) or the final cut
+  short_render             the scaffold/animatic (AI shots as labelled start frames) or the final cut
 
 Everything lives in the run folder under video/<slug>/: script.json, audio/vo-<hook>.mp3 + .json (the take and its
 timestamps), timeline-<hook>.json (the plan), and the MP4s. Nothing here generates AI video yet; AI shots stay
@@ -18,8 +20,10 @@ import base64
 import json
 import math
 import re
+import uuid
 from typing import Any
 
+from .. import screencast
 from .. import shorts_plan as sp
 from .. import vault
 from ..policy import SpendDenied, authorize_spend, settle
@@ -34,6 +38,8 @@ MAX_HOOKS, MAX_BEATS = 3, 10
 MAX_VO_CHARS, MAX_TEXT_CHARS, MAX_PROMPT = 160, 60, 600
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 PART_ID = re.compile(r"(h|b)[0-9]{1,2}")
+NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
+PROVIDERS = ("local", "elevenlabs")
 _locks: dict[str, asyncio.Lock] = {}
 
 
@@ -274,17 +280,21 @@ async def short_voices(search: str | None = None) -> dict:
 
 
 @todd_tool(toolset="shorts")
-async def short_voiceover(slug: str, hooks: list[str] | None = None, voice_id: str | None = None) -> dict:
-    """Voice the short: one continuous take per hook variant (hook + beats), with character timestamps. The take is the
-    master clock: cuts, captions and clip lengths are planned from it (short_plan). Costs cents; one charge for all
-    takes.
+async def short_voiceover(slug: str, hooks: list[str] | None = None, provider: str = "local",
+                          voice_id: str | None = None) -> dict:
+    """Voice the short: one continuous take per hook variant (hook + beats), with word timestamps. The take is the
+    master clock: cuts, captions and clip lengths are planned from it (short_plan). Start with the free local voice for
+    the scaffold; once the human approves the scaffold, voice it with ElevenLabs (cents, one charge for all takes) and
+    plan again before generating anything.
 
     Args:
         slug: the short, from short_new
         hooks: which hook variants to voice (default all)
+        provider: "local" (free, for the scaffold) or "elevenlabs" (the final voice)
         voice_id: an ElevenLabs voice (see short_voices); default the script's, else a premade narration voice
     """
-    key = _key()
+    if provider not in PROVIDERS:
+        raise ToolError(f"provider is {' or '.join(PROVIDERS)}")
     ctx = get_ctx()
     script = await _load(slug)
     ids = [h["id"] for h in script["hooks"]]
@@ -292,6 +302,9 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, voice_id: s
     unknown = [h for h in todo if h not in ids]
     if unknown:
         raise ToolError(f"no hook {', '.join(unknown)}: hooks are {', '.join(ids)}")
+    if provider == "local":
+        return await _voice_local(slug, todo)
+    key = _key()
     voice = voice_id or (script.get("voice") or {}).get("voice_id")
     if not voice:
         premade = [v for v in await elevenlabs.voices(key) if v.get("category") == "premade"]
@@ -315,8 +328,9 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, voice_id: s
             r = await elevenlabs.speak(key, voice, texts[h], model)
             audio = f"{_dir(slug)}/audio/vo-{h}.mp3"
             await media.put(ctx.run_id, audio, r["audio"])
-            take = {"text": texts[h], "voice_id": voice, "model_id": model, "chars": len(texts[h]),
-                    "request_id": r.get("request_id"), "audio": audio, "alignment": r["alignment"]}
+            take = {"provider": "elevenlabs", "text": texts[h], "voice_id": voice, "model_id": model,
+                    "chars": len(texts[h]), "request_id": r.get("request_id"), "audio": audio,
+                    "alignment": r["alignment"]}
             await _write_json(f"{_dir(slug)}/audio/vo-{h}.json", take)
             ends = r["alignment"].get("character_end_times_seconds") or [0]
             done[h] = {"audio": audio, "timestamps": f"{_dir(slug)}/audio/vo-{h}.json",
@@ -330,10 +344,34 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, voice_id: s
         script["voice"] = {**(script.get("voice") or {}), "voice_id": voice}
         takes = script.setdefault("takes", {})
         for h, d in done.items():
-            takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": texts[h]}
+            takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": texts[h], "provider": "elevenlabs"}
         await _write_json(f"{_dir(slug)}/script.json", script)
     _emit(f"Voiced {slug}: {', '.join(done)}", {"slug": slug, "takes": done, "usd": usd})
     return {"takes": done, "voice_id": voice, "usd": usd, "next": f"short_plan(\"{slug}\")"}
+
+
+async def _voice_local(slug: str, todo: list[str]) -> dict:
+    """The free scaffold voice: Piper in the media service, timed by a local recogniser."""
+    run_id = get_ctx().run_id
+    script = await _load(slug)
+    done: dict[str, Any] = {}
+    for h in todo:
+        text = sp.take_text(script, h)[0]
+        audio = f"{_dir(slug)}/audio/vo-{h}.wav"
+        r = await media.tts_local(run_id, text, audio)
+        await _write_json(f"{_dir(slug)}/audio/vo-{h}.json", {"provider": "local", "text": text, "voice": r["voice"],
+                                                             "audio": audio, "alignment": r["alignment"]})
+        done[h] = {"audio": audio, "timestamps": f"{_dir(slug)}/audio/vo-{h}.json", "spoken_s": r["duration_s"]}
+    async with _lock(slug):
+        script = await _load(slug)
+        takes = script.setdefault("takes", {})
+        for h, d in done.items():
+            takes[h] = {"audio": d["audio"], "timestamps": d["timestamps"], "text": sp.take_text(script, h)[0],
+                        "provider": "local"}
+        await _write_json(f"{_dir(slug)}/script.json", script)
+    _emit(f"Voiced {slug} (free scaffold voice): {', '.join(done)}", {"slug": slug, "takes": done})
+    return {"takes": done, "provider": "local", "usd": 0,
+            "next": f"short_plan(\"{slug}\"), then short_render for the scaffold"}
 
 
 # ------------------------------------------------------------------------------------------ plan and render
@@ -409,10 +447,60 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
     await _write_json(f"{_dir(slug)}/timeline-{hook}.json", {**p.timeline, "report": p.report})
     out = f"{_dir(slug)}/{slug}-{hook}{'-animatic' if mode == 'animatic' else ''}.mp4"
     r = await media.render_timeline(get_ctx().run_id, out, p.timeline)
-    result = {"video": r["path"], "duration_s": r["duration_s"], "mode": mode, "warnings": p.report["warnings"],
+    warnings = list(p.report["warnings"])
+    script = await _load(slug)
+    if mode == "final" and (script.get("takes") or {}).get(hook, {}).get("provider") == "local":
+        warnings.append("this cut uses the free scaffold voice: for the final, short_voiceover(provider=\"elevenlabs\") "
+                        "and render again")
+    result = {"video": r["path"], "duration_s": r["duration_s"], "mode": mode, "warnings": warnings,
               "generate": p.generate, "generate_usd": sp.total_usd(p.generate)}
     _emit(f"Rendered {mode} {slug} {hook}: {r['duration_s']:g}s", {"slug": slug, "video": r["path"]})
     return result
 
 
-SHORTS_TOOLS = [short_new, short_edit, short_voices, short_voiceover, short_plan, short_render]
+@todd_tool(toolset="shorts")
+async def short_record(name: str, url: str, steps: list[dict], device: str = "phone") -> dict:
+    """Film the product in the agents' browser. Todd built it, so record its real pages (the live site, or the local
+    preview at http://localhost:PORT) and its real flows: opens `url` in a phone-sized 9:16 tab (or "desktop"), runs the
+    steps, and saves video/recordings/<name>.mp4 plus the time of every step, so a shot can land a moment on a spoken
+    word (shot.sync.at_s). Taps never buy, post, send, delete or approve; recordings never sign in or submit forms.
+
+    Args:
+        name: a short name for the recording, e.g. "week-view"
+        url: the page to start on
+        steps: what to do, in order: {"wait": seconds}, {"scroll": pixels or "bottom"}, {"scroll_to": "visible text"},
+            {"tap": "button or link text"}, {"type": "text", "into": "field label or placeholder"}, {"goto": url},
+            {"mark": "a name for this moment"}
+        device: "phone" (1080×1920) or "desktop" (1440×810)
+    """
+    if not NAME.fullmatch(name or ""):
+        raise ToolError("name is lowercase letters, digits and dashes, e.g. \"week-view\"")
+    try:
+        screencast.check_steps(steps)
+    except screencast.RecordError as e:
+        raise ToolError(str(e)) from e
+    ctx = get_ctx()
+    holder = f"{ctx.run_id}:{get_agent_id()} recording {name}"
+    _emit(f"Recording {name}: {url}", {"url": url, "steps": len(steps)})
+    lock = ctx.browser_lock
+    await lock.acquire(holder)
+    try:
+        rec = await screencast.record(url, steps, device)
+    except screencast.RecordError as e:
+        raise ToolError(f"recording {name} stopped: {e}") from e
+    finally:
+        lock.release(holder)
+    session = uuid.uuid4().hex[:16]
+    out = f"video/recordings/{name}.mp4"
+    await media.cast_upload(ctx.run_id, session, [f for _, f in rec["frames"]])
+    r = await media.cast_assemble(ctx.run_id, session, [t for t, _ in rec["frames"]], rec["duration_s"], out)
+    meta = {"url": url, "device": device, "steps": steps, "marks": rec["marks"], "duration_s": r["duration_s"],
+            "frames": len(rec["frames"]), "width": rec["width"], "height": rec["height"]}
+    await _write_json(f"video/recordings/{name}.json", meta)
+    _emit(f"Recorded {name}: {r['duration_s']:g}s", {"path": out, "marks": rec["marks"]})
+    return {"path": out, "duration_s": r["duration_s"], "marks": rec["marks"],
+            "next": f"use it as a shot: {{\"source\": \"screen\", \"path\": \"{out}\"}}, and land a moment on a "
+                    "word with \"sync\": {\"word\": …, \"at_s\": a mark's t}"}
+
+
+SHORTS_TOOLS = [short_record, short_new, short_edit, short_voices, short_voiceover, short_plan, short_render]
