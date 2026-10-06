@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from . import accounts, connect, events, llm, preview, prompts, registry, settings, usage, vault, workspace
+from . import accounts, connect, events, llm, media_index, preview, prompts, registry, settings, usage, vault, workspace
 from .config import config
 from .db import AgentInstance, Event, Interaction, LedgerEntry, Run, init_db, select, session
 from .orchestrator import integrations_summary, manager
@@ -30,6 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    media_index.ensure()
     registry.load_plugins()
     await manager.startup()
     await preview.start()
@@ -483,6 +484,36 @@ async def run_file_download(run_id: str, path: str) -> Response:
     safe_name = re.sub(r"[^\w.\- ]", "_", name) or "file"
     return Response(data, media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
+
+
+VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
+BYTE_RANGE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+@app.get("/api/runs/{run_id}/files/media")
+async def run_file_media(run_id: str, path: str, request: Request) -> Response:
+    """A video from the run's folder for the Files view's player: inline, and a single `Range: bytes=a-b` gets a 206
+    (Safari won't play video without range support)."""
+    _get_run(run_id)
+    ext = re.search(r"\.[^./]+$", path or "")
+    media_type = VIDEO_TYPES.get(ext[0].lower() if ext else "")
+    if not media_type:
+        raise HTTPException(400, "only .mp4, .m4v, .mov and .webm files play here")
+    name, data = await _workspace_call(workspace.download(run_id, path))
+    size = len(data)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, no-cache",
+               "Content-Disposition": f'inline; filename="{re.sub(r"[^\w.\- ]", "_", name) or "video"}"'}
+    m = BYTE_RANGE.fullmatch((request.headers.get("range") or "").strip())
+    if not m or not (m[1] or m[2]):  # no range, or one this doesn't serve (several ranges): the whole file
+        return Response(data, media_type=media_type, headers=headers)
+    if m[1]:
+        start, end = int(m[1]), min(int(m[2]), size - 1) if m[2] else size - 1
+    else:  # bytes=-N: the last N bytes
+        start, end = max(0, size - int(m[2])), size - 1
+    if start >= size or start > end:
+        return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+    return Response(data[start:end + 1], status_code=206, media_type=media_type,
+                    headers={**headers, "Content-Range": f"bytes {start}-{end}/{size}"})
 
 
 # ------------------------------------------------------------------------------------------ agents

@@ -21,7 +21,8 @@ RUN corepack enable && npm install -g vercel firebase-tools eas-cli && npm cache
 RUN python3 -m venv /opt/sandbox && /opt/sandbox/bin/pip install --no-cache-dir \
       fastapi==0.141.1 "uvicorn[standard]==0.54.0"
 
-RUN useradd -m -s /bin/bash agent && mkdir -p /workspace && chown agent:agent /workspace
+# uid 1001 (the node image's `node` is 1000); the media container writes run folders as the same uid.
+RUN useradd -m -u 1001 -s /bin/bash agent && mkdir -p /workspace && chown agent:agent /workspace
 COPY server.py /opt/sandbox/server.py
 COPY todd-cli /usr/local/bin/todd-cli
 

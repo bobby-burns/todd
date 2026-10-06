@@ -10,6 +10,8 @@
 #   signedin_net api ↔ signedin              commands that use your sign-ins (git push, gh, deploy CLIs, EAS, CLI
 #                sign-ins) run here, in their own container with the same workspace: nothing running in the sandbox
 #                (a dev server, an npm install script) can read their tokens
+#   media_net    api ↔ media                 embeddings, slides and MP4s for the video toolset: the shared workspace,
+#                a random token only the API has (media-token volume), no vault, fetches only MEDIA_FETCH_HOSTS
 #   previews     localhost:3000 (and other dev ports) in the browser → api:17000+ → the same port in the sandbox, so
 #                agents can look at what they're building without deploying it (PREVIEW_PORTS / PREVIEW_RELAY_BASE)
 # Published ports bind to 127.0.0.1 only. The dashboard answers only to localhost and only to its own pages (see
@@ -48,6 +50,8 @@ services:
       SANDBOX_TOKEN: ${SANDBOX_TOKEN:-change-me-sandbox-token}
       SIGNEDIN_URL: http://signedin:7000
       SIGNEDIN_TOKEN_FILE: /signedin/token
+      MEDIA_URL: http://media:7000
+      MEDIA_TOKEN_FILE: /media/token
       BROWSER_CDP_HOST: browser
       BROWSER_CDP_PORT: "9223"
       BROWSER_LIVE_URL: ${BROWSER_LIVE_URL:-http://localhost:6080/vnc_lite.html?scale=true}
@@ -58,16 +62,19 @@ services:
       - apidata:/data
       - api-token:/shared
       - signedin-token:/signedin
+      - media-token:/media
       - live-password:/live:ro
       - ./plugins:/app/custom/plugins
       - ./prompts:/app/custom/prompts
-    networks: [core, sandbox_net, browser_net, signedin_net]
+    networks: [core, sandbox_net, browser_net, signedin_net, media_net]
     depends_on:
       postgres:
         condition: service_healthy
       sandbox:
         condition: service_started
       signedin:
+        condition: service_started
+      media:
         condition: service_started
       browser:
         condition: service_started
@@ -96,6 +103,22 @@ services:
       - workspace:/workspace
       - signedin-token:/secret:ro
     networks: [signedin_net]
+    security_opt: ["no-new-privileges:true"]
+
+  # Image embeddings (CLIP), captioned slides and MP4s for the video toolset. Only the API reaches it, with a random
+  # token the API makes (media-token volume); it mounts the workspace and never sees the vault.
+  media:
+    build: ./services/media
+    restart: unless-stopped
+    init: true
+    environment:
+      MEDIA_TOKEN_FILE: /secret/token
+      WORKSPACE_ROOT: /workspace
+      MEDIA_FETCH_HOSTS: ${MEDIA_FETCH_HOSTS:-images.pexels.com,pixabay.com,cdn.pixabay.com}
+    volumes:
+      - workspace:/workspace
+      - media-token:/secret:ro
+    networks: [media_net]
     security_opt: ["no-new-privileges:true"]
 
   browser:
@@ -142,12 +165,14 @@ networks:
   sandbox_net:
   browser_net:
   signedin_net:
+  media_net:
 
 volumes:
   pgdata:
   apidata:
   api-token:
   signedin-token:
+  media-token:
   live-password:
   workspace:
   browser-profile:

@@ -9,6 +9,63 @@ changes).
 
 ### Added
 
+- **Slideshow videos (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`,
+  `video_render`) that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across stock
+  photos (Pixabay, Pexels) and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to
+  the shot and to the look of the shots already picked (`text_score`, `style_score`, a small same-photographer bonus),
+  and renders a 1080×1920 MP4 (`video/<slug>/<slug>.mp4`: H.264, 30 fps, a slow zoom on each slide or `motion="none"`,
+  optional music from the run folder trimmed and faded to fit), the captioned slides it's made of
+  (`video/<slug>/slides/NN.png`, also a TikTok photo post; stock photos fill the slide, the run's own screenshots are
+  framed on a blurred backdrop, a tall phone screenshot large enough to read: it keeps its top part and fades out at
+  the bottom), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a free
+  `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
+  searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
+  renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
+- **Feedback on the free scaffold before anything is spent:** `short_review` renders a numbered scaffold version
+  (beats labelled b1, b2… in the corner) and asks the human through the usual question card: approve (with the
+  generation price), "Slower", "Faster", or anything in their own words; every answer is kept with the version it
+  was about, presets are applied, and the agent acts on the rest and reviews again. `short_pace` sets how fast a
+  short moves: voice speed, a pause after every line, the least time any shot stays on screen (short lines are held
+  automatically) and words per caption page. The default pace is calmer than before.
+- **What's working, as data (`trends` toolset):** `trend_scan` pulls recent TikToks for a niche's hashtags through
+  Apify (`APIFY_API_TOKEN` in the vault; one priced spend per scan, the actual cost recorded) and ranks them by reach
+  (plays ÷ the creator's followers) and share rate, so videos that broke out of small accounts come first;
+  `trend_analyze` studies a few: TikTok's subtitles or a free local transcription, caption, sound, metrics and a frame
+  contact sheet, with the downloaded video deleted once its frames are taken; `format_save` / `format_search` keep a
+  shared library of format cards (hook, beats, why it works, how a product fits in without becoming an ad, the real
+  examples with their numbers). Apify's token only ever goes to api.apify.com. Recordings can start positioned on a
+  section (`start_at`).
+- **Todd films its own products:** `short_record` opens a 9:16 phone tab (or a desktop one) in the agents' browser,
+  runs simple steps (wait, scroll, scroll to, tap, type, go to, mark) with real touch gestures, and saves a 30 fps
+  recording with the time of every step, so a shot can land a recorded moment on a spoken word. Todd built the
+  product, so it records the real pages and flows (live site or local preview). Recordings only read: no taps on
+  social or payment sites or on buttons that buy, post, send, delete or approve, no typing into password fields, no
+  form submits. The media service assembles the frames (`/screencast/put`, `/screencast/assemble`).
+- **A free scaffold:** `short_voiceover` uses a local voice by default (Piper, timed by a local faster-whisper
+  recogniser; caption words come from the script, only the times from what was heard), so a whole scaffold (voice,
+  captions, Todd's recordings, priced AI placeholders) costs nothing. ElevenLabs (`provider="elevenlabs"`) is the final
+  voice, after the human approves. Both models are baked into the media image.
+- **Shorts timed from the voice (video, step 2 foundation):** a `shorts` toolset (`short_new`, `short_edit`,
+  `short_voices`, `short_voiceover`, `short_plan`, `short_render`). The voiceover is rendered first (ElevenLabs, one
+  take per hook variant with character timestamps, one charge for all takes) and is the master clock: the planner
+  (`shorts_plan.py`) cuts 2 frames ahead of each line, adds holds in the pauses between lines without stretching the
+  voice, lands a clip's moment on a chosen word (`shot.sync`), pages captions from the same timestamps, fits each
+  recording (trim, slight slow-down, short freeze, or sped up to fit) and gives every AI shot an exact length and
+  price. A sync report flags anything outside the limits. The media service renders the plan (`/render/timeline`):
+  exact-frame segments joined video-only, one continuous voice track placed by sample offsets (a test checks the cut
+  and the voice agree within one frame), word-highlighted captions and on-screen text via libass, an optional music
+  track ducked under the voice, and labelled placeholders for the animatic. Also `/files/put` (the API hands over the
+  voiceover bytes) and `/probe`. ElevenLabs is in the integrations catalog. No AI video is generated yet; see
+  `docs/video-step2-plan.md`.
+- **Videos play in the Files view:** `.mp4`, `.webm`, `.mov` and `.m4v` files get a player, streamed by
+  `GET /api/runs/{id}/files/media?path=` with byte ranges (Safari needs them).
+- **`media` service:** a new container for image embeddings (CLIP ViT-B/32 via fastembed, ONNX on CPU, models
+  baked into the image), slide composition (Pillow) and MP4 rendering (FFmpeg). Own network to the API, token auth,
+  the shared workspace, no vault; downloads only from `MEDIA_FETCH_HOSTS`. Embeddings are cached in a new
+  `MediaAsset` table (a stock photo is embedded once, whichever run finds it) and searched in Python, or with
+  pgvector when the database has the extension (the compose Postgres image is unchanged for now: see
+  media_index.py).
+
 - **Launch plan** for website goals: at the start, one card asks where it should live (your domain, a new domain,
   or a free address for now), whether the GitHub repository is private (default) or public, and whether to ask
   before deploying. Agents keep building meanwhile. Enforced in code: deploys (previews too), connecting a domain,
@@ -99,6 +156,9 @@ changes).
   rows that need you have an **Open browser** button.
 
 ### Changed
+
+- The sandbox's `agent` user now has an explicit uid (1001, the same it had), which the `media` container shares so
+  both can write run folders.
 
 - **Agents work side by side without touching the same code:** one agent writes the code; helpers run alongside it
   for work that feeds it without editing it (content or data in their own files, like a questions file the site

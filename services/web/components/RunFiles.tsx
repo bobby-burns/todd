@@ -14,6 +14,7 @@ import {
   FileCode,
   FileImage,
   FileLock,
+  FilePlay,
   FileText,
   Folder,
   FolderOpen,
@@ -50,6 +51,9 @@ const CODE = /\.(tsx?|jsx?|mjs|cjs|json|py|rb|go|rs|java|kt|swift|c|h|cpp|cs|php
 const IMAGE = /\.(png|jpe?g|gif|webp|avif|ico|bmp|svg)$/i;
 const KEYISH = /(\.(pem|p8|p12|pfx|key|keystore|jks|mobileprovision)$|(^|\/)id_(rsa|ed25519|ecdsa|dsa)$|(^|\/)\.env)/i;
 const MARKDOWN = /\.(md|mdx|markdown)$/i;
+const VIDEO = /\.(mp4|webm|mov|m4v)$/i;
+const RAW_MAX = 25_000_000; // the sandbox serves files up to this size whole (services/sandbox/server.py)
+const CHECKER = { backgroundImage: "repeating-conic-gradient(var(--fill) 0 25%, transparent 0 50%)", backgroundSize: "18px 18px" };
 
 function build(entries: Entry[]): Node {
   const root: Node = { path: "", name: "", dir: true, children: [] };
@@ -85,7 +89,7 @@ function ago(mtime?: number | null) {
 }
 
 function FileIcon({ path, size: px = 14, className = "" }: { path: string; size?: number; className?: string }) {
-  const Icon = KEYISH.test(path) ? FileLock : IMAGE.test(path) ? FileImage : CODE.test(path) ? FileCode : FileText;
+  const Icon = KEYISH.test(path) ? FileLock : IMAGE.test(path) ? FileImage : VIDEO.test(path) ? FilePlay : CODE.test(path) ? FileCode : FileText;
   return <Icon size={px} className={`shrink-0 ${className}`} />;
 }
 
@@ -317,7 +321,7 @@ export function RunFiles({ runId, active, agents }: { runId: string; active: boo
                   )}
                 </AnimatePresence>
                 {fileErr && <p className="m-4 rounded-[12px] bg-red/10 px-3 py-2 text-[12.5px] text-red">{fileErr}</p>}
-                {file && <Viewer file={file} source={source} />}
+                {file && <Viewer file={file} source={source} runId={runId} />}
               </div>
             </>
           )}
@@ -370,7 +374,7 @@ function TreeNode({ node, depth, open, sel, onToggle, onPick }: { node: Node; de
   );
 }
 
-function Viewer({ file, source }: { file: FileView; source: boolean }) {
+function Viewer({ file, source, runId }: { file: FileView; source: boolean; runId: string }) {
   if (file.kind === "hidden") {
     return (
       <div className="grid h-full min-h-[40vh] place-items-center p-8 text-center">
@@ -385,9 +389,24 @@ function Viewer({ file, source }: { file: FileView; source: boolean }) {
   }
   if (file.kind === "image" && file.data) {
     return (
-      <div className="grid h-full min-h-[40vh] place-items-center overflow-auto p-6" style={{ backgroundImage: "repeating-conic-gradient(var(--fill) 0 25%, transparent 0 50%)", backgroundSize: "18px 18px" }}>
+      <div className="grid h-full min-h-[40vh] place-items-center overflow-auto p-6" style={CHECKER}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={`data:${file.mime};base64,${file.data}`} alt={file.path} className="max-h-full max-w-full rounded-[8px] shadow-md" />
+      </div>
+    );
+  }
+  if (file.kind === "binary" && VIDEO.test(file.path) && (file.size ?? 0) <= RAW_MAX) {
+    // Streamed with range requests (files/media); the mtime reloads it when an agent renders it again. Pinned to the
+    // viewer's box so a 9:16 video fits by height, controls included.
+    return (
+      <div className="absolute inset-0 flex items-center justify-center p-6" style={CHECKER}>
+        <video
+          key={file.mtime}
+          controls
+          playsInline
+          className="max-h-full max-w-full rounded-[8px] shadow-md"
+          src={`/api/runs/${runId}/files/media?path=${encodeURIComponent(file.path)}&v=${file.mtime ?? 0}`}
+        />
       </div>
     );
   }

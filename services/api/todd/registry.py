@@ -1,6 +1,6 @@
 """Toolsets: the building blocks the planner hands to the agents it spawns.
 
-  * built-in toolsets (sandbox, browser, vercel, github, web, vault, accounts)
+  * built-in toolsets (sandbox, browser, vercel, github, web, video, shorts, trends, vault, accounts)
   * plugin toolsets: every LangChain tool found in ./plugins/*.py (module-level BaseTool instances or a `TOOLS`
     list). A tool's toolset is `todd_tool(toolset=...)`, defaulting to the plugin file's name.
   * MCP toolsets: one per MCP server configured in Settings ("mcp_<server>").
@@ -32,6 +32,9 @@ from .tools.cli_login import CLI_LOGIN_TOOLS
 from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
 from .tools.sandbox_tools import SANDBOX_TOOLS
+from .tools.shorts import SHORTS_TOOLS
+from .tools.trends import TRENDS_TOOLS
+from .tools.video import VIDEO_TOOLS
 from .tools.web import WEB_TOOLS
 
 log = logging.getLogger("todd.registry")
@@ -78,6 +81,43 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                    "read docs and public pages. The default way to work with services that have an API.", WEB_TOOLS,
                    guide="Look up the right API with find_integrations, read its docs with fetch_url, then call it with "
                          "api_request. Check status codes and report IDs/URLs from responses."),
+    "video": Toolset("video", "Short vertical slideshow videos (9:16) from stock photos (Pixabay, Pexels) and the "
+                     "run's own images: storyboard, search each shot by meaning, pick, render captioned 1080×1920 "
+                     "slides and an MP4 into the run folder.", VIDEO_TOOLS,
+                     guide="Write the storyboard first (video_new): 3–8 shots, one idea per slide, captions under 12 "
+                           "words. For each shot call video_find_shots and pick with video_pick. Scores already favour "
+                           "images that match earlier picks, so pick in order. You can't see the images: go by score "
+                           "and alt text, and search again with a more concrete query when the top ones don't fit. Put "
+                           "the product's own screenshots in video/library/ (or pass workspace_paths) and use them for "
+                           "at least one shot. Render once with video_render and report the MP4 path (the slides are "
+                           "also a TikTok photo post). Add music only if the human gave you a file for it. Don't post "
+                           "anything: posting is a separate, approved step."),
+    "shorts": Toolset("shorts", "Short vertical videos (TikTok, Reels, Shorts) with a voiceover, timed from the voice: "
+                      "film the product in the agents' browser, write the script, voice it (free local voice for the "
+                      "scaffold, ElevenLabs for the final), plan every cut, caption and clip length from the take, "
+                      "and render a free scaffold to approve before anything is spent.", SHORTS_TOOLS,
+                      guide="0) Todd built the product, so film it: short_record its real pages and flows (live "
+                            "site or local preview; start_at to open on the right section) for every beat that shows "
+                            "the product. 1) Base the script on a format card (trends toolset: format_search, or a "
+                            "fresh scan) and pass its id to short_new (format_id); follow its hook, beats and sound. "
+                            "Never a feature tour. short_new: 2–3 hook variants (the first line decides whether anyone "
+                            "keeps watching) and the beats, each one spoken line, optional on-screen text and one "
+                            "shot. Prefer your recordings over AI shots. Write the way people in the niche talk, never "
+                            "like an ad; the product is the payoff, not the pitch. 2) short_voiceover (free local "
+                            "voice), short_plan, fix every warning and plan again. 3) short_review: the human watches "
+                            "the free scaffold and approves or asks for changes (pace, a line, a shot); apply them "
+                            "and review again until they approve. Only then: short_voiceover(provider="
+                            "\"elevenlabs\"), plan again, and (later) generate. Never post."),
+    "trends": Toolset("trends", "What's working right now in a niche: recent TikToks for its hashtags ranked by how "
+                      "far they outperformed their creator's audience, their transcripts and frames, and a shared "
+                      "library of format cards (hook, beats, why it works) to build shorts from.", TRENDS_TOOLS,
+                      guide="1) format_search first: the library may already know this niche. 2) Map the niche: who "
+                            "it's for and the hashtags they really use (not the product's name). 3) trend_scan 3–6 "
+                            "hashtags. 4) trend_analyze the 3–5 strongest (high reach and share rate; skip ads, big "
+                            "accounts and off-niche results: a hashtag can mean something else). 5) format_save one "
+                            "card per format you see, with the mechanism in `why` and how a product fits in `adapt` "
+                            "without becoming an ad. Report the cards, not the videos. Never copy a video: learn its "
+                            "shape."),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",
