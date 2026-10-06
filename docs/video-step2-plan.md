@@ -45,14 +45,17 @@ For a product and a platform (TikTok, Reels, Shorts):
    2. AI clips (Higgsfield) for what can't be filmed: people, places, reactions, b-roll, often started from a real
       screenshot or a generated still so the style stays consistent;
    3. stock, last.
-   Voiceover from ElevenLabs with word timestamps; music and sound effects (ElevenLabs, or the platform's trending
-   sound added at posting time).
-6. **Assemble.** One timeline render in the `media` service: clips cut to the voiceover's beats, word-by-word captions,
-   music ducked under the voice, sound effects on the cuts, 9:16, captions in the safe zone.
-7. **Review.** A critic pass (a model watches sampled frames and reads the transcript against the format card: is
+   Voiceover from ElevenLabs with word timestamps. No generated music: a track the human supplies (ducked under the
+   voice), or the platform's trending sound added when posting.
+6. **Lock the voice, plan, preview, then generate.** The voiceover is rendered first and its timestamps decide every
+   cut, caption and clip length; a cheap animatic is approved before any video is generated (see
+   [Locking voice to picture](#locking-voice-to-picture)).
+7. **Assemble.** One timeline render in the `media` service: clips cut to the voiceover's beats, word-by-word captions,
+   any music ducked under the voice, 9:16, captions in the safe zone.
+8. **Review.** A critic pass (a model watches sampled frames and reads the transcript against the format card: is
    there a hook in the first second, is the text readable, does it end on the payoff), then the human. Hook variants
    render as separate cuts for A/B.
-8. **Later (step 4):** post through the approval gates, pull views and watch time back, and let the next scan favour
+9. **Later (step 4):** post through the approval gates, pull views and watch time back, and let the next scan favour
    what worked for this account.
 
 Everything lands in the run folder, so it's visible in the Files view and survives restarts:
@@ -62,7 +65,8 @@ video/<slug>/research/      sources.json (videos + metrics + outlier scores), tr
 video/<slug>/formats.json   format cards
 video/<slug>/script.json    the chosen script: hooks, beats, VO lines, on-screen text, shot list
 video/<slug>/shots/         recordings, generated clips, stills
-video/<slug>/audio/         voiceover (+ word timestamps), music, sfx
+video/<slug>/audio/         voiceover takes (+ character timestamps), a music track if the human gives one
+video/<slug>/timeline-<hook>.json   the timing plan: every cut, caption and clip length, derived from the take
 video/<slug>/<slug>-<hook>.mp4   one cut per hook variant
 ```
 
@@ -85,7 +89,7 @@ one is the punchline. Here the punchline is the product.
 | 6.5–9 | group chat on a phone: "is drop-in even on today??" (generated screen) | "The guy who asks if it's even on. Every. Week." | 3. "is it on today?" |
 | 9–13 | dropin.hockey week view, the club game that bumped Thursday's slot (screen recording) | "And the one who already checked. dropin.hockey." | 4. the one who checked |
 
-~13 s, dry deadpan voice, word-synced captions, a whoosh on each cut. Variant hooks: "POV: you're the goalie at CU
+~13 s, dry deadpan voice, word-synced captions. Variant hooks: "POV: you're the goalie at CU
 drop-in", "rating every guy at drop-in hockey".
 
 ### Todd, format "receipts on screen" (build in public)
@@ -123,6 +127,51 @@ Both lean on real screen recordings, which is why browser screencast capture mov
 - **Platform rules as data too:** lengths, safe zones and AI-content labels per platform live in one table, not in the
   scripts.
 
+## Locking voice to picture
+
+Video generation is the expensive step and the hardest to redo, so everything that decides timing is settled before it,
+with steps that are free or cost cents. The order is fixed, and each step's output is the contract for the next:
+
+1. **Script** (free). Hooks, beats, one voiceover line and on-screen text per beat, one shot per beat with its source.
+   Validated before anything else: an estimated length from the speaking rate (about 2.8 words/s) inside the
+   platform's limits, every beat has a shot, every AI shot has a prompt. The human approves it.
+2. **Voice lock** (cents). Each hook variant is voiced as one continuous take (hook + body), so the delivery flows
+   naturally, with character timestamps from the same call. The timestamps come from the model that made the audio, so
+   there is no drift to correct later. **The take is the master clock**: nothing changes the voice without re-planning.
+3. **Timing plan** (free, deterministic): `timeline-<hook>.json`, computed from the timestamps.
+   - Cuts sit on frame boundaries, 2 frames before the first word of each beat, so the picture changes just ahead of
+     the voice, as editors cut. The hook starts at frame 0 with the take's leading silence trimmed; the video ends
+     `end_hold_s` after the last word.
+   - A beat can ask for extra time (`hold_s`, e.g. for a visual payoff). The voice is split in the silence between
+     the two lines and the rest moves later; the take is never stretched.
+   - A shot can pin a moment to a word (`sync: {word, at_s}`, e.g. the tap on Approve lands on "cent"). The clip's
+     in-point is chosen so that moment lands on the word. Screen recordings log when each action happened, so their sync
+     points are exact.
+   - Captions come from the same timestamps: 1–3 words per page, never across a beat, the spoken word highlighted.
+   - Every shot gets a slot length. Every AI shot gets a generation spec: the shortest length the model supports that
+     covers its longest slot across hook variants plus a 0.25 s handle, and the price. Their sum is the exact cost.
+   - A **sync report** lists each beat (line, slot, how the shot fits: trim, speed, freeze) and flags anything outside
+     the limits: a recording sped up more than 2×, a clip slowed below 0.85×, a beat under 0.7 s, words faster than a
+     caption can be read.
+4. **Animatic** (cheap). The whole cut rendered from the plan with the real voice, the real captions and the real
+   screen recordings. Each AI shot is its start frame (a $0.003 still or a screenshot) with a slow zoom and a label
+   (prompt, length, price). The agent reviews it frame by frame (`cut_frames`), then the human watches it. **Approving
+   the animatic approves the spend**: one `authorize_spend` for the batch, at the planned price.
+5. **Generate** (expensive, once). Each AI clip is generated image-to-video from the exact still approved in the
+   animatic, at the planned length, in parallel. Nothing about timing is decided here.
+6. **Final cut.** The same timeline with the generated clips in place of the placeholders. A clip that came back short,
+   or with the action in the wrong place, is flagged and re-generated on its own at the same length. The voice and the
+   other shots don't move.
+
+**Rendering keeps sync to the sample.** Video segments are rendered to exact frame counts and joined video-only; the
+voice is one track placed by sample offsets; captions are burned in from the same timeline in the final pass. Audio is
+never cut into per-segment files and concatenated, which is where AAC padding gaps and drift come from. A test renders
+colour-coded segments against a test tone and checks that the cut frame and the tone's onset agree within one frame.
+
+**If a line changes after generation**, the new take moves the timings. The planner compares old and new slots: clips
+that still cover their new slot within the trim and speed limits are kept, and the rest are listed with their
+re-generation price before anything is spent.
+
 ## Providers (checked 2026-10-06)
 
 **Trend data.** TikTok's official Research API is for academic and non-profit research only, and commercial use is
@@ -145,15 +194,17 @@ commercially. Prices per second of video: Seedance 2.5 $0.074, Kling 3.0 $0.112,
 Stills (Soul 2): $0.003 each. Typical use: a generated still in the right style (or a real screenshot) as the start
 frame, then image-to-video for a 3–5 s shot.
 
-**ElevenLabs** ([pricing](https://elevenlabs.io/pricing/api)): text to speech with character timestamps in the same
-call (`POST /v1/text-to-speech/{voice_id}/with-timestamps`), which gives word-synced captions with no drift; v3 is
-$0.08 per 1K characters. Music: `POST /v1/music`, 3 s to 10 min, instrumental option, $0.15/min, commercial use on the
-Starter plan and up. Sound effects $0.12/min. Scribe speech-to-text $0.22/hour (transcribing references that have no
-captions).
+**ElevenLabs, voiceover only** ([pricing](https://elevenlabs.io/pricing/api)): text to speech with character
+timestamps from the same call (`POST /v1/text-to-speech/{voice_id}/with-timestamps`, header `xi-api-key`; response
+`audio_base64` plus `alignment.characters` / `character_start_times_seconds` / `character_end_times_seconds`), so
+captions and cuts come from the model that made the audio and can't drift. $0.08 per 1K characters (Multilingual v2,
+v3): a 15 s script is ~250 characters, about 2¢ a take. Scribe speech-to-text ($0.22/hour) can transcribe references
+that have no captions.
 
-**Rough cost of one 15 s short:** trend scan and transcripts ≈ $0.10; three AI shots of 4 s on Seedance or Kling ≈
-$0.90–1.35, about double with retakes; voiceover for three hook variants ≈ $0.10; music ≈ $0.05. **About $1.50–3 per
-video** in provider costs, plus the model tokens for analysis and writing. Screen recordings and rendering are free.
+**Rough cost of one 15 s short:** trend scan and transcripts ≈ $0.10; voiceover for three hook variants, with a few
+re-takes ≈ $0.20; three AI shots of 4–5 s on Seedance or Kling ≈ $0.90–1.70, plus any re-generated shot. **About
+$1.50–3 per video** in provider costs, plus model tokens for analysis and writing. Everything before generation (the
+script, the voice lock, the plan, the animatic) costs well under a dollar, which is the point.
 
 ## How it fits into Todd
 
@@ -171,31 +222,32 @@ which agents run which stages; a run typically has a research agent (scan + form
 | `script_new(slug, format, hooks, beats)` | validated script (timings add up, every beat has a shot source) → `script.json`; the human approves it | – |
 | `screen_record(url, steps, seconds, device)` | a phone- or desktop-sized recording of a real page via CDP screencast → `shots/` | – |
 | `clip_generate(prompt, start_image, seconds, model)` | an AI clip (Higgsfield) → `shots/` | yes |
-| `voiceover(slug, voice)` | narration + word timestamps (ElevenLabs) → `audio/` | yes |
-| `music(prompt, seconds)` / `sfx(prompt)` | backing track and hits (ElevenLabs) → `audio/` | yes |
-| `cut_render(slug, hook)` | the timeline render → `<slug>-<hook>.mp4` | – |
+| `voiceover(slug)` | one take per hook variant + character timestamps (ElevenLabs) → `audio/` | cents |
+| `plan(slug, hook)` | the timing plan from the take → `timeline-<hook>.json`, a sync report and the exact generation cost | – |
+| `cut_render(slug, hook, mode)` | `animatic` (placeholders for AI shots) or `final` → `<slug>-<hook>[-animatic].mp4` | – |
 | `cut_frames(slug)` | a contact sheet of the cut at fixed intervals, so the agent can look at its own work before the human does | – |
 
-**media service additions:** `/render/timeline` (clips, stills, overlays, VO, ducked music, SFX, word-synced ASS
-captions via libass, crossfades: all available in its FFmpeg build), `/frames` (sample frames from a clip), and
-`/screencast/assemble` (CDP frames → constant-frame-rate MP4).
+**media service additions:** `/render/timeline` (clips, stills, overlays, the voice track, an optional ducked music
+track, word-synced ASS captions via libass: all available in its FFmpeg build), `/files/put` (the API hands it the
+voiceover bytes; the API never mounts the workspace), `/frames` (sample frames from a clip), and `/screencast/assemble`
+(CDP frames → constant-frame-rate MP4).
 
 **New clients** (`tools/`): one per provider behind a small interface (`trends`, `higgsfield`, `elevenlabs`), so a
 provider can be swapped or a second one added without touching the tools. Each gets an `integrations.py` catalog entry
 for its key.
 
-**Gates:** no AI generation until the human approves the script and its cost estimate; every paid call goes through
-`authorize_spend` against the run budget; a per-video cap; AI-generated content is flagged in the run so it's labeled
-when posted (step 4).
+**Gates:** the human approves the script, then the animatic with its exact price; that approval is one
+`authorize_spend` for the whole generation batch (and one for a short's voiceover takes), so the human isn't asked per
+clip. A per-video cap; AI-generated content is flagged in the run so it's labeled when posted (step 4).
 
 ## Build order
 
-1. **Foundation, no paid keys needed:** the timeline renderer with word captions and ducking, CDP screen recording, the
-   script schema and validator, `cut_frames`, the format library table, and the eval harness with the two frozen
-   fixtures. Re-cut the test cases from real screen recordings plus a local placeholder voice (Piper TTS) to prove the
-   assembly before any paid generation.
+1. **Foundation, no paid keys needed:** the script schema and validator, the timing planner, the timeline renderer
+   with word captions (animatic and final modes), the ElevenLabs client (tested against recorded responses), CDP screen
+   recording, `cut_frames`, the format library table, and the eval harness with the two frozen fixtures. An ElevenLabs
+   key (the free tier is enough) then turns the test cases into real animatics.
 2. **Trend scan and format cards** with the chosen data provider; freeze the two fixtures' data for the eval.
-3. **ElevenLabs:** voiceover with word timestamps, music, sound effects.
+3. **ElevenLabs:** voiceover takes with character timestamps (the voice lock).
 4. **Higgsfield:** clips with spend gates, start-frame consistency.
 5. **Eval both test cases end to end**, fix what the rubric flags, then step 4 (posting and the performance loop).
 
@@ -207,5 +259,5 @@ when posted (step 4).
    any generation.
 3. **AI people:** may the engine generate AI people for skits (labeled as AI-generated when posted), or only product,
    places and objects?
-4. **Keys:** Higgsfield (key id + secret), ElevenLabs (Starter or higher, for commercial music), ScrapeCreators. All go
-   in the vault.
+4. **Keys:** Higgsfield (key id + secret), ElevenLabs (any plan for testing; a paid plan for commercial use),
+   ScrapeCreators. All go in the vault.
