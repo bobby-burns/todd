@@ -11,12 +11,17 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
                                                         -> {slides: [path], sheet}
   /render/slideshow {run_id, slides: [path], durations_s, out, fps, motion, music?, music_volume, width, height}
                                                         -> {path, duration_s, size_bytes}
+  /files/put      {run_id, path, data_b64}              -> {path, size_bytes, sha256}   (audio, image or video only)
+  /probe          {run_id, paths}                       -> {items: [{path, kind, duration_s, width, height, fps}]}
+  /render/timeline {run_id, out, fps, width, height, video, voice?, music?, captions, overlays}
+                                                        -> {path, duration_s, frames, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import io
@@ -500,11 +505,11 @@ class RenderReq(BaseModel):
     height: int = Field(1920, ge=240, le=3840)
 
 
-def ffmpeg(*args: str, timeout: float = FFMPEG_TIMEOUT) -> None:
+def ffmpeg(*args: str, timeout: float = FFMPEG_TIMEOUT, cwd: Path | None = None) -> None:
     """Run FFmpeg with an argument list (never a shell)."""
     try:
         r = subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout, cwd=cwd)
     except FileNotFoundError as e:
         raise HTTPException(500, "ffmpeg isn't installed in the media container") from e
     except subprocess.TimeoutExpired as e:
@@ -622,6 +627,378 @@ def _render(req: RenderReq) -> dict:
 @app.post("/render/slideshow", dependencies=[Depends(auth)])
 async def render(req: RenderReq) -> dict:
     return await asyncio.to_thread(_render, req)
+
+
+# ------------------------------------------------------------------------------------------ timeline (shorts)
+# A short is planned by the API (todd/shorts_plan.py) from the voiceover's character timestamps; this renders the plan.
+# Sync rule: video segments are rendered to exact frame counts and joined video-only, the voice is ONE track placed by
+# sample offsets, and captions are burned in from the same plan in the final pass. Audio is never cut into per-segment
+# files and concatenated (that's where AAC padding gaps and drift come from).
+VIDEO_FORMATS = {"mov,mp4,m4a,3gp,3g2,mj2": "mov", "matroska,webm": "matroska"}
+PUT_MAX = 25_000_000
+PUT_KINDS = {".mp3": "audio", ".wav": "audio", ".m4a": "audio", ".ogg": "audio", ".flac": "audio",
+             ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image",
+             ".mp4": "video", ".mov": "video", ".webm": "video", ".m4v": "video"}
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+SAMPLE_RATE = 48000
+CAPTION_Y = 0.66  # caption baseline, as a share of the height: inside TikTok's safe zone (15–70%)
+OVERLAY_Y = 0.17  # top of the on-screen text box, just below the platform's top bar
+HIGHLIGHT = "&H0000E5FF&"  # the spoken word: warm yellow (ASS colours are &HAABBGGRR)
+
+
+def video_format(path: Path) -> str:
+    """The demuxer to open a clip with, or 400 when it isn't an MP4/MOV/WebM/MKV video."""
+    demuxers = ",".join(f.split(",")[0] for f in VIDEO_FORMATS)
+    try:
+        info = probe(path, "-format_whitelist", demuxers, "-show_entries", "format=format_name:stream=codec_type")
+    except HTTPException as e:
+        raise HTTPException(400, f"{path.name} isn't a video (mp4, mov, webm)") from e
+    name = (info.get("format") or {}).get("format_name", "")
+    if name not in VIDEO_FORMATS or not any(st.get("codec_type") == "video" for st in info.get("streams") or []):
+        raise HTTPException(400, f"{path.name} isn't a video (mp4, mov, webm)")
+    return VIDEO_FORMATS[name]
+
+
+def media_info(run_id: str, p: Path) -> dict:
+    if not p.is_file():
+        raise HTTPException(404, f"no such file: {rel(run_id, p)}")
+    out: dict = {"path": rel(run_id, p)}
+    if p.suffix.lower() in IMAGE_EXT:
+        img, _ = decode(p.read_bytes())
+        return {**out, "kind": "image", "width": img.width, "height": img.height, "duration_s": None, "fps": None}
+    if PUT_KINDS.get(p.suffix.lower()) == "audio":
+        audio_format(p)
+        return {**out, "kind": "audio", "duration_s": round(duration(p), 3), "width": None, "height": None,
+                "fps": None}
+    fmt = video_format(p)
+    info = probe(p, "-f", fmt, "-select_streams", "v:0", "-show_entries",
+                 "stream=width,height,avg_frame_rate:format=duration")
+    st = (info.get("streams") or [{}])[0]
+    num, _, den = str(st.get("avg_frame_rate") or "0/1").partition("/")
+    fps = float(num) / float(den or 1) if float(den or 1) else 0.0
+    return {**out, "kind": "video", "width": st.get("width"), "height": st.get("height"), "fps": round(fps, 3),
+            "duration_s": round(float((info.get("format") or {}).get("duration") or 0), 3)}
+
+
+class PutReq(BaseModel):
+    run_id: str
+    path: str
+    data_b64: str = Field(max_length=PUT_MAX * 4 // 3 + 8)
+
+
+def _put(req: PutReq) -> dict:
+    p = within(req.run_id, req.path)
+    kind = PUT_KINDS.get(p.suffix.lower())
+    if not kind:
+        raise HTTPException(400, f"only {', '.join(sorted(PUT_KINDS))} files")
+    try:
+        data = base64.b64decode(req.data_b64, validate=True)
+    except ValueError as e:
+        raise HTTPException(400, "data_b64 isn't base64") from e
+    if len(data) > PUT_MAX:
+        raise HTTPException(413, "file too large")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.part")
+    tmp.write_bytes(data)
+    try:  # it must really be what its name says
+        if kind == "image":
+            decode(data)
+        elif kind == "audio":
+            audio_format(tmp)
+        else:
+            video_format(tmp)
+    except HTTPException:
+        tmp.unlink(missing_ok=True)
+        raise
+    tmp.replace(p)
+    return {"path": rel(req.run_id, p), "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+@app.post("/files/put", dependencies=[Depends(auth)])
+async def put_file(req: PutReq) -> dict:
+    return await asyncio.to_thread(_put, req)
+
+
+class ProbeReq(BaseModel):
+    run_id: str
+    paths: list[str] = Field(min_length=1, max_length=40)
+
+
+@app.post("/probe", dependencies=[Depends(auth)])
+async def probe_files(req: ProbeReq) -> dict:
+    def go() -> dict:
+        items = []
+        for path in req.paths:
+            try:
+                items.append({"ok": True, **media_info(req.run_id, within(req.run_id, path))})
+            except HTTPException as e:
+                items.append({"ok": False, "path": path, "error": str(e.detail)})
+        return {"items": items}
+    return await asyncio.to_thread(go)
+
+
+class TLVideo(BaseModel):
+    kind: Literal["clip", "image", "placeholder"]
+    frames: int = Field(ge=1, le=60 * 120)
+    src: str | None = None
+    in_s: float = Field(0.0, ge=0)
+    speed: float = Field(1.0, ge=0.25, le=4)
+    freeze_s: float = Field(0.0, ge=0, le=10)
+    fit: Literal["cover", "contain"] = "cover"
+    zoom: Literal["in", "out", "none"] = "none"
+    label: str = Field("", max_length=400)  # placeholders: what will be generated here (animatic)
+
+
+class TLSegment(BaseModel):
+    src_in: float = Field(ge=0)
+    src_out: float = Field(gt=0)
+    at: float = Field(ge=0)
+
+
+class TLVoice(BaseModel):
+    src: str
+    segments: list[TLSegment] = Field(min_length=1, max_length=60)
+
+
+class TLMusic(BaseModel):
+    src: str
+    volume: float = Field(0.25, ge=0, le=1)
+
+
+class TLWord(BaseModel):
+    text: str = Field(max_length=60)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+
+class TLCaption(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    words: list[TLWord] = Field(min_length=1, max_length=8)
+
+
+class TLOverlay(BaseModel):
+    text: str = Field(max_length=120)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    position: Literal["top", "middle"] = "top"
+
+
+class TimelineReq(BaseModel):
+    run_id: str
+    out: str
+    fps: int = Field(30, ge=12, le=60)
+    width: int = Field(1080, ge=240, le=2160)
+    height: int = Field(1920, ge=240, le=3840)
+    video: list[TLVideo] = Field(min_length=1, max_length=60)
+    voice: TLVoice | None = None
+    music: TLMusic | None = None
+    captions: list[TLCaption] = Field(default_factory=list, max_length=200)
+    overlays: list[TLOverlay] = Field(default_factory=list, max_length=60)
+
+
+def ass_time(t: float) -> str:
+    cs = max(0, round(t * 100))
+    return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+
+def ass_text(t: str) -> str:
+    return " ".join(t.replace("\\", "/").replace("{", "(").replace("}", ")").split())
+
+
+def ass_script(req: TimelineReq) -> str:
+    """Captions (the spoken word highlighted) and on-screen text boxes as an ASS script for libass."""
+    w, h = req.width, req.height
+    cap, box = round(76 * w / 1080), round(52 * w / 1080)
+    lines = [
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {w}", f"PlayResY: {h}", "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+        "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+        "MarginR, MarginV, Encoding",
+        # captions: white, black outline, bottom-anchored at CAPTION_Y
+        f"Style: Caption,DejaVu Sans,{cap},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
+        f"{max(2, round(cap * 0.09))},{max(1, round(cap * 0.03))},2,{round(w * 0.08)},{round(w * 0.08)},"
+        f"{round(h * (1 - CAPTION_Y))},1",
+        # on-screen text: black on a white box (BorderStyle 3 draws OutlineColour as the box)
+        f"Style: Box,DejaVu Sans,{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,"
+        f"{round(box * 0.28)},0,8,{round(w * 0.1)},{round(w * 0.1)},{round(h * OVERLAY_Y)},1",
+        f"Style: BoxMid,DejaVu Sans,{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,"
+        f"{round(box * 0.28)},0,5,{round(w * 0.1)},{round(w * 0.1)},0,1",
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for o in req.overlays:
+        if o.end > o.start and ass_text(o.text):
+            style = "Box" if o.position == "top" else "BoxMid"
+            lines.append(f"Dialogue: 1,{ass_time(o.start)},{ass_time(o.end)},{style},,0,0,0,,{ass_text(o.text)}")
+    for c in req.captions:
+        words = [ass_text(wd.text) for wd in c.words]
+        for i, wd in enumerate(c.words):  # one event per spoken word, that word highlighted
+            start = c.start if i == 0 else wd.start
+            end = c.words[i + 1].start if i + 1 < len(c.words) else c.end
+            if end <= start:
+                continue
+            text = " ".join(f"{{\\c{HIGHLIGHT}}}{t}{{\\c&H00FFFFFF&}}" if j == i else t for j, t in enumerate(words))
+            lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{text}")
+    return "\n".join(lines) + "\n"
+
+
+def still_args(frame: Path, frames: int, w: int, h: int, fps: int, zoom: str) -> list[str]:
+    if zoom == "none":
+        return [*LOCAL_ONLY, "-loop", "1", "-framerate", str(fps), "-i", str(frame), "-vf", "format=yuv420p"]
+    t = f"on/{max(frames - 1, 1)}"
+    z = f"1+{ZOOM}*{t}" if zoom == "in" else f"{1 + ZOOM}-{ZOOM}*{t}"
+    return [*LOCAL_ONLY, "-i", str(frame), "-vf",
+            f"scale={2 * w}:{2 * h},zoompan=z='{z}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d={frames}"
+            f":s={w}x{h}:fps={fps},format=yuv420p"]
+
+
+def placeholder(img: Image.Image | None, label: str, w: int, h: int) -> Image.Image:
+    """An animatic stand-in for a shot that isn't generated yet: its start frame full-bleed, as the clip will be (or a
+    plain card), and what it'll be."""
+    slide = cover(img, w, h) if img is not None else Image.new("RGB", (w, h), (28, 30, 38))
+    draw = ImageDraw.Draw(slide, "RGBA")
+    font = ImageFont.truetype(FONT, round(30 * w / 1080))
+    lines = wrap(draw, f"AI SHOT · {label}", font, w * 0.84)[:4]
+    pad, lh = round(w * 0.03), round(30 * w / 1080 * 1.3)
+    top = round(h * 0.03)
+    draw.rounded_rectangle((round(w * 0.05), top, round(w * 0.95), top + 2 * pad + lh * len(lines)), round(w * 0.02),
+                           fill=(0, 0, 0, 170), outline=(255, 214, 0, 255), width=max(2, round(w * 0.003)))
+    for i, ln in enumerate(lines):
+        draw.text((round(w * 0.05) + pad, top + pad + i * lh), ln, font=font, fill=(255, 214, 0))
+    return slide
+
+
+def fit_filter(fit: str, w: int, h: int) -> str:
+    if fit == "contain":  # the whole frame on a blurred, darkened copy of itself
+        return (f"split[a][b];[a]scale={w // 8}:{h // 8}:force_original_aspect_ratio=increase,crop={w // 8}:{h // 8},"
+                f"boxblur=4,scale={w}:{h},eq=brightness=-0.25[bg];"
+                f"[b]scale={round(w * 0.9)}:{round(h * 0.9)}:force_original_aspect_ratio=decrease[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2")
+    return f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+
+
+ENCODE = ("-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p")
+
+
+def _segment(req: TimelineReq, i: int, item: TLVideo, tmp: Path) -> Path:
+    w, h, fps = req.width, req.height, req.fps
+    out = tmp / f"seg_{i:02d}.mp4"
+    if item.kind == "clip":
+        src = within(req.run_id, item.src or "")
+        if not src.is_file():
+            raise HTTPException(404, f"no such file: {item.src}")
+        if src.suffix.lower() in IMAGE_EXT:
+            raise HTTPException(400, f"{item.src} is an image: use kind=image")
+        fmt = video_format(src)
+        graph = (f"[0:v]setpts=(PTS-STARTPTS)/{item.speed:g},fps={fps},{fit_filter(item.fit, w, h)},"
+                 f"tpad=stop_mode=clone:stop_duration={item.freeze_s + 1:.3f},format=yuv420p[v]")
+        ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{item.in_s:.3f}", "-i", str(src), "-filter_complex", graph,
+               "-map", "[v]", "-frames:v", str(item.frames), "-r", str(fps), *ENCODE, "-an", str(out))
+        return out
+    img = None
+    if item.src:
+        src = within(req.run_id, item.src)
+        if not src.is_file():
+            raise HTTPException(404, f"no such file: {item.src}")
+        img, _ = decode(src.read_bytes())
+    if item.kind == "placeholder":
+        still = placeholder(img, item.label, w, h)
+    elif img is None:
+        raise HTTPException(400, f"video item {i + 1}: an image needs a src")
+    else:
+        still = contain(img, w, h, None) if item.fit == "contain" else cover(img, w, h)
+    frame = tmp / f"still_{i:02d}.png"
+    still.save(frame, "PNG")
+    ffmpeg(*still_args(frame, item.frames, w, h, fps, item.zoom), "-frames:v", str(item.frames), "-r", str(fps),
+           *ENCODE, "-an", str(out))
+    return out
+
+
+def _audio(req: TimelineReq, total: float, tmp: Path) -> Path:
+    """The soundtrack as one WAV of exactly `total` seconds: the voice segments placed by sample offsets, any music
+    ducked under them."""
+    out = tmp / "audio.wav"
+    inputs: list[str] = []
+    graph: list[str] = []
+    mix = None
+    if req.voice:
+        src = within(req.run_id, req.voice.src)
+        if not src.is_file():
+            raise HTTPException(404, f"no such file: {req.voice.src}")
+        inputs += [*LOCAL_ONLY, "-f", audio_format(src), "-i", str(src)]
+        n = len(req.voice.segments)
+        graph.append(f"[0:a]aresample={SAMPLE_RATE},aformat=channel_layouts=stereo,asplit={n}"
+                     + "".join(f"[r{k}]" for k in range(n)))
+        for k, sg in enumerate(req.voice.segments):
+            if sg.src_out <= sg.src_in:
+                raise HTTPException(400, f"voice segment {k + 1}: src_out must be after src_in")
+            # asetpts=N/SR/TB after adelay: timestamps rebuilt from the sample count, or later filters (apad, atrim)
+            # see the delay's timestamps and drop it (measured: the voice landed 1 s early without it)
+            graph.append(f"[r{k}]atrim=start={sg.src_in:.4f}:end={sg.src_out:.4f},asetpts=PTS-STARTPTS,"
+                         f"adelay=delays={round(sg.at * 1000)}:all=1,asetpts=N/SR/TB[s{k}]")
+        graph.append("".join(f"[s{k}]" for k in range(n))
+                     + f"amix=inputs={n}:normalize=0:dropout_transition=0,asetpts=N/SR/TB[voice]")
+        mix = "voice"
+    if req.music:
+        src = within(req.run_id, req.music.src)
+        if not src.is_file():
+            raise HTTPException(404, f"no such file: {req.music.src}")
+        idx = 1 if req.voice else 0
+        inputs += [*LOCAL_ONLY, "-f", audio_format(src), "-stream_loop", "-1", "-i", str(src)]
+        graph.append(f"[{idx}:a]aresample={SAMPLE_RATE},aformat=channel_layouts=stereo,"
+                     f"volume={req.music.volume:g}[music]")
+        if mix:  # duck the music whenever the voice speaks
+            graph += ["[voice]asplit=2[vk][vm]",
+                      "[music][vk]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[duck]",
+                      "[vm][duck]amix=inputs=2:normalize=0:dropout_transition=0,asetpts=N/SR/TB[mixed]"]
+            mix = "mixed"
+        else:
+            mix = "music"
+    if not mix:  # silent, so every short has an audio track
+        inputs += ["-f", "lavfi", "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo"]
+        mix = "0:a"
+    graph.append(f"[{mix}]apad=whole_dur={total:.4f},atrim=0:{total:.4f}[out]")
+    ffmpeg(*inputs, "-filter_complex", ";".join(graph), "-map", "[out]", "-c:a", "pcm_s16le", "-ar",
+           str(SAMPLE_RATE), str(out))
+    return out
+
+
+def _timeline(req: TimelineReq) -> dict:
+    if req.width % 2 or req.height % 2:
+        raise HTTPException(400, "width and height must be even")
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".mp4":
+        raise HTTPException(400, "out must be an .mp4 path")
+    frames = sum(v.frames for v in req.video)
+    total = frames / req.fps
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".render-", dir=out.parent))
+    try:
+        with _renders:
+            segs = [_segment(req, i, v, tmp) for i, v in enumerate(req.video)]
+            (tmp / "segs.txt").write_text("".join(f"file '{p.name}'\n" for p in segs))
+            ffmpeg(*LOCAL_ONLY, "-f", "concat", "-i", "segs.txt", "-c", "copy", "video.mp4", cwd=tmp)
+            _audio(req, total, tmp)
+            vf: list[str] = []
+            if req.captions or req.overlays:
+                (tmp / "captions.ass").write_text(ass_script(req), encoding="utf-8")
+                vf = ["-vf", f"ass=captions.ass:fontsdir={Path(FONT).parent}"]
+            ffmpeg(*LOCAL_ONLY, "-i", "video.mp4", "-i", "audio.wav", *vf, "-map", "0:v", "-map", "1:a",
+                   "-frames:v", str(frames), "-r", str(req.fps), *ENCODE[:4], "-crf", "19", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "160k", "-ar", str(SAMPLE_RATE), "-t", f"{total:.4f}",
+                   "-movflags", "+faststart", "final.mp4", cwd=tmp)
+            (tmp / "final.mp4").replace(out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return {"path": rel(req.run_id, out), "duration_s": round(duration(out), 3), "frames": frames,
+            "size_bytes": out.stat().st_size}
+
+
+@app.post("/render/timeline", dependencies=[Depends(auth)])
+async def render_timeline(req: TimelineReq) -> dict:
+    return await asyncio.to_thread(_timeline, req)
 
 
 @app.get("/health")

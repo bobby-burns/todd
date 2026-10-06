@@ -333,3 +333,168 @@ def test_render_refuses_bad_input(media, tmp_path):
     assert not any((run / "v").iterdir())  # nothing left behind, not even the clips' temp folder
     assert c.post("/render/slideshow", json={"run_id": RUN, "slides": ["a.png"], "durations_s": [2], "out": "v/x.mp4"},
                   headers={"X-Media-Token": "nope"}).status_code == 401
+
+
+# ------------------------------------------------------------------------------------------ timeline (shorts)
+def frame_at(path: Path, n: int) -> Image.Image:
+    data = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{n})", "-frames:v", "1",
+                           "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True, check=True).stdout
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def onset(path: Path, threshold: float = 0.05) -> float:
+    """When the audio first gets loud, in seconds (10 ms windows)."""
+    import numpy as np
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", "48000", "-f", "s16le", "-"],
+                         capture_output=True, check=True).stdout
+    a = np.frombuffer(pcm, dtype=np.int16).astype(np.float64) / 32768
+    win = 480
+    rms = [float(np.sqrt(np.mean(a[i:i + win] ** 2))) for i in range(0, len(a) - win, win)]
+    return next(i for i, r in enumerate(rms) if r > threshold) * win / 48000
+
+
+def tone_file(path: Path, silence: float, seconds: float) -> None:
+    """`silence` seconds of nothing, then a 440 Hz tone: a stand-in for a voiceover whose first word is at `silence`."""
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={silence}",
+                    "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}:sample_rate=44100",
+                    "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1", "-c:a", "libmp3lame", str(path)], check=True)
+
+
+def test_timeline_cuts_and_voice_stay_in_sync(media):
+    _, c, run = media
+    (run / "red.png").write_bytes(png(color=(220, 20, 20), size=(1080, 1920)))
+    (run / "blue.png").write_bytes(png(color=(20, 20, 220), size=(1080, 1920)))
+    tone_file(run / "vo.mp3", 1.0, 1.2)  # the "first word" is 1.0 s into the take
+    r = c.post("/render/timeline", json={
+        "run_id": RUN, "out": "short/cut.mp4", "video": [
+            {"kind": "image", "src": "red.png", "frames": 45},
+            {"kind": "image", "src": "blue.png", "frames": 45}],
+        # skip the take's first 0.5 s and place it at 1.0 s: the word lands at 1.5 s, frame 45, where blue starts
+        "voice": {"src": "vo.mp3", "segments": [{"src_in": 0.5, "src_out": 2.2, "at": 1.0}]},
+        "captions": [{"start": 1.5, "end": 2.6, "words": [{"text": "hello", "start": 1.5, "end": 1.9},
+                                                           {"text": "there", "start": 1.9, "end": 2.5}]}],
+        "overlays": [{"text": "TOP TEXT", "start": 0.0, "end": 1.5}]}, headers=H)
+    assert r.status_code == 200, r.text
+    out = run / "short" / "cut.mp4"
+    assert r.json()["frames"] == 90 and abs(r.json()["duration_s"] - 3.0) < 0.05
+    info = ffprobe(out)
+    assert {s["codec_type"] for s in info["streams"]} == {"video", "audio"}
+    f44, f45 = frame_at(out, 44), frame_at(out, 45)
+    assert f44.getpixel((540, 1200))[0] > 150 and f45.getpixel((540, 1200))[2] > 150  # the cut is at frame 45
+    assert abs(onset(out) - 1.5) <= 1 / 30  # and the voice starts within a frame of it
+    # the on-screen text box shows before the cut; the caption (yellow spoken word) after it
+    box = f44.crop((200, round(1920 * 0.17), 880, round(1920 * 0.17) + 120))
+    assert sum(1 for p in box.getdata() if min(p) > 230) > 2000
+    f50 = frame_at(out, 50)
+    cap = f50.crop((100, 1000, 980, round(1920 * 0.66) + 10))
+    assert any(p[0] > 220 and p[1] > 180 and p[2] < 80 for p in cap.getdata())  # the highlighted word
+    assert not [p for p in (run / "short").iterdir() if p.name != "cut.mp4"]  # temp files gone
+
+
+def test_timeline_clips_trim_speed_and_freeze(media):
+    _, c, run = media
+    # 1 s red, 1 s green, 1 s blue
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=540x960:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=lime:s=540x960:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=blue:s=540x960:r=30:d=1",
+                    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0", "-pix_fmt", "yuv420p",
+                    str(run / "rgb.mp4")], check=True)
+    r = c.post("/render/timeline", json={"run_id": RUN, "out": "c.mp4", "width": 540, "height": 960, "video": [
+        {"kind": "clip", "src": "rgb.mp4", "in_s": 1.0, "frames": 15},  # green only
+        {"kind": "clip", "src": "rgb.mp4", "in_s": 0.0, "speed": 2.0, "frames": 30},  # 2 s of source in 1 s
+        {"kind": "clip", "src": "rgb.mp4", "in_s": 2.5, "frames": 30, "freeze_s": 0.5}]}, headers=H)  # 0.5 s + hold
+    assert r.status_code == 200, r.text
+    out = run / "c.mp4"
+    assert r.json()["frames"] == 75
+    def color(n):
+        p = frame_at(out, n).getpixel((270, 480))
+        return "rgb"[max(range(3), key=lambda k: p[k])]
+    assert [color(n) for n in (0, 14)] == ["g", "g"]
+    assert [color(n) for n in (16, 28, 31, 44)] == ["r", "r", "g", "g"]  # 2×: 1 s of red in 0.5 s, then green
+    assert [color(n) for n in (46, 74)] == ["b", "b"]  # the last 0.5 s of blue, then held on its last frame
+
+
+def test_timeline_placeholder_music_and_bad_input(media, tmp_path):
+    _, c, run = media
+    (run / "start.png").write_bytes(png(color=(40, 120, 60), size=(800, 1200)))
+    tone_file(run / "song.mp3", 0.0, 3.0)
+    r = c.post("/render/timeline", json={"run_id": RUN, "out": "p.mp4", "video": [
+        {"kind": "placeholder", "src": "start.png", "frames": 30, "zoom": "in",
+         "label": "Seedance 2.5 · 5 s · $0.37 · a goalie walking in late"},
+        {"kind": "placeholder", "frames": 15, "label": "no start frame yet"}],
+        "music": {"src": "song.mp3", "volume": 0.3}}, headers=H)
+    assert r.status_code == 200, r.text
+    f = frame_at(run / "p.mp4", 5)
+    label = f.crop((60, 60, 1020, 200))
+    assert any(p[0] > 200 and p[1] > 170 and p[2] < 60 for p in label.getdata())  # the yellow AI-shot label
+    assert abs(onset(run / "p.mp4", 0.01) - 0.0) < 0.05  # music from the start
+
+    def bad(**kw):
+        body = {"run_id": RUN, "out": "x.mp4", "video": [{"kind": "image", "src": "start.png", "frames": 10}], **kw}
+        return c.post("/render/timeline", json=body, headers=H)
+    assert bad(out="../../x.mp4").status_code == 400
+    assert bad(video=[{"kind": "clip", "src": "start.png", "frames": 10}]).status_code == 400  # an image as a clip
+    assert bad(video=[{"kind": "clip", "src": "nope.mp4", "frames": 10}]).status_code == 404
+    (run / "fake.mp4").write_text("#EXTM3U\nfile:///etc/passwd\n")
+    assert bad(video=[{"kind": "clip", "src": "fake.mp4", "frames": 10}]).status_code == 400
+    assert bad(voice={"src": "start.png", "segments": [{"src_in": 0, "src_out": 1, "at": 0}]}).status_code == 400
+    assert bad(voice={"src": "song.mp3", "segments": [{"src_in": 1, "src_out": 0.5, "at": 0}]}).status_code == 400
+
+
+def test_put_and_probe(media):
+    import base64
+    _, c, run = media
+    tone_file(run / "t.mp3", 0.2, 1.0)
+    mp3 = (run / "t.mp3").read_bytes()
+    r = c.post("/files/put", json={"run_id": RUN, "path": "audio/vo.mp3", "data_b64": base64.b64encode(mp3).decode()},
+               headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "audio/vo.mp3" and (run / "audio" / "vo.mp3").read_bytes() == mp3
+    for path, data, code in (("audio/x.mp3", b"#EXTM3U\nfile:///etc/passwd\n", 400), ("audio/x.txt", b"hi", 400),
+                             ("../../x.mp3", mp3, 400), ("img/x.png", b"not a png", 400)):
+        r = c.post("/files/put", json={"run_id": RUN, "path": path, "data_b64": base64.b64encode(data).decode()},
+                   headers=H)
+        assert r.status_code == code, path
+    assert not (run / "audio" / "x.mp3").exists() and not list((run / "audio").glob(".*"))
+    (run / "s.png").write_bytes(png(size=(400, 600)))
+    r = c.post("/probe", json={"run_id": RUN, "paths": ["audio/vo.mp3", "s.png", "nope.mp4"]}, headers=H).json()
+    vo, img, missing = r["items"]
+    assert vo["kind"] == "audio" and abs(vo["duration_s"] - 1.2) < 0.1
+    assert (img["kind"], img["width"], img["height"]) == ("image", 400, 600)
+    assert not missing["ok"] and "no such file" in missing["error"]
+
+
+def loud_spans(path: Path, threshold: float = 0.05) -> list[tuple[float, float]]:
+    import numpy as np
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", "48000", "-f", "s16le", "-"],
+                         capture_output=True, check=True).stdout
+    a = np.frombuffer(pcm, dtype=np.int16).astype(np.float64) / 32768
+    win, spans = 480, []
+    for i in range(0, len(a) - win, win):
+        if float(np.sqrt(np.mean(a[i:i + win] ** 2))) > threshold:
+            t = i / 48000
+            if spans and t - spans[-1][1] <= 0.011:
+                spans[-1][1] = t + 0.01
+            else:
+                spans.append([t, t + 0.01])
+    return [(round(s, 2), round(e, 2)) for s, e in spans]
+
+
+def test_timeline_holds_split_the_voice_between_lines(media):
+    _, c, run = media
+    (run / "a.png").write_bytes(png(size=(1080, 1920)))
+    # a two-line "take": line 1 at 0.3–0.8 s, a 0.3 s pause, line 2 at 1.1–1.6 s
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=0.3",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5:sample_rate=44100",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=0.3",
+                    "-f", "lavfi", "-i", "sine=frequency=660:duration=0.5:sample_rate=44100",
+                    "-filter_complex", "[0:a][1:a][2:a][3:a]concat=n=4:v=0:a=1", str(run / "take.wav")], check=True)
+    # leading silence trimmed (0.25 s), split mid-pause at 0.95 s, and a 0.6 s hold before line 2
+    r = c.post("/render/timeline", json={"run_id": RUN, "out": "h.mp4", "video": [
+        {"kind": "image", "src": "a.png", "frames": 75}],
+        "voice": {"src": "take.wav", "segments": [{"src_in": 0.25, "src_out": 0.95, "at": 0.0},
+                                                  {"src_in": 0.95, "src_out": 1.7, "at": 1.3}]}}, headers=H)
+    assert r.status_code == 200, r.text
+    (l1, l2) = loud_spans(run / "h.mp4")
+    assert abs(l1[0] - 0.05) <= 1 / 30 and abs(l1[1] - 0.55) <= 1 / 30  # line 1: 0.3 − 0.25
+    assert abs(l2[0] - 1.45) <= 1 / 30 and abs(l2[1] - 1.95) <= 1 / 30  # line 2: 1.3 + (1.1 − 0.95)

@@ -37,7 +37,11 @@ tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
 tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), search each shot by meaning (Pixabay,
                    Pexels and the run's own images) ranked with the picked shots in view, pick, render slides + MP4
-tools/media.py     Client for the media container (embeddings, fetch, slide composition, MP4 render)
+tools/shorts.py    `shorts` toolset: script (hooks + beats) → voiceover take → timing plan → animatic / final cut
+shorts_plan.py     The timing plan, pure: the take's character timestamps decide every cut, caption, hold, synced
+                   moment and AI clip length (docs/video-step2-plan.md, "Locking voice to picture")
+tools/elevenlabs.py ElevenLabs client: text to speech with character timestamps (voiceover only)
+tools/media.py     Client for the media container (embeddings, fetch, slides, slideshow and timeline renders, files)
 media_index.py     Nearest-neighbour search over MediaAsset embeddings: pgvector when the DB has it, else Python
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
 tools/human.py     ask_human, request_approval, authorize_purchase (every agent)

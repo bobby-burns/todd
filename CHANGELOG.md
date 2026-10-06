@@ -21,6 +21,18 @@ changes).
   `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
   searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
   renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
+- **Shorts timed from the voice (video, step 2 foundation):** a `shorts` toolset (`short_new`, `short_edit`,
+  `short_voices`, `short_voiceover`, `short_plan`, `short_render`). The voiceover is rendered first (ElevenLabs, one
+  take per hook variant with character timestamps, one charge for all takes) and is the master clock: the planner
+  (`shorts_plan.py`) cuts 2 frames ahead of each line, adds holds in the pauses between lines without stretching the
+  voice, lands a clip's moment on a chosen word (`shot.sync`), pages captions from the same timestamps, fits each
+  recording (trim, slight slow-down, short freeze, or sped up to fit) and gives every AI shot an exact length and
+  price. A sync report flags anything outside the limits. The media service renders the plan (`/render/timeline`):
+  exact-frame segments joined video-only, one continuous voice track placed by sample offsets (a test checks the cut
+  and the voice agree within one frame), word-highlighted captions and on-screen text via libass, an optional music
+  track ducked under the voice, and labelled placeholders for the animatic. Also `/files/put` (the API hands over the
+  voiceover bytes) and `/probe`. ElevenLabs is in the integrations catalog. No AI video is generated yet; see
+  `docs/video-step2-plan.md`.
 - **Videos play in the Files view:** `.mp4`, `.webm`, `.mov` and `.m4v` files get a player, streamed by
   `GET /api/runs/{id}/files/media?path=` with byte ranges (Safari needs them).
 - **`media` service:** a new container for image embeddings (CLIP ViT-B/32 via fastembed, ONNX on CPU, models

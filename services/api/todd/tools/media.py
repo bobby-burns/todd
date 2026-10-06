@@ -55,3 +55,29 @@ async def render(run_id: str, slides: list[str], durations_s: list[float], out: 
                                             "fps": fps, "motion": motion, "music": music,
                                             "music_volume": music_volume, "width": width, "height": height},
                       timeout=600)
+
+
+async def put(run_id: str, path: str, data: bytes) -> dict[str, Any]:
+    """Store bytes (audio, image or video only) at `path` in the run folder: {path, size_bytes, sha256}."""
+    import base64
+
+    return await call("/files/put", {"run_id": run_id, "path": path, "data_b64": base64.b64encode(data).decode()},
+                      timeout=120)
+
+
+async def probe(run_id: str, paths: list[str]) -> dict[str, dict[str, Any]]:
+    """{path: {kind, duration_s, width, height, fps}} for the files that could be read."""
+    if not paths:
+        return {}
+    r = await call("/probe", {"run_id": run_id, "paths": paths[:40]}, timeout=120)
+    return {i["path"]: i for i in r.get("items") or [] if i.get("ok")}
+
+
+async def render_timeline(run_id: str, out: str, timeline: dict[str, Any]) -> dict[str, Any]:
+    """Render a shorts timing plan (shorts_plan.plan) to an MP4: {path, duration_s, frames, size_bytes}."""
+    body = {k: timeline[k] for k in ("fps", "width", "height", "video", "captions", "overlays") if k in timeline}
+    if timeline.get("voice"):
+        body["voice"] = timeline["voice"]
+    if timeline.get("music"):
+        body["music"] = timeline["music"]
+    return await call("/render/timeline", {"run_id": run_id, "out": out, **body}, timeout=900)
