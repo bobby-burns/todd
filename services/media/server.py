@@ -46,7 +46,8 @@ TEXT_MODEL = os.getenv("MEDIA_TEXT_MODEL", "Qdrant/clip-ViT-B-32-text")
 MODELS_DIR = os.getenv("MEDIA_MODELS_DIR", "/models")  # downloaded at build time
 FAKE_EMBED = os.getenv("MEDIA_FAKE_EMBED") == "1"  # tests: deterministic vectors, no model
 DIM = int(os.getenv("MEDIA_DIM", "512"))
-FETCH_HOSTS = {h.strip().lower() for h in os.getenv("MEDIA_FETCH_HOSTS", "images.pexels.com").split(",") if h.strip()}
+FETCH_DEFAULT = "images.pexels.com,pixabay.com,cdn.pixabay.com"  # the stock photo sites the video toolset uses
+FETCH_HOSTS = {h.strip().lower() for h in (os.getenv("MEDIA_FETCH_HOSTS") or FETCH_DEFAULT).split(",") if h.strip()}
 FETCH_MAX = 20_000_000
 FETCH_TIMEOUT = 20
 USER_AGENT = "Todd-media/0.1 (+https://github.com/bobby-burns/todd)"  # image hosts turn away default client names

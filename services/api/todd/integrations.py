@@ -137,11 +137,16 @@ CATALOG: list[Integration] = [
       browser_note="The API is read-mostly; scheduling a launch is done in the browser."),
     I("shopify", "Shopify", [], api_docs="https://shopify.dev/docs/api/admin-graphql",
       api_secrets=["SHOPIFY_ADMIN_TOKEN"], cli="npx @shopify/cli (sandbox)"),
-    I("pexels", "Pexels", ["stock photos", "stock images"], toolset="video",
+    I("pixabay", "Pixabay", ["stock photos", "stock images", "free images"], toolset="video",
+      api_docs="https://pixabay.com/api/docs/", api_secrets=["PIXABAY_API_KEY"],
+      browser_note="Needs a free API key: the human signs up at https://pixabay.com/api/docs/ and the key is shown "
+                   "on that page. Ask for it with ask_human(..., secret_name=\"PIXABAY_API_KEY\"). Without it, the "
+                   "`video` toolset can still use the run's own images (sources=[\"workspace\"])."),
+    I("pexels", "Pexels", [], toolset="video",
       api_docs="https://www.pexels.com/api/documentation/", api_secrets=["PEXELS_API_KEY"],
-      browser_note="Needs a free API key from https://www.pexels.com/api/: ask the human for it with "
-                   "ask_human(..., secret_name=\"PEXELS_API_KEY\"). Without it, the `video` toolset can still use the "
-                   "run's own images (sources=[\"workspace\"])."),
+      browser_note="Pexels has paused new API keys: an existing PEXELS_API_KEY still works, otherwise use Pixabay "
+                   "(a free PIXABAY_API_KEY from https://pixabay.com/api/docs/) or the run's own images "
+                   "(sources=[\"workspace\"])."),
     I("openai", "OpenAI", [], api_docs="https://platform.openai.com/docs/api-reference", api_secrets=["OPENAI_API_KEY"]),
     I("anthropic", "Anthropic", ["claude"], api_docs="https://docs.claude.com/en/api/overview",
       api_secrets=["ANTHROPIC_API_KEY"]),

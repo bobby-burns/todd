@@ -10,14 +10,16 @@ changes).
 ### Added
 
 - **Slideshow videos (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`,
-  `video_render`) that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across
-  Pexels stock photos and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to
-  the shot and to the look of the shots already picked (`text_score`, `style_score`, a small same-photographer
-  bonus), and renders a 1080×1920 MP4 (`video/<slug>/<slug>.mp4`: H.264, 30 fps, a slow zoom on each slide or
-  `motion="none"`, optional music from the run folder trimmed and faded to fit), the captioned slides it's made of
-  (`video/<slug>/slides/NN.png`, also a TikTok photo post; stock photos fill the slide, the run's own screenshots
-  are shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a
-  free `PEXELS_API_KEY` in the vault; Pexels is in the integrations catalog.
+  `video_render`) that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across stock
+  photos (Pixabay, Pexels) and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to
+  the shot and to the look of the shots already picked (`text_score`, `style_score`, a small same-photographer bonus),
+  and renders a 1080×1920 MP4 (`video/<slug>/<slug>.mp4`: H.264, 30 fps, a slow zoom on each slide or `motion="none"`,
+  optional music from the run folder trimmed and faded to fit), the captioned slides it's made of
+  (`video/<slug>/slides/NN.png`, also a TikTok photo post; stock photos fill the slide, the run's own screenshots are
+  shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a free
+  `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
+  searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
+  renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.
 - **Videos play in the Files view:** `.mp4`, `.webm`, `.mov` and `.m4v` files get a player, streamed by
   `GET /api/runs/{id}/files/media?path=` with byte ranges (Safari needs them).
 - **`media` service:** a new container for image embeddings (CLIP ViT-B/32 via fastembed, ONNX on CPU, models

@@ -1,4 +1,4 @@
-"""The `video` toolset: short vertical slideshows (9:16) from stock photos (Pexels) and the run's own images.
+"""The `video` toolset: short vertical slideshows (9:16) from stock photos (Pixabay, Pexels) and the run's own images.
 
 The storyboard is the state. It lives in the run's folder (video/<slug>/storyboard.json), so it shows in the Files
 view and survives restarts:
@@ -23,6 +23,7 @@ import math
 import posixpath
 import re
 import shlex
+import time
 from typing import Any
 
 import httpx
@@ -43,7 +44,9 @@ POSITIONS = ("top", "middle", "bottom")
 MIN_SHOTS, MAX_SHOTS = 3, 12
 MIN_DURATION, MAX_DURATION, DEFAULT_DURATION = 1.5, 6.0, 2.5
 MAX_CAPTION = 90
-SOURCES = ("pexels", "workspace")
+STOCK = ("pixabay", "pexels")  # stock photo sources, each with its own free key in the vault
+SOURCES = (*STOCK, "workspace")
+KEYS = {"pixabay": "PIXABAY_API_KEY", "pexels": "PEXELS_API_KEY"}
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
 AUDIO_EXT = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac")
 MOTIONS = ("kenburns", "none")
@@ -55,13 +58,22 @@ MAX_CANDIDATES = 24  # remembered per shot, across searches, so any of them can 
 PEXELS_SEARCH = "https://api.pexels.com/v1/search"
 PEXELS_PER_PAGE = 15
 MIN_WIDTH = 1080
+PIXABAY_API = "https://pixabay.com/api/"
+PIXABAY_PER_PAGE = 20
+PIXABAY_MIN_HEIGHT = 1280  # its standard API serves at most 1280 px on the long side (1920 with full API access)
+PIXABAY_CACHE_S = 24 * 3600  # Pixabay's terms: cache search responses for 24 hours
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 SHOT_ID = re.compile(r"s[0-9]{1,2}")
-NO_PEXELS = ("PEXELS_API_KEY isn't in the vault. Get a free key at https://www.pexels.com/api/ and ask the human "
-             "for it with ask_human(..., secret_name=\"PEXELS_API_KEY\"), or search only the run's own images with "
-             "sources=[\"workspace\"].")
+GET_PIXABAY = ("Get a free Pixabay key (sign up at https://pixabay.com/api/docs/, the key is shown on that page) and "
+               "ask the human for it with ask_human(..., secret_name=\"PIXABAY_API_KEY\")")
+NO_STOCK = (f"No stock photo key in the vault. {GET_PIXABAY}. A PEXELS_API_KEY works too, but Pexels has paused new "
+            "keys. Or search only the run's own images with sources=[\"workspace\"].")
+NO_KEY = {"pixabay": f"PIXABAY_API_KEY isn't in the vault. {GET_PIXABAY}, or use sources=[\"workspace\"].",
+          "pexels": f"PEXELS_API_KEY isn't in the vault, and Pexels has paused new keys. Use sources=[\"pixabay\"] "
+                    f"instead ({GET_PIXABAY}), or sources=[\"workspace\"]."}
 
 _locks: dict[str, asyncio.Lock] = {}
+_pixabay_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # query -> (when, hits)
 
 
 # ------------------------------------------------------------------------------------------ storyboard
@@ -201,6 +213,66 @@ def _slide_src(photo: dict[str, Any]) -> str:
     return str(src.get("large2x") or original)
 
 
+def _from_pexels(p: dict[str, Any]) -> dict[str, Any] | None:
+    if int(p.get("width") or 0) < MIN_WIDTH or not p.get("id"):
+        return None
+    pid = str(p["id"])
+    return {"id": pid, "url": _slide_src(p), "page_url": p.get("url") or f"https://www.pexels.com/photo/{pid}/",
+            "creator_id": str(p.get("photographer_id") or "") or None, "creator_name": p.get("photographer"),
+            "creator_url": p.get("photographer_url"), "alt": p.get("alt") or None}
+
+
+async def _pixabay_get(params: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(PIXABAY_API, params=params)
+    except httpx.HTTPError as e:
+        raise ToolError(f"Pixabay unreachable: {e}") from e
+    if r.status_code in (400, 401, 403) and "key" in r.text.lower():
+        raise ToolError("Pixabay refused PIXABAY_API_KEY: ask the human to check it in Settings → Vault")
+    if r.status_code == 429:
+        raise ToolError("Pixabay's rate limit is used up for the minute: try again shortly, or use "
+                        "sources=[\"workspace\"]")
+    if r.status_code >= 400:
+        raise ToolError(f"Pixabay search -> {r.status_code}: {r.text[:300]}")
+    return list(r.json().get("hits") or [])
+
+
+async def pixabay_search(key: str, query: str, per_page: int = PIXABAY_PER_PAGE) -> list[dict[str, Any]]:
+    """Portrait photos from Pixabay's search API. Responses are cached for 24 hours, as Pixabay asks."""
+    q = query[:100]
+    now = time.time()
+    hit = _pixabay_cache.get(q)
+    if hit and now - hit[0] < PIXABAY_CACHE_S:
+        return hit[1]
+    hits = await _pixabay_get({"key": key, "q": q, "image_type": "photo", "orientation": "vertical",
+                               "min_height": PIXABAY_MIN_HEIGHT, "safesearch": "true", "per_page": per_page})
+    for k in [k for k, (t, _) in _pixabay_cache.items() if now - t >= PIXABAY_CACHE_S]:
+        del _pixabay_cache[k]
+    _pixabay_cache[q] = (now, hits)
+    return hits
+
+
+async def pixabay_image(key: str, image_id: str) -> dict[str, Any] | None:
+    """One Pixabay image by id, with fresh download URLs (they expire)."""
+    hits = await _pixabay_get({"key": key, "id": image_id})
+    return hits[0] if hits else None
+
+
+def _pixabay_url(h: dict[str, Any]) -> str:
+    return str(h.get("fullHDURL") or h.get("largeImageURL") or "")  # fullHDURL: accounts with full API access
+
+
+def _from_pixabay(h: dict[str, Any]) -> dict[str, Any] | None:
+    if not h.get("id") or not _pixabay_url(h):
+        return None
+    user, uid = h.get("user"), h.get("user_id")
+    return {"id": str(h["id"]), "url": _pixabay_url(h), "page_url": h.get("pageURL"),
+            "creator_id": str(uid) if uid else None, "creator_name": user,
+            "creator_url": f"https://pixabay.com/users/{user}-{uid}/" if user and uid else None,
+            "alt": h.get("tags") or None}
+
+
 def _store(asset: MediaAsset) -> MediaAsset:
     """Insert a new asset; if another search stored the same one first, use that."""
     with session() as s:
@@ -229,23 +301,28 @@ def _existing(source: str, source_ids: list[str], model: str) -> dict[str, Media
     return {a.source_id: a for a in rows}
 
 
-async def _pexels(run_id: str, key: str, query: str, model: str) -> tuple[list[MediaAsset], list[str]]:
-    photos = [p for p in await pexels_search(key, query) if int(p.get("width") or 0) >= MIN_WIDTH and p.get("id")]
-    have = _existing("pexels", [str(p["id"]) for p in photos], model)
-    new = [p for p in photos if str(p["id"]) not in have]
+async def _stock(source: str, run_id: str, key: str, query: str, model: str) -> tuple[list[MediaAsset], list[str]]:
+    """Search one stock source; embed (and download) only the photos not cached yet."""
+    if source == "pexels":
+        found = [_from_pexels(p) for p in await pexels_search(key, query)]
+    else:
+        found = [_from_pixabay(h) for h in await pixabay_search(key, query)]
+    photos = list({p["id"]: p for p in found if p}.values())
+    have = _existing(source, [p["id"] for p in photos], model)
+    new = [p for p in photos if p["id"] not in have]
     problems: list[str] = []
     if new:
-        r = await media.embed_images(run_id, [{"url": _slide_src(p)} for p in new], CACHE_DIR)
+        r = await media.embed_images(run_id, [{"url": p["url"]} for p in new], CACHE_DIR)
         for p, res in zip(new, r["results"]):
             if not res.get("ok") or not res.get("vector"):
-                problems.append(f"pexels {p['id']}: {res.get('error') or 'no vector'}")
+                problems.append(f"{source} {p['id']}: {res.get('error') or 'no vector'}")
                 continue
-            have[str(p["id"])] = _store(MediaAsset(
-                source="pexels", source_id=str(p["id"]), run_id=run_id, url=_slide_src(p), sha256=res["sha256"],
-                creator_id=str(p.get("photographer_id") or "") or None, creator_name=p.get("photographer"),
-                creator_url=p.get("photographer_url"), width=res.get("width") or 0, height=res.get("height") or 0,
-                alt=p.get("alt") or None, license="pexels", model=r.get("model") or model, embedding=res["vector"]))
-    return [have[str(p["id"])] for p in photos if str(p["id"]) in have], problems
+            have[p["id"]] = _store(MediaAsset(
+                source=source, source_id=p["id"], run_id=run_id, url=p["url"], page_url=p["page_url"],
+                sha256=res["sha256"], creator_id=p["creator_id"], creator_name=p["creator_name"],
+                creator_url=p["creator_url"], width=res.get("width") or 0, height=res.get("height") or 0,
+                alt=p["alt"], license=source, model=r.get("model") or model, embedding=res["vector"]))
+    return [have[p["id"]] for p in photos if p["id"] in have], problems
 
 
 def _rel(path: str, ext: tuple[str, ...] = IMAGE_EXT, what: str = "images") -> str:
@@ -342,7 +419,7 @@ def rank(pool: list[MediaAsset], text_vec: list[float], picked: list[MediaAsset]
 def _show(c: dict[str, Any]) -> dict[str, Any]:
     a: MediaAsset = c["asset"]
     out = {"asset_id": a.id, "source": a.source, "creator": a.creator_name, "width": a.width, "height": a.height,
-           "alt": a.alt, "preview": a.url if a.source == "pexels" else a.source_id.split("/", 1)[1],
+           "alt": a.alt, "preview": a.source_id.split("/", 1)[1] if a.source == "workspace" else a.url,
            "score": round(c["score"], 4), "text_score": round(c["text_score"], 4),
            "style_score": round(c["style_score"], 4)}
     if c["same_creator"]:
@@ -353,33 +430,37 @@ def _show(c: dict[str, Any]) -> dict[str, Any]:
 @todd_tool(toolset="video")
 async def video_find_shots(slug: str, shot_id: str, k: int = 6, sources: list[str] | None = None,
                            query: str | None = None, workspace_paths: list[str] | None = None) -> dict:
-    """Find images for one shot, by meaning: Pexels stock photos and the run's own images (everything in
-    video/library/ plus workspace_paths). Ranked by fit to the shot's text and, once shots are picked, by how well
-    they match the look of the other picked shots (score = text_score + a weight × style_score). Pick one with
-    video_pick.
+    """Find images for one shot, by meaning: stock photos (Pixabay, Pexels: whichever have a key in the vault) and the
+    run's own images (everything in video/library/ plus workspace_paths). Ranked by fit to the shot's text and, once
+    shots are picked, by how well they match the look of the other picked shots (score = text_score + a weight ×
+    style_score). Pick one with video_pick.
 
     Args:
         slug: the storyboard, from video_new
         shot_id: e.g. "s2"
         k: how many options to return (1–12)
-        sources: "pexels" and/or "workspace" (default both)
+        sources: any of "pixabay", "pexels", "workspace" (default: the run's images plus every stock source with a
+            key)
         query: search words to use instead of the shot's text, e.g. "ice hockey skates close up"
         workspace_paths: more images in the run folder to consider, e.g. ["app/screenshots/home.png"]
     """
     ctx = get_ctx()
     run_id = ctx.run_id
-    sources = list(dict.fromkeys(sources or SOURCES))
+    keys = {s: vault.get_secret(KEYS[s]) for s in STOCK}
+    if sources is None:
+        sources = [s for s in STOCK if keys[s]] + ["workspace"]
+        if len(sources) == 1:
+            raise ToolError(NO_STOCK)
+    sources = list(dict.fromkeys(sources))
     if not sources or set(sources) - set(SOURCES):
-        raise ToolError(f"sources are {' and/or '.join(SOURCES)}")
+        raise ToolError(f"sources are any of {', '.join(SOURCES)}")
+    for s in sources:
+        if s in STOCK and not keys[s]:
+            raise ToolError(NO_KEY[s])
     k = max(1, min(int(k), 12))
     named = list(dict.fromkeys(_rel(p) for p in workspace_paths or []))
     board = await _load(slug)
     shot = _shot(board, shot_id)
-    key = None
-    if "pexels" in sources:
-        key = vault.get_secret("PEXELS_API_KEY")
-        if not key:
-            raise ToolError(NO_PEXELS)
     words = " ".join((query or shot["text"]).split())
     full = f"{words}, {board['style_note']}" if board.get("style_note") else words
     t = await media.embed_text([full])
@@ -401,8 +482,8 @@ async def video_find_shots(slug: str, shot_id: str, k: int = 6, sources: list[st
             gone = path.startswith(LIBRARY_DIR + "/") and path not in current
             if a.source_id not in failed and not gone:
                 pool.append(a)
-    if key:
-        found, bad = await _pexels(run_id, key, words, model)
+    for source in (s for s in STOCK if s in sources):
+        found, bad = await _stock(source, run_id, keys[source] or "", words, model)
         pool += found
         problems += bad
 
@@ -456,7 +537,7 @@ async def video_pick(slug: str, shot_id: str, asset_id: str) -> dict:
         if a.source == "workspace":
             src = a.source_id.split("/", 1)[1]
         else:  # the cache is shared by every run, the files aren't: fetch it into this run's folder if needed
-            src = (await media.fetch(run_id, a.url or "", CACHE_DIR, sha256=a.sha256))["path"]
+            src = await _fetch(run_id, a)
         ext = posixpath.splitext(src)[1].lower() or ".jpg"
         dest = f"video/{slug}/assets/{shot_id}{ext}"
         stem = shlex.quote(f"video/{slug}/assets/{shot_id}")
@@ -475,23 +556,52 @@ async def video_pick(slug: str, shot_id: str, asset_id: str) -> dict:
             else f"video_render(\"{slug}\")"}
 
 
+async def _fetch(run_id: str, a: MediaAsset) -> str:
+    """The stock photo's file in this run's folder (downloaded unless it's there already)."""
+    try:
+        return (await media.fetch(run_id, a.url or "", CACHE_DIR, sha256=a.sha256))["path"]
+    except ToolError:
+        key = vault.get_secret(KEYS["pixabay"]) if a.source == "pixabay" else None
+        if not key:
+            raise
+    fresh = await pixabay_image(key, a.source_id)  # Pixabay's download links expire: ask for a new one
+    if not fresh or not _pixabay_url(fresh):
+        raise ToolError(f"Pixabay image {a.source_id} isn't available any more: pick another candidate")
+    with session() as s:
+        row = s.get(MediaAsset, a.id)
+        row.url = _pixabay_url(fresh)
+        s.add(row)
+        s.commit()
+    return (await media.fetch(run_id, _pixabay_url(fresh), CACHE_DIR))["path"]
+
+
+STOCK_CREDITS = {
+    "pixabay": "Images from [Pixabay](https://pixabay.com) (free to use under the Pixabay Content License; credit is "
+               "appreciated).",
+    "pexels": "Photos from [Pexels](https://www.pexels.com) (free to use under the Pexels license; credit is "
+              "appreciated).",
+}
+
+
 def _credits(board: dict[str, Any], assets: dict[str, MediaAsset]) -> str:
     lines = [f"# Credits: {board['title']}", ""]
-    stock: list[tuple[dict[str, Any], MediaAsset]] = []
+    stock: dict[str, list[tuple[dict[str, Any], MediaAsset]]] = {src: [] for src in STOCK}
     own: list[tuple[dict[str, Any], MediaAsset | None]] = []
     for s in board["shots"]:
         a = assets.get(s["pick"]["asset_id"])
-        if a is not None and a.source == "pexels":
-            stock.append((s, a))
+        if a is not None and a.source in stock:
+            stock[a.source].append((s, a))
         else:
             own.append((s, a))
-    if stock:
-        lines += ["Photos from [Pexels](https://www.pexels.com) (free to use under the Pexels license; credit is "
-                  "appreciated).", ""]
-        for s, a in stock:
+    for src, picks in stock.items():
+        if not picks:
+            continue
+        lines += [STOCK_CREDITS[src], ""]
+        for s, a in picks:
             who = f"[{a.creator_name}]({a.creator_url})" if a.creator_name and a.creator_url \
                 else (a.creator_name or "?")
-            lines.append(f"- {s['id']}: photo by {who} on Pexels: https://www.pexels.com/photo/{a.source_id}/")
+            page = a.page_url or (f"https://www.pexels.com/photo/{a.source_id}/" if src == "pexels" else a.url)
+            lines.append(f"- {s['id']}: photo by {who} on {src.capitalize()}: {page}")
         lines.append("")
     if own:
         lines += ["The run's own images:", ""]
@@ -524,7 +634,7 @@ async def video_render(slug: str, music_path: str | None = None, motion: str = "
     assets = _assets([s["pick"]["asset_id"] for s in board["shots"]])
     # stock photos fill the slide; the run's own images (app screenshots) are shown whole
     slides = [{"image": s["pick"]["path"], "caption": s["caption"], "caption_position": s["caption_position"],
-               "fit": "cover" if getattr(assets.get(s["pick"]["asset_id"]), "source", "") == "pexels" else "contain"}
+               "fit": "cover" if getattr(assets.get(s["pick"]["asset_id"]), "source", "") in STOCK else "contain"}
               for s in board["shots"]]
     r = await media.compose(run_id, slides, f"video/{slug}/slides", board["width"], board["height"],
                             sheet=f"video/{slug}/preview.png")

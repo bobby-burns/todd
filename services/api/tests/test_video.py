@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import random
+import re
 import uuid
 from pathlib import Path
 
@@ -59,6 +60,7 @@ class FakeMedia:
         self.paths: dict[str, list[float]] = {}  # workspace path -> vector
         self.calls: list[tuple[str, dict]] = []
         self.render_error: str | None = None  # make /render/slideshow fail with this
+        self.dead_urls: set[str] = set()  # /fetch of these fails (an expired download link)
 
     def _file(self, run_id: str, save_dir: str, url: str) -> tuple[str, str]:
         data = f"image:{url.split('?')[0]}".encode()
@@ -96,6 +98,8 @@ class FakeMedia:
                                 "error": None})
             return {"model": MODEL, "dim": DIM, "results": results}
         if path == "/fetch":
+            if payload["url"] in self.dead_urls:
+                raise ToolError("media /fetch -> 502: fetch failed: HTTP 410")
             rel, sha = self._file(payload["run_id"], payload["save_dir"], payload["url"])
             return {"path": rel, "sha256": sha}
         if path == "/slides/compose":
@@ -154,14 +158,24 @@ def studio(tmp_path, monkeypatch):
         return next((p for q, p in photos.items() if q in query), [])
 
     monkeypatch.setattr(video, "pexels_search", pexels_search)
-    vault.set_secret("PEXELS_API_KEY", "pexels-test-key")
+    hits: dict[str, list[dict]] = {}  # query substring -> Pixabay hits
+
+    async def pixabay_search(key, query, per_page=20):
+        assert key == "pixabay-test-key"
+        searches.append(f"pixabay:{query}")
+        return next((h for q, h in hits.items() if q in query), [])
+
+    monkeypatch.setattr(video, "pixabay_search", pixabay_search)
+    vault.set_secret("PEXELS_API_KEY", "pexels-test-key")  # Pixabay's key only where a test sets it
     rid = new_run("video")
     (tmp_path / rid).mkdir()
     ctx = RunContext(rid)
     tok = set_ctx(ctx)
-    yield {"run": rid, "dir": tmp_path / rid, "media": fake, "photos": photos, "searches": searches, "ctx": ctx}
+    yield {"run": rid, "dir": tmp_path / rid, "media": fake, "photos": photos, "hits": hits, "searches": searches,
+           "ctx": ctx}
     _current_ctx.reset(tok)
     vault.delete_secret("PEXELS_API_KEY")
+    vault.delete_secret("PIXABAY_API_KEY")
 
 
 def photo(pid: str, photographer: str = "Ana", pg_id: int = 1, width: int = 3000) -> dict:
@@ -169,6 +183,16 @@ def photo(pid: str, photographer: str = "Ana", pg_id: int = 1, width: int = 3000
             "photographer_url": f"https://www.pexels.com/@{photographer.lower()}",
             "alt": f"photo {pid}", "src": {"original": f"https://images.pexels.com/photos/{pid}/pexels-photo-{pid}.jpeg",
                                           "large2x": f"https://images.pexels.com/photos/{pid}/x.jpeg?h=650"}}
+
+
+def hit(hid: str, user: str = "Kai", user_id: int = 5, full_hd: bool = False) -> dict:
+    """A Pixabay search hit."""
+    out = {"id": int(hid), "pageURL": f"https://pixabay.com/photos/ice-hockey-{hid}/", "type": "photo",
+           "tags": f"hockey, rink, {hid}", "largeImageURL": f"https://pixabay.com/get/g{hid}_1280.jpg",
+           "user_id": user_id, "user": user}
+    if full_hd:
+        out["fullHDURL"] = f"https://pixabay.com/get/g{hid}_1920.jpg"
+    return out
 
 
 def uid() -> str:
@@ -344,10 +368,14 @@ def test_missing_pexels_key_and_the_runs_own_images(loop, studio):
 
     async def go():
         slug = (await new_board())["slug"]
-        with pytest.raises(ToolError) as e:
+        with pytest.raises(ToolError) as e:  # no stock key at all: ask for Pixabay's (Pexels has paused new keys)
             await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s3"})
-        assert "https://www.pexels.com/api/" in str(e.value) and 'secret_name="PEXELS_API_KEY"' in str(e.value)
-        assert 'sources=["workspace"]' in str(e.value)
+        assert "https://pixabay.com/api/docs/" in str(e.value) and 'secret_name="PIXABAY_API_KEY"' in str(e.value)
+        assert "paused new keys" in str(e.value) and 'sources=["workspace"]' in str(e.value)
+        for source, msg in (("pexels", 'paused new keys. Use sources=["pixabay"]'),
+                            ("pixabay", 'secret_name="PIXABAY_API_KEY"')):
+            with pytest.raises(ToolError, match=re.escape(msg)):
+                await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s3", "sources": [source]})
 
         r = await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s3", "sources": ["workspace"],
                                                   "workspace_paths": ["app/map.png"]})
@@ -509,20 +537,24 @@ def test_video_toolset_and_pexels_routing(loop):
     assert ts["video"].source == "builtin" and "video_find_shots" in ts["video"].guide
     assert "video" in registry.toolsets_prompt(ts)
     vault.set_secret("PEXELS_API_KEY", "pexels-test-key")
+    vault.set_secret("PIXABAY_API_KEY", "pixabay-test-key")
     try:
-        ctx = RunContext(new_run("pexels"))
+        ctx = RunContext(new_run("stock photos"))
         ctx.toolsets = {"video": ts["video"]}  # type: ignore[attr-defined]
         tok = set_ctx(ctx)
         try:
-            r = loop.run_until_complete(find_integrations.ainvoke({"services": ["pexels", "stock photos"]}))
+            r = loop.run_until_complete(find_integrations.ainvoke({"services": ["pixabay", "pexels", "stock photos"]}))
         finally:
             _current_ctx.reset(tok)
-        assert [s["route"] for s in r["services"]] == ["toolset", "toolset"]
+        assert [s["route"] for s in r["services"]] == ["toolset", "toolset", "toolset"]
+        assert [s["service"] for s in r["services"]] == ["Pixabay", "Pexels", "Pixabay"]
         assert "`video` toolset" in r["services"][0]["recommendation"]
     finally:
         vault.delete_secret("PEXELS_API_KEY")
-    no_key = assess("pexels", {"video"})
-    assert no_key["route"] != "toolset" and "https://www.pexels.com/api/" in no_key["recommendation"]
+        vault.delete_secret("PIXABAY_API_KEY")
+    no_key = assess("pixabay", {"video"})
+    assert no_key["route"] != "toolset" and "https://pixabay.com/api/docs/" in no_key["recommendation"]
+    assert "paused new API keys" in assess("pexels", {"video"})["recommendation"]
 
 
 def test_files_media_route_plays_video_with_ranges(studio, monkeypatch):
@@ -554,3 +586,90 @@ def test_files_media_route_plays_video_with_ranges(studio, monkeypatch):
     assert c.get(url, params={"path": "video/show/missing.mp4"}).status_code == 404
     assert c.get(url, params={"path": "../other/show.mp4"}).status_code in (400, 404)
     assert c.get("/api/runs/nope/files/media", params={"path": "a.mp4"}).status_code == 404
+
+
+def test_pixabay_photos_are_searched_picked_and_credited(loop, studio, monkeypatch):
+    a, b, c = uid(), uid(), uid()
+    studio["hits"]["hockey players"] = [hit(a, "Kai", 5), hit(b, "Lu", 6, full_hd=True)]
+    studio["hits"]["skates"] = [hit(c, "Kai", 5)]
+    studio["photos"]["hockey players"] = [photo(uid(), "Ana", 1)]
+    (studio["dir"] / "video" / "library").mkdir(parents=True)
+    (studio["dir"] / "video" / "library" / "app.png").write_bytes(b"app")
+    m = studio["media"]
+    m.text["hockey players"], m.text["skates"] = vec(hockey=1), vec(skates=1)
+    m.urls[f"g{a}_"], m.urls[f"g{b}_"], m.urls[f"g{c}_"] = vec(hockey=0.95, warm=0.3), vec(hockey=0.5, cold=0.86), \
+        vec(skates=0.8, warm=0.6)
+    vault.set_secret("PIXABAY_API_KEY", "pixabay-test-key")
+
+    async def go():
+        slug = (await new_board())["slug"]
+        r = await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s1"})  # default: every source with a key
+        assert {"pixabay:hockey players on a rink", "hockey players on a rink"} <= set(studio["searches"])
+        assert {x["source"] for x in r["candidates"]} == {"pixabay", "pexels", "workspace"}
+        top = r["candidates"][0]
+        assert (top["source"], top["creator"], top["alt"]) == ("pixabay", "Kai", f"hockey, rink, {a}")
+        urls = [i["url"] for _, body in m.calls if _ == "/embed/images" for i in body["items"] if "url" in i]
+        assert f"https://pixabay.com/get/g{a}_1280.jpg" in urls
+        assert f"https://pixabay.com/get/g{b}_1920.jpg" in urls  # full API access: the 1920 px image
+        with session() as s:
+            row = s.exec(media_index.select(MediaAsset).where(MediaAsset.source == "pixabay",
+                                                              MediaAsset.source_id == a)).one()
+        assert (row.license, row.creator_id, row.creator_url) == ("pixabay", "5", "https://pixabay.com/users/Kai-5/")
+        assert row.page_url == f"https://pixabay.com/photos/ice-hockey-{a}/"
+
+        await video.video_pick.ainvoke({"slug": slug, "shot_id": "s1", "asset_id": top["asset_id"]})
+        r2 = await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s2", "sources": ["pixabay"]})
+        assert r2["candidates"][0]["same_creator"]  # same Pixabay user as the s1 pick
+
+        # its download link expired: video_pick asks Pixabay for a fresh one and keeps going
+        fresh = {**hit(c, "Kai", 5), "largeImageURL": f"https://pixabay.com/get/fresh{c}_1280.jpg"}
+        looked_up = []
+
+        async def pixabay_image(key, image_id):
+            looked_up.append(image_id)
+            return fresh
+
+        monkeypatch.setattr(video, "pixabay_image", pixabay_image)
+        m.dead_urls.add(f"https://pixabay.com/get/g{c}_1280.jpg")
+        p = await video.video_pick.ainvoke({"slug": slug, "shot_id": "s2", "asset_id": ids(r2)[0]})
+        assert looked_up == [c] and (studio["dir"] / p["path"]).is_file()
+        with session() as s:
+            assert s.get(MediaAsset, ids(r2)[0]).url == f"https://pixabay.com/get/fresh{c}_1280.jpg"
+
+        r3 = await video.video_find_shots.ainvoke({"slug": slug, "shot_id": "s3", "sources": ["workspace"]})
+        await video.video_pick.ainvoke({"slug": slug, "shot_id": "s3", "asset_id": ids(r3)[0]})
+        out = await video.video_render.ainvoke({"slug": slug})
+        req = next(body for p, body in m.calls if p == "/slides/compose")
+        assert [s["fit"] for s in req["slides"]] == ["cover", "cover", "contain"]  # stock fills, screenshots whole
+        credits = (studio["dir"] / out["credits"]).read_text()
+        assert "Images from [Pixabay](https://pixabay.com)" in credits and "Pexels" not in credits
+        assert f"- s1: photo by [Kai](https://pixabay.com/users/Kai-5/) on Pixabay: " \
+               f"https://pixabay.com/photos/ice-hockey-{a}/" in credits
+    loop.run_until_complete(go())
+
+
+def test_pixabay_search_asks_for_portrait_photos_and_caches_for_a_day(loop, monkeypatch):
+    calls: list[dict] = []
+    now = [1_000_000.0]
+
+    async def get(params):
+        calls.append(params)
+        return [hit("1")]
+
+    monkeypatch.setattr(video, "_pixabay_get", get)
+    monkeypatch.setattr(video.time, "time", lambda: now[0])
+    monkeypatch.setattr(video, "_pixabay_cache", {})
+    long = "hockey " * 30
+
+    async def go():
+        assert (await video.pixabay_search("k", long))[0]["id"] == 1
+        await video.pixabay_search("k", long)
+        assert len(calls) == 1  # Pixabay asks for responses to be cached for 24 hours
+        q = calls[0]
+        assert len(q["q"]) == 100 and (q["orientation"], q["image_type"], q["safesearch"]) == \
+            ("vertical", "photo", "true")
+        assert q["min_height"] == video.PIXABAY_MIN_HEIGHT and q["key"] == "k"
+        now[0] += video.PIXABAY_CACHE_S + 1
+        await video.pixabay_search("k", long)
+        assert len(calls) == 2
+    loop.run_until_complete(go())

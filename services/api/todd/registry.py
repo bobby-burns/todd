@@ -79,9 +79,9 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                    "read docs and public pages. The default way to work with services that have an API.", WEB_TOOLS,
                    guide="Look up the right API with find_integrations, read its docs with fetch_url, then call it with "
                          "api_request. Check status codes and report IDs/URLs from responses."),
-    "video": Toolset("video", "Short vertical slideshow videos (9:16) from stock photos (Pexels) and the run's own "
-                     "images: storyboard, search each shot by meaning, pick, render captioned 1080×1920 slides and an "
-                     "MP4 into the run folder.", VIDEO_TOOLS,
+    "video": Toolset("video", "Short vertical slideshow videos (9:16) from stock photos (Pixabay, Pexels) and the "
+                     "run's own images: storyboard, search each shot by meaning, pick, render captioned 1080×1920 "
+                     "slides and an MP4 into the run folder.", VIDEO_TOOLS,
                      guide="Write the storyboard first (video_new): 3–8 shots, one idea per slide, captions under 12 "
                            "words. For each shot call video_find_shots and pick with video_pick. Scores already favour "
                            "images that match earlier picks, so pick in order. You can't see the images: go by score "

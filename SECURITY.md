@@ -125,11 +125,11 @@ held back only by the agents' instructions. Now (`todd/gates.py`):
   sign-ins. It shares the workspace with the sandbox but nothing else, so a dev server or an npm install script
   running in the sandbox can't read their tokens or sign-in files. npm-based CLIs run from the runner's own install,
   never from the project's `node_modules` (which the project's code could replace).
-- **The media service is fenced in** (`media`, used by the video toolset): it has no vault access and only the API
-  can call it (a random token the API makes). It downloads only over https from `MEDIA_FETCH_HOSTS` (default
-  `images.pexels.com`; redirects to other hosts are refused, 20 MB cap, and anything that isn't an image is
-  dropped), and it reads and writes only inside run folders, symlinks included. FFmpeg opens only local files: it
-  renders slides the service re-encoded itself, and music only through a named audio demuxer, so a "song" that is
+- **The media service is fenced in** (`media`, used by the video toolset): it has no vault access and only the API can
+  call it (a random token the API makes). It downloads only over https from `MEDIA_FETCH_HOSTS` (default `pixabay.com`,
+  `cdn.pixabay.com`, `images.pexels.com`; redirects to other hosts are refused, 20 MB cap, and anything that isn't an
+  image is dropped), and it reads and writes only inside run folders, symlinks included. FFmpeg opens only local files:
+  it renders slides the service re-encoded itself, and music only through a named audio demuxer, so a "song" that is
   really a playlist can't make it read other files or reach the network.
 - **One browser, one driver.** The browser lock covers every run and the Accounts page's CLI sign-ins, not just
   one run.

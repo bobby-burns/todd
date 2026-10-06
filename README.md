@@ -84,12 +84,13 @@ Open source and self-hosted: `docker compose up` and it's yours.
   until you ask),
   plus the vault keys that run saved. Settings → Vault groups every key by the run that saved it.
 - **Slideshow videos.** The `video` toolset turns a product into a short vertical slideshow video: a storyboard of
-  3–12 shots, each searched by meaning across Pexels stock photos and the run's own images (put app screenshots in
+  3–12 shots, each searched by meaning across stock photos and the run's own images (put app screenshots in
   `video/library/`), ranked so every pick also matches the look of the shots already chosen, then a 1080×1920 MP4
   (a slow zoom on each captioned slide, optional music you provide), the slides on their own for a TikTok photo
   post, a contact sheet and photo credits, all in the run's `video/<slug>/` folder; the video plays in the Files
-  view. Stock photos need a free [Pexels API key](https://www.pexels.com/api/) in Settings → Vault as
-  `PEXELS_API_KEY`; without one it uses only the run's own images. Nothing is posted.
+  view. Stock photos need a free [Pixabay API key](https://pixabay.com/api/docs/) in Settings → Vault as
+  `PIXABAY_API_KEY` (an existing `PEXELS_API_KEY` works too; Pexels has paused new keys); without one it uses only
+  the run's own images. Nothing is posted.
 - **Built to launch, not just to demo.** When a goal makes a website, Todd asks at the start, on one card, where it
   should live (your domain, a new one, or a free address for now), whether the code is private (the default) or
   public, and whether to ask you before deploying. Agents keep building while you decide. Deploying (previews too),

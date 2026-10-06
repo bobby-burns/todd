@@ -35,8 +35,8 @@ tools/browser_tools.py  `browser` toolset (API engine): browse(task, why_not_api
 tools/browser_direct.py `browser` toolset (Claude Code engine): browser_start … browser_done, step by step
 tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
-tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), search each shot by meaning (Pexels +
-                   the run's own images) ranked with the picked shots in view, pick, render captioned slides + MP4
+tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), search each shot by meaning (Pixabay,
+                   Pexels and the run's own images) ranked with the picked shots in view, pick, render slides + MP4
 tools/media.py     Client for the media container (embeddings, fetch, slide composition, MP4 render)
 media_index.py     Nearest-neighbour search over MediaAsset embeddings: pgvector when the DB has it, else Python
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
@@ -231,10 +231,10 @@ a check URL (a page that needs a login), cookie domains, and (where known) the a
   (`npx` would). Known limit: a command that runs the project's own code (a local build, Firebase predeploy hooks,
   Expo's `app.config.js`) runs it with the sign-in present.
 - **Media service:** `media` has no vault access, only answers the API (a random token the API makes, `media-token`
-  volume), downloads only over https from `MEDIA_FETCH_HOSTS` (default `images.pexels.com`; redirects elsewhere
-  refused, 20 MB cap, images only) and reads and writes only inside run folders (symlinks resolved). FFmpeg runs
-  with an argument list, opens only local files, gets slides as images the service wrote itself and music only
-  through a named audio demuxer (a "song" that is really a playlist is refused).
+  volume), downloads only over https from `MEDIA_FETCH_HOSTS` (default `pixabay.com`, `cdn.pixabay.com`,
+  `images.pexels.com`; redirects elsewhere refused, 20 MB cap, images only) and reads and writes only inside run folders
+  (symlinks resolved). FFmpeg runs with an argument list, opens only local files, gets slides as images the service
+  wrote itself and music only through a named audio demuxer (a "song" that is really a playlist is refused).
 - **Previews:** the browser's `localhost:PORT` (common dev ports) is relayed through the API to the same port on the
   sandbox's localhost (`preview.py`, relays in the sandbox and browser containers). The sandbox stays off the
   browser's network; only those ports are forwarded, never the sandbox's exec API.

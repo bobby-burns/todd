@@ -147,6 +147,16 @@ def test_fetch_allowlist(media, monkeypatch):
                   headers=H).status_code == 400
 
 
+def test_stock_photo_hosts_are_allowed_by_default(tmp_path, monkeypatch):
+    for env in (None, ""):  # unset, or set but empty (an empty line in .env)
+        mod = load(monkeypatch, tmp_path, MEDIA_FETCH_HOSTS=env)
+        assert mod.FETCH_HOSTS == {"images.pexels.com", "pixabay.com", "cdn.pixabay.com"}
+    mod = load(monkeypatch, tmp_path, MEDIA_FETCH_HOSTS="cdn.pixabay.com")
+    c = TestClient(mod.app)
+    r = c.post("/fetch", json={"run_id": RUN, "url": "https://images.pexels.com/x.jpg"}, headers=H)
+    assert r.status_code == 400 and "isn't allowed" in r.json()["detail"]
+
+
 def test_fake_embeddings_are_normalized_and_deterministic(media):
     _, c, run = media
     a = c.post("/embed/text", json={"texts": ["hockey rink", "sunrise"]}, headers=H).json()

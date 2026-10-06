@@ -143,18 +143,19 @@ class MediaAsset(SQLModel, table=True):
 
     __table_args__ = (UniqueConstraint("source", "source_id", "model"),)
     id: str = Field(default_factory=short_id, primary_key=True)
-    source: str = Field(index=True)  # pexels | workspace
-    source_id: str = Field(index=True)  # Pexels photo id, or <run_id>/<path> for a file in a run's folder
+    source: str = Field(index=True)  # pixabay | pexels | workspace
+    source_id: str = Field(index=True)  # the stock photo's id, or <run_id>/<path> for a file in a run's folder
     run_id: str | None = Field(default=None, index=True)  # the run that first stored it
-    url: str | None = None  # where it was downloaded from
+    url: str | None = None  # where it was downloaded from (Pixabay's links expire: video_pick asks for a new one)
+    page_url: str | None = None  # the stock photo's page, for credits
     sha256: str = Field(index=True)
-    creator_id: str | None = None  # Pexels photographer_id: the "same shoot" hint
+    creator_id: str | None = None  # the photographer's id on the stock site: the "same shoot" hint
     creator_name: str | None = None
     creator_url: str | None = None
     width: int = 0
     height: int = 0
     alt: str | None = Field(default=None, sa_column=Column(Text))
-    license: str = "own"  # pexels | own
+    license: str = "own"  # pixabay | pexels | own
     model: str = ""  # the embedding model
     embedding: list[float] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
