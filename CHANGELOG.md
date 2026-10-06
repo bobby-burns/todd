@@ -16,7 +16,8 @@ changes).
   and renders a 1080×1920 MP4 (`video/<slug>/<slug>.mp4`: H.264, 30 fps, a slow zoom on each slide or `motion="none"`,
   optional music from the run folder trimmed and faded to fit), the captioned slides it's made of
   (`video/<slug>/slides/NN.png`, also a TikTok photo post; stock photos fill the slide, the run's own screenshots are
-  shown whole on a blurred backdrop), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a free
+  framed on a blurred backdrop, a tall phone screenshot large enough to read: it keeps its top part and fades out at
+  the bottom), a contact sheet (`preview.png`) and `CREDITS.md`. Stock photos need a free
   `PIXABAY_API_KEY` in the vault (Pexels has paused new API keys; an existing `PEXELS_API_KEY` works too, and both are
   searched when both are there). Pixabay search responses are cached for 24 hours and its expiring download links are
   renewed when a photo is picked, as its API terms ask. Both are in the integrations catalog.

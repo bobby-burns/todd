@@ -215,22 +215,31 @@ def test_compose_writes_captioned_slides(media):
     assert r.status_code == 404
 
 
-def test_contain_shows_the_whole_screenshot_clear_of_the_caption(media):
+def test_contain_shows_a_screenshot_large_and_clear_of_the_caption(media):
     _, c, run = media
-    (run / "phone.png").write_bytes(png(color=(10, 200, 90), size=(1170, 2532)))  # taller than 9:16
+    (run / "phone.png").write_bytes(png(color=(10, 200, 90), size=(1170, 2532)))  # a phone screenshot: taller than 9:16
+    (run / "wide.png").write_bytes(png(color=(10, 200, 90), size=(1600, 1000)))  # a desktop one
     r = c.post("/slides/compose", json={"run_id": RUN, "out_dir": "s", "slides": [
         {"image": "phone.png", "caption": "Pickup games near you", "caption_position": "top", "fit": "contain"},
         {"image": "phone.png", "caption": "", "fit": "contain"},
-        {"image": "phone.png", "caption": "Tap to join", "caption_position": "bottom", "fit": "contain"}]}, headers=H)
+        {"image": "phone.png", "caption": "Tap to join", "caption_position": "bottom", "fit": "contain"},
+        {"image": "wide.png", "caption": "Your week", "caption_position": "top", "fit": "contain"}]}, headers=H)
     assert r.status_code == 200, r.text
-    for name, caption_at in (("01.png", "top"), ("02.png", None), ("03.png", "bottom")):
+    for name, caption_at in (("01.png", "top"), ("02.png", None), ("03.png", "bottom"), ("04.png", "top")):
         with Image.open(run / "s" / name) as im:
             assert im.size == (1080, 1920)
             px = im.convert("RGB").load()
             green = [y for y in range(0, 1920, 2) if px[540, y] == (10, 200, 90)]
+            wide = [x for x in range(0, 1080, 2) if px[x, green[len(green) // 2]] == (10, 200, 90)]
             text = [y for y in range(0, 1920, 2) for x in range(0, 1080, 4) if px[x, y] == (255, 255, 255)]
-            assert green and max(green) - min(green) > 1000  # the screenshot, whole and large
             assert px[20, 20] != (10, 200, 90) and px[20, 20][1] < 120  # a darkened backdrop around it
+            assert any(px[540, min(green) - d] == (72, 72, 80) for d in range(1, 5))  # framed
+            if name == "04.png":  # not tall: shown whole, at the full width
+                assert max(wide) - min(wide) > 900 and any(px[540, max(green) + d] == (72, 72, 80) for d in range(1, 5))
+            else:  # tall: large (wider than it would be whole), its bottom cut off and faded out
+                assert max(wide) - min(wide) > 750 and max(green) - min(green) > 800
+                below = px[540, max(green) + 8]
+                assert below != (72, 72, 80) and 0 < below[1] < 200
             if caption_at == "top":
                 assert text and max(text) < min(green)
             elif caption_at == "bottom":

@@ -35,7 +35,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from pydantic import BaseModel, Field
 
 ROOT = Path(os.getenv("WORKSPACE_ROOT", "/workspace")).resolve()
@@ -317,8 +317,8 @@ class Slide(BaseModel):
     image: str
     caption: str = ""
     caption_position: Literal["top", "middle", "bottom"] = "middle"
-    # cover: fill the slide, cropping the overflow (photos). contain: the whole image, e.g. an app screenshot, on a
-    # blurred copy of itself and clear of the caption.
+    # cover: fill the slide, cropping the overflow (photos). contain: the image framed on a blurred copy of itself and
+    # clear of the caption, e.g. an app screenshot (a tall one keeps its top part: see contain()).
     fit: Literal["cover", "contain"] = "cover"
 
 
@@ -340,21 +340,41 @@ def cover(img: Image.Image, w: int, h: int) -> Image.Image:
     return img.crop((left, top, left + w, top + h))
 
 
+KEEP_MIN = 0.55  # a tall image (a phone screenshot) shows at least this much of its height, from the top
+FADE = 0.12  # and fades out over this share of what's shown
+FRAME = (72, 72, 80)  # a thin outline, so a dark app screen stands out from its dark backdrop
+
+
 def contain(img: Image.Image, w: int, h: int, caption_band: tuple[int, int] | None) -> Image.Image:
-    """The whole image, rounded corners, on a blurred and darkened copy of itself, in the largest band of the slide the
-    caption leaves free."""
+    """The image framed (rounded corners, thin outline) on a blurred and darkened copy of itself, in the largest band of
+    the slide the caption leaves free. An image taller than the band at the band's width, like a phone screenshot,
+    fills the width and keeps its top part (at least KEEP_MIN of its height), fading out at the bottom: an app screen's
+    important part is at the top, and shown whole it would be too small to read."""
     bg = cover(img, max(1, w // 10), max(1, h // 10)).filter(ImageFilter.GaussianBlur(4))
     slide = ImageEnhance.Brightness(bg.resize((w, h), Image.Resampling.BICUBIC)).enhance(0.45)
     top, bottom = round(0.04 * h), round(0.94 * h)
     if caption_band:
         gap = round(0.025 * h)
         top, bottom = max([(top, caption_band[0] - gap), (caption_band[1] + gap, bottom)], key=lambda b: b[1] - b[0])
-    box_w, box_h = round(0.86 * w), max(1, bottom - top)
+    line = max(1, round(0.003 * w))
+    box_w, box_h = round(0.86 * w) - 2 * line, max(1, bottom - top - 2 * line)
     scale = min(box_w / img.width, box_h / img.height)
+    if img.height * box_w / img.width > box_h:  # tall: as wide as KEEP_MIN allows, cropped at the bottom
+        scale = min(box_w / img.width, box_h / (KEEP_MIN * img.height))
     fg = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.Resampling.LANCZOS)
-    mask = Image.new("L", fg.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, fg.width - 1, fg.height - 1), round(0.035 * w), fill=255)
-    slide.paste(fg, ((w - fg.width) // 2, top + (box_h - fg.height) // 2), mask)
+    cropped = fg.height > box_h
+    if cropped:
+        fg = fg.crop((0, 0, fg.width, box_h))
+    framed = Image.new("RGB", (fg.width + 2 * line, fg.height + 2 * line), FRAME)
+    framed.paste(fg, (line, line))
+    mask = Image.new("L", framed.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, framed.width - 1, framed.height - 1), round(0.035 * w), fill=255)
+    if cropped:  # fade out where it's cut off
+        fade = max(1, round(FADE * framed.height))
+        ramp = Image.linear_gradient("L").transpose(Image.Transpose.FLIP_TOP_BOTTOM).resize((framed.width, fade))
+        zone = (0, framed.height - fade, framed.width, framed.height)
+        mask.paste(ImageChops.multiply(mask.crop(zone), ramp), zone[:2])
+    slide.paste(framed, ((w - framed.width) // 2, top + (bottom - top - framed.height) // 2), mask)
     return slide
 
 

@@ -615,7 +615,8 @@ async def video_render(slug: str, music_path: str | None = None, motion: str = "
     """Render the slideshow once every shot is picked: the MP4 (video/<slug>/<slug>.mp4, 1080×1920, 30 fps, each
     slide on screen for its duration_s), the captioned slides it's made of (video/<slug>/slides/01.png, …, also
     usable as a TikTok photo post), all of them side by side in video/<slug>/preview.png, and CREDITS.md. Stock
-    photos fill the slide; the run's own images (screenshots) are shown whole. Rendering again replaces them.
+    photos fill the slide; the run's own images (screenshots) are framed, and a tall phone screenshot shows its top
+    part, large enough to read. Rendering again replaces them.
 
     Args:
         slug: the storyboard, from video_new
@@ -632,7 +633,7 @@ async def video_render(slug: str, music_path: str | None = None, motion: str = "
     if open_shots:
         raise ToolError(f"pick every shot first: {', '.join(open_shots)} still open (video_find_shots, video_pick)")
     assets = _assets([s["pick"]["asset_id"] for s in board["shots"]])
-    # stock photos fill the slide; the run's own images (app screenshots) are shown whole
+    # stock photos fill the slide; the run's own images (app screenshots) are framed (media's contain())
     slides = [{"image": s["pick"]["path"], "caption": s["caption"], "caption_position": s["caption_position"],
                "fit": "cover" if getattr(assets.get(s["pick"]["asset_id"]), "source", "") in STOCK else "contain"}
               for s in board["shots"]]
