@@ -157,6 +157,12 @@ CATALOG: list[Integration] = [
       browser_note="Needs an API key: the human makes one at https://elevenlabs.io/app/settings/api-keys (the free "
                    "plan works for trying it; commercial use needs a paid plan). Ask for it with "
                    "ask_human(..., secret_name=\"ELEVENLABS_API_KEY\")."),
+    I("higgsfield", "Higgsfield", ["ai video", "video generation", "image to video"], toolset="shorts",
+      api_docs="https://docs.higgsfield.ai/", api_secrets=["HIGGSFIELD_API_KEY", "HIGGSFIELD_API_SECRET"],
+      browser_note="Needs an API key id and secret from the human's Higgsfield account (pay as you go from a prepaid "
+                   "balance). Ask for each with ask_human(..., secret_name=\"HIGGSFIELD_API_KEY\") and "
+                   "secret_name=\"HIGGSFIELD_API_SECRET\". Generating the AI shots of an approved scaffold isn't "
+                   "built yet: until then, plan with short_plan, which lists each shot and its price."),
     I("openai", "OpenAI", [], api_docs="https://platform.openai.com/docs/api-reference", api_secrets=["OPENAI_API_KEY"]),
     I("anthropic", "Anthropic", ["claude"], api_docs="https://docs.claude.com/en/api/overview",
       api_secrets=["ANTHROPIC_API_KEY"]),
