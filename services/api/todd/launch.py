@@ -21,6 +21,7 @@ import logging
 import re
 from typing import Any
 
+from . import goal
 from .runtime import RunContext
 
 log = logging.getLogger("todd.launch")
@@ -34,8 +35,9 @@ _MAKE = re.compile(r"\b(build|make|create|develop|code|ship|launch|set up|start|
 
 
 def shippable(prompt: str) -> bool:
-    """Whether the goal makes something that will live online (a site or web app)."""
-    return bool(_WEB.search(prompt or "") and _MAKE.search(prompt or ""))
+    """Whether the goal makes something that will live online (a site or web app). Content about a site that already
+    exists (a TikTok for it, posts) doesn't: nothing new goes online."""
+    return bool(_WEB.search(prompt or "") and _MAKE.search(prompt or "")) and not goal.content_only(prompt)
 
 
 def parse(answer: str | None) -> dict[str, str]:

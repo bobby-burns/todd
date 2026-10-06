@@ -24,6 +24,12 @@ def test_which_goals_get_a_launch_plan():
     assert launch.shippable("build a landing page for my bakery")
     assert not launch.shippable("explain how transformers work")
     assert not launch.shippable("summarize my site's analytics report")  # nothing to make
+    # content about something that already exists: nothing new goes online, so no hosting question
+    assert not launch.shippable("Make 3 TikToks for my quiz site https://aiml-daily-quiz.vercel.app")
+    assert not launch.shippable("Make shorts for my existing web app, the repo is github.com/me/quiz")
+    assert not launch.shippable("Create a promo video for our landing page")
+    assert launch.shippable("Build a landing page and a promo video for it")
+    assert launch.shippable("Make me a new website with a blog, and write the first posts")
 
 
 def test_parse_the_answer():

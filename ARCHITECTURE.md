@@ -39,7 +39,7 @@ tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), s
                    Pexels and the run's own images) ranked with the picked shots in view, pick, render slides + MP4
 tools/shorts.py    `shorts` toolset: record the product → script (hooks + beats) → voiceover take (free local voice or
                    ElevenLabs) → timing plan → scaffold / final cut
-screencast.py      Todd films its own product: a 9:16 tab in the agents' browser, scripted steps, CDP screencast
+screencast.py      Todd films its own product: a 9:16 tab (fresh, signed out by default), scripted steps, CDP screencast
 tools/trends.py    `trends` toolset: trend_scan (outliers by reach), trend_analyze (transcript + frames), format cards
 tools/apify.py     Apify client: run an actor, read its dataset, fetch its stored files (token only to api.apify.com)
 shorts_plan.py     The timing plan, pure: the take's character timestamps decide every cut, caption, hold, synced
@@ -48,9 +48,10 @@ tools/elevenlabs.py ElevenLabs client: text to speech with character timestamps 
 tools/media.py     Client for the media container (embeddings, fetch, slides, slideshow and timeline renders, files)
 media_index.py     Nearest-neighbour search over MediaAsset embeddings: pgvector when the DB has it, else Python
 integrations.py    API-first routing catalog (~27 services) + find_integrations (every agent and the planner)
-tools/human.py     ask_human, request_approval, authorize_purchase (every agent)
+tools/human.py     ask_human, request_approval, authorize_purchase (every agent); secret_or_ask for tools
 gates.py           what needs a person, checked in code: purchases, card entry, public actions, going live, public repos
 launch.py          the launch plan: asked at the start of a website run (address, repo visibility, going live)
+goal.py            what kind of goal a prompt is: building a site or app, or content about one that exists
 readiness.py       the "Ready for real visitors?" checklist, read from a finished run's project files
 accounts.py        Account catalog (~70 services), status detection, sign in/out, `accounts` toolset
 cdp.py             Minimal CDP client: cookies, open tab, sign out, probe a page

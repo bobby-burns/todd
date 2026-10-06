@@ -28,10 +28,10 @@ from typing import Any
 
 from .. import screencast
 from .. import shorts_plan as sp
-from .. import vault
 from ..policy import SpendDenied, authorize_spend, settle
 from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 from . import elevenlabs, media, sandbox
+from .human import secret_or_ask
 from .sandbox_tools import _abs, _root
 from .video import IMAGE_EXT, _rel, _slugify
 
@@ -286,11 +286,8 @@ def _take_stale(script: dict[str, Any], hook: str, take: dict[str, Any]) -> bool
 
 
 # ------------------------------------------------------------------------------------------ the voice
-def _key() -> str:
-    key = vault.get_secret("ELEVENLABS_API_KEY")
-    if not key:
-        raise ToolError(elevenlabs.NO_KEY)
-    return key
+async def _key() -> str:
+    return await secret_or_ask("ELEVENLABS_API_KEY", elevenlabs.ASK_KEY)
 
 
 @todd_tool(toolset="shorts")
@@ -300,7 +297,7 @@ async def short_voices(search: str | None = None) -> dict:
     Args:
         search: words to match against name, description and labels, e.g. "young male casual"
     """
-    vs = await elevenlabs.voices(_key(), search)
+    vs = await elevenlabs.voices(await _key(), search)
     return {"voices": vs[:25], "count": len(vs)}
 
 
@@ -329,7 +326,7 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, provider: s
         raise ToolError(f"no hook {', '.join(unknown)}: hooks are {', '.join(ids)}")
     if provider == "local":
         return await _voice_local(slug, todo)
-    key = _key()
+    key = await _key()
     voice = voice_id or (script.get("voice") or {}).get("voice_id")
     if not voice:
         premade = [v for v in await elevenlabs.voices(key) if v.get("category") == "premade"]
@@ -488,11 +485,17 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
 
 @todd_tool(toolset="shorts")
 async def short_record(name: str, url: str, steps: list[dict], device: str = "phone",
-                       start_at: str | None = None) -> dict:
-    """Film the product in the agents' browser. Todd built it, so record its real pages (the live site, or the local
-    preview at http://localhost:PORT) and its real flows: opens `url` in a phone-sized 9:16 tab (or "desktop"), runs the
-    steps, and saves video/recordings/<name>.mp4 plus the time of every step, so a shot can land a moment on a spoken
-    word (shot.sync.at_s). Taps never buy, post, send, delete or approve; recordings never sign in or submit forms.
+                       start_at: str | None = None, signed_in: bool = False) -> dict:
+    """Film the product in the agents' browser. Todd built it, so record its real pages (the live site, or a local
+    copy running in the sandbox at http://localhost:PORT) and its real flows: opens `url` in a phone-sized 9:16 tab
+    (or "desktop"), runs the steps, and saves video/recordings/<name>.mp4 plus the time of every step, so a shot can
+    land a moment on a spoken word (shot.sync.at_s). Rendering happens in Todd's media service: no ffmpeg or browser
+    of your own is needed.
+
+    It films in a fresh browser with nobody signed in, so it can do what any visitor does: tap answers, search, type
+    into a demo form and submit it. It never pays, buys, subscribes, deletes, deploys or publishes, and never types a
+    password. signed_in=true films pages behind the human's sign-in instead; then it only reads and makes safe taps
+    (nothing that posts, sends or approves, no form submits), because there it would act as the human.
 
     Args:
         name: a short name for the recording, e.g. "week-view"
@@ -503,6 +506,7 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
         device: "phone" (1080×1920) or "desktop" (1440×810)
         start_at: visible text to bring to the top of the screen before filming starts, so the recording opens on
             the right part of the page (e.g. "Card checkouts")
+        signed_in: film with the human's sign-ins (only for pages that need them)
     """
     if not NAME.fullmatch(name or ""):
         raise ToolError("name is lowercase letters, digits and dashes, e.g. \"week-view\"")
@@ -516,7 +520,7 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     lock = ctx.browser_lock
     await lock.acquire(holder)
     try:
-        rec = await screencast.record(url, steps, device, start_at=start_at)
+        rec = await screencast.record(url, steps, device, start_at=start_at, signed_in=bool(signed_in))
     except screencast.RecordError as e:
         raise ToolError(f"recording {name} stopped: {e}") from e
     finally:
@@ -525,7 +529,8 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     out = f"video/recordings/{name}.mp4"
     await media.cast_upload(ctx.run_id, session, [f for _, f in rec["frames"]])
     r = await media.cast_assemble(ctx.run_id, session, [t for t, _ in rec["frames"]], rec["duration_s"], out)
-    meta = {"url": url, "device": device, "start_at": start_at, "steps": steps, "marks": rec["marks"],
+    meta = {"url": url, "device": device, "start_at": start_at, "signed_in": bool(signed_in), "steps": steps,
+            "marks": rec["marks"],
             "duration_s": r["duration_s"],
             "frames": len(rec["frames"]), "width": rec["width"], "height": rec["height"]}
     await _write_json(f"video/recordings/{name}.json", meta)

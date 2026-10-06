@@ -5,9 +5,12 @@ A phone-sized tab (414×736 CSS px at 2.6×, so frames are exactly 1080×1920) o
 simple steps, captured with CDP screencast. Every frame and every step has a timestamp, so a shot can land a moment of
 the recording on a spoken word (shorts_plan: `sync.at_s`).
 
-Recording reads pages freely, but acts carefully: taps and typing only on the product's own pages, never on social
-sites or payment pages, never on a button that buys, posts, sends, deletes or approves, never into a password field,
-and never a form submit. A recording is for showing the product, not for doing things with the human's accounts.
+A recording runs in a fresh browser context by default: nobody is signed in, so it acts on the product like any
+first-time visitor would (answers a quiz, searches, fills a demo form and submits it). It still never pays, buys,
+subscribes, deletes, deploys or publishes, never types into a password field, and never acts on social or payment
+sites. `signed_in=True` films pages behind the human's sign-in instead (the agents' own browser context), and then it
+only reads and makes safe taps: nothing that posts, sends, approves, and no form submits, since there it would act as
+the human.
 """
 
 from __future__ import annotations
@@ -37,6 +40,11 @@ MAX_STEPS = 40
 RISKY = re.compile(r"\b(buy|pay|purchase|checkout|check out|order|subscribe|upgrade|post|publish|tweet|send|share|"
                    r"delete|remove|approve|confirm|submit|donate|deploy|launch|go live|unsubscribe|cancel plan)\b",
                    re.I)
+# A visitor with no account can still spend money or change something for real: short command labels that do are
+# never pressed, signed in or not. (Only short labels: a quiz answer that mentions "publishing" is just text.)
+NEVER = re.compile(r"\b(buy|pay|payment|purchase|checkout|check out|place order|donate|subscribe|upgrade|delete|"
+                   r"unsubscribe|cancel (plan|subscription)|deploy|go live|publish)\b", re.I)
+COMMAND_WORDS = 6
 STEP_KEYS = ("wait", "scroll", "scroll_to", "tap", "type", "goto", "mark")
 
 FIND_JS = r"""(q, kind) => {
@@ -117,15 +125,21 @@ def check_steps(steps: Any) -> list[dict[str, Any]]:
     return out
 
 
-def may_act(url: str, label: str = "", kind: str = "") -> str | None:
-    """Why a tap or typing must not happen in a recording, or None."""
+def may_act(url: str, label: str = "", kind: str = "", signed_in: bool = False) -> str | None:
+    """Why a tap or typing must not happen in a recording, or None. Signed out (the default), a recording acts like
+    any visitor; signed in, it would act as the human, so it only makes safe taps."""
     host = host_of(url)
     if not is_local(host) and (is_public_site(host) or is_payment_host(host)):
-        return f"{host} acts for the human (posts, payments): a recording only reads it"
-    if RISKY.search(label or ""):
-        return f"\"{label}\" looks like it buys, posts, sends, deletes or approves something: recordings don't press it"
-    if kind == "submit":
-        return "recordings don't submit forms"
+        return f"{host} is a social or payment site: a recording only reads it"
+    label = " ".join((label or "").split())
+    if len(label.split()) <= COMMAND_WORDS and NEVER.search(label):
+        return f"\"{label}\" looks like it spends money, deletes or publishes something: recordings never press it"
+    if signed_in:
+        if RISKY.search(label):
+            return (f"\"{label}\" looks like it posts, sends or approves something as the human: a signed-in "
+                    "recording doesn't press it (record signed out to act like a visitor)")
+        if kind == "submit":
+            return "a signed-in recording doesn't submit forms (record signed out to act like a visitor)"
     return None
 
 
@@ -231,7 +245,7 @@ async def _tap(tab: _Tab, x: float, y: float, mobile: bool) -> None:
                                                         "clickCount": 1})
 
 
-async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any]) -> str:
+async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any], signed_in: bool = False) -> str:
     key = next(k for k in st if k in STEP_KEYS)
     val = st[key]
     if key == "wait":
@@ -257,7 +271,7 @@ async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any]) -> str:
         return f"scroll to {val!r}"
     if key == "tap":
         el = await _find(tab, val, "control")
-        why = may_act(await _current_url(tab), el.get("label", ""), el.get("type", ""))
+        why = may_act(await _current_url(tab), el.get("label", ""), el.get("type", ""), signed_in)
         if why:
             raise RecordError(why)
         await _tap(tab, el["x"], el["y"], dev["mobile"])
@@ -267,7 +281,7 @@ async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any]) -> str:
         el = await _find(tab, st["into"], "field")
         if el.get("type") == "password":
             raise RecordError("recordings never type into password fields")
-        why = may_act(await _current_url(tab))
+        why = may_act(await _current_url(tab), signed_in=signed_in)
         if why:
             raise RecordError(why)
         await tab.js("() => document.querySelector('[data-todd-rec]').focus()")
@@ -279,10 +293,11 @@ async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any]) -> str:
 
 
 async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", max_s: float = MAX_S,
-                 start_at: str | None = None) -> dict[str, Any]:
+                 start_at: str | None = None, signed_in: bool = False) -> dict[str, Any]:
     """Record `url` while running `steps`. Returns {frames: [(t, jpeg)], marks: [{t, step}], duration_s, width,
     height}; t is seconds from the start of the recording. `start_at`: visible text to bring to the top of the screen
-    before filming starts (off camera). The caller holds the browser lock."""
+    before filming starts (off camera). `signed_in`: film in the agents' browser context, with the human's sign-ins,
+    instead of a fresh one. The caller holds the browser lock."""
     if device not in DEVICES:
         raise RecordError(f"device is one of {', '.join(DEVICES)}")
     if not url.startswith(("http://", "https://")):
@@ -291,10 +306,14 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", m
     dev = DEVICES[device]
     tab = _Tab()
     await tab.open()
-    target = None
+    target = context = None
     try:
-        target = (await tab.send("Target.createTarget", {"url": "about:blank", "newWindow": True},
-                                 page=False))["targetId"]
+        where: dict[str, Any] = {"url": "about:blank", "newWindow": True}
+        if not signed_in:  # a fresh context: no cookies or storage from the human's sessions
+            context = (await tab.send("Target.createBrowserContext", {"disposeOnDetach": True},
+                                      page=False))["browserContextId"]
+            where["browserContextId"] = context
+        target = (await tab.send("Target.createTarget", where, page=False))["targetId"]
         tab.sid = (await tab.send("Target.attachToTarget", {"targetId": target, "flatten": True},
                                   page=False))["sessionId"]
         for method, params in (
@@ -327,7 +346,7 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", m
                 marks.append({"t": round(time.time() - start, 3), "step": "stopped: max length reached"})
                 break
             t = time.time() - start
-            what = await _step(tab, st, dev)
+            what = await _step(tab, st, dev, signed_in)
             marks.append({"t": round(t, 3), "step": what})
         await asyncio.sleep(0.8)
         end = time.time()
@@ -342,6 +361,11 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", m
         if target:
             try:
                 await tab.send("Target.closeTarget", {"targetId": target}, page=False, timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        if context:
+            try:
+                await tab.send("Target.disposeBrowserContext", {"browserContextId": context}, page=False, timeout=5)
             except Exception:  # noqa: BLE001
                 pass
         await tab.close()

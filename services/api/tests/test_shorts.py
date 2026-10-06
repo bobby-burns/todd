@@ -184,13 +184,29 @@ def test_short_new_validates_and_writes_the_script(loop, studio):
     loop.run_until_complete(go())
 
 
-def test_voiceover_needs_a_key_then_voices_every_hook_for_one_charge(loop, studio):
+def test_voiceover_asks_for_its_key_then_voices_every_hook_for_one_charge(loop, studio, monkeypatch):
+    from todd.sdk import get_ctx
+    asked: list[tuple[str, dict]] = []
+
     async def go():
+        async def later(question, agent=None, data=None):
+            asked.append((question, data))
+            return "later"
+
+        async def paste(question, agent=None, data=None):  # the card saves the key straight to the vault
+            asked.append((question, data))
+            vault.set_secret(data["secret_name"], "el-test-key")
+            return ""
+
         slug = await make()
-        with pytest.raises(ToolError, match="elevenlabs.io/app/settings/api-keys"):
+        monkeypatch.setattr(get_ctx(), "ask_human", later)
+        with pytest.raises(ToolError, match="didn't add ELEVENLABS_API_KEY"):
             await shorts.short_voiceover.ainvoke({"slug": slug, "provider": "elevenlabs"})
-        vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
+        assert "elevenlabs.io/app/settings/api-keys" in asked[0][0]
+        assert asked[0][1] == {"secret_name": "ELEVENLABS_API_KEY"}
+        monkeypatch.setattr(get_ctx(), "ask_human", paste)
         r = await shorts.short_voiceover.ainvoke({"slug": slug, "provider": "elevenlabs"})
+        assert len(asked) == 2
         assert set(r["takes"]) == {"h1", "h2"} and r["voice_id"] == "v-brian"  # a premade voice by default
         assert [x["text"] for x in studio["spoken"]] == [
             "Every drop-in has the same five guys. Full pro gear. Hasn't scored since high school. "
@@ -277,7 +293,7 @@ def test_shorts_toolset_and_elevenlabs_routing(loop):
         vault.delete_secret("ELEVENLABS_API_KEY")
 
 
-def test_recording_steps_are_checked_and_never_act_for_the_human():
+def test_recording_steps_are_checked_and_act_like_a_visitor_never_as_the_human():
     ok = screencast.check_steps([{"wait": 1}, {"scroll": 600}, {"scroll": "bottom"}, {"scroll_to": "Saturday"},
                                  {"tap": "Games"}, {"type": "Thursday skate", "into": "Title"}, {"mark": "typed"},
                                  {"goto": "https://example.com/x"}])
@@ -286,22 +302,32 @@ def test_recording_steps_are_checked_and_never_act_for_the_human():
                 [{"tap": "a", "wait": 1}], [{"wait": 1}] * 41, "tap Games"):
         with pytest.raises(screencast.RecordError):
             screencast.check_steps(bad)
-    assert screencast.may_act("https://dropin-hockey.vercel.app/", "Games") is None
+    site = "https://dropin-hockey.vercel.app/"
+    assert screencast.may_act(site, "Games") is None
     assert screencast.may_act("http://localhost:3000/", "Organize a game") is None
-    assert "only reads it" in screencast.may_act("https://x.com/compose", "Next")
-    assert "only reads it" in screencast.may_act("https://checkout.stripe.com/pay", "Continue")
-    for label in ("Buy now", "Post", "Delete account", "Approve", "Subscribe", "Publish"):
-        assert "recordings don't press it" in screencast.may_act("https://dropin-hockey.vercel.app/", label)
-    assert "submit" in screencast.may_act("https://dropin-hockey.vercel.app/", "Save", "submit")
+    for signed_in in (False, True):
+        assert "only reads it" in screencast.may_act("https://x.com/compose", "Next", signed_in=signed_in)
+        assert "only reads it" in screencast.may_act("https://checkout.stripe.com/pay", "Continue", signed_in=signed_in)
+        for label in ("Buy now", "Delete account", "Subscribe", "Publish", "Pay $12", "Deploy"):
+            assert "never press it" in screencast.may_act(site, label, signed_in=signed_in)
+    # Signed out it acts like any visitor: quiz answers with any words in them, submitting, sending a demo form
+    for label in ("Submit answer", "Confirm", "Share your score", "Send", "Post",
+                  "Dropout removes random neurons", "It publishes the gradients to every worker at once"):
+        assert screencast.may_act("https://aiml-daily-quiz.vercel.app/", label) is None, label
+    assert screencast.may_act(site, "Save", "submit") is None
+    # Signed in it would act as the human: nothing that posts, sends or approves, and no submits
+    for label in ("Post", "Approve", "Send", "Confirm"):
+        assert "signed-in recording" in screencast.may_act(site, label, signed_in=True)
+    assert "submit" in screencast.may_act(site, "Save", "submit", signed_in=True)
 
 
 def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypatch):
     m = studio["media"]
     seen = {}
 
-    async def record(url, steps, device="phone", max_s=45, start_at=None):
+    async def record(url, steps, device="phone", max_s=45, start_at=None, signed_in=False):
         seen["locked"] = studio_lock().locked()
-        seen["start_at"] = start_at
+        seen["start_at"], seen["signed_in"] = start_at, signed_in
         frames = [(round(k * 0.05, 3), b"\xff\xd8 jpeg %d" % k) for k in range(90)]
         return {"frames": frames, "marks": [{"t": 0.0, "step": f"open {url}"}, {"t": 1.2, "step": "tap 'Games'"}],
                 "duration_s": 4.6, "width": 1080, "height": 1920}
@@ -314,7 +340,7 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         studio["ctx_lock"] = get_ctx().browser_lock
         r = await shorts.short_record.ainvoke({"name": "week-view", "url": "https://dropin-hockey.vercel.app/",
                                                "steps": [{"wait": 1}, {"tap": "Games"}], "start_at": "Today"})
-        assert seen["start_at"] == "Today"
+        assert seen["start_at"] == "Today" and seen["signed_in"] is False  # a fresh browser unless asked
         assert r["path"] == "video/recordings/week-view.mp4" and r["marks"][1] == {"t": 1.2, "step": "tap 'Games'"}
         assert seen["locked"] and not studio["ctx_lock"].locked()  # held while recording, released after
         puts = [b for p, b in m.calls if p == "/screencast/put"]
@@ -323,11 +349,12 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         assert asm["times"][:3] == [0.0, 0.05, 0.1] and asm["end_s"] == 4.6 and asm["session"] == puts[0]["session"]
         meta = json.loads((studio["dir"] / "video" / "recordings" / "week-view.json").read_text())
         assert meta["marks"][1]["t"] == 1.2 and meta["device"] == "phone" and meta["frames"] == 90
+        assert meta["signed_in"] is False
         for bad, msg in (({"name": "Week View"}, "lowercase"), ({"steps": [{"wait": 99}]}, "0–10 seconds")):
             with pytest.raises(ToolError, match=msg):
                 await shorts.short_record.ainvoke({"name": "x", "url": "https://a.b/", "steps": [], **bad})
 
-        async def refuse(url, steps, device="phone", max_s=45, start_at=None):
+        async def refuse(url, steps, device="phone", max_s=45, start_at=None, signed_in=False):
             raise screencast.RecordError('"Buy now" looks like it buys')
         monkeypatch.setattr(screencast, "record", refuse)
         with pytest.raises(ToolError, match="recording shop stopped: .*Buy now"):

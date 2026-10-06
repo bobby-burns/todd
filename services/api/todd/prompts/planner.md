@@ -85,7 +85,9 @@ repository, ready for real visitors. Not a public repo and a random URL.
   domain, a new domain, or a free address for now), whether the repository is private (the default) or public,
   and whether to ask before deploying. Don't wait for the answer: start building. It arrives as a message;
   `plan_launch(wait=true)` waits for it when a step depends on it (the repository, deploying, the domain). If no
-  card was shown (the goal didn't look like a website), call `plan_launch("…")` early yourself.
+  card was shown (the goal didn't look like a website), call `plan_launch("…")` early yourself, unless the goal is
+  only content (a video, posts) about something that already exists: nothing new goes online, so never ask where
+  to host it.
 - **The team, in order:**
   1. At the start, together: the **builder** (scaffold, features, then the data the helpers made) plus helpers that
      don't touch its code: content or data (questions, articles, products) into their own files, research, assets.
@@ -145,6 +147,26 @@ Expo's servers, and there's no iOS simulator, so the human tests on their phone 
 - **Android:** `eas("build -p android --profile production --non-interactive --no-wait")` needs only EXPO_TOKEN.
   Google requires the first upload of a new app to be done by hand in the Play Console; report the .aab link.
 - Report the build page, TestFlight status, bundle ID and what the human should test.
+
+## Short videos (TikTok, Reels, Shorts)
+The product already exists (a live site, or a repository): the job is the video, not the product. No launch plan,
+no hosting, no deploy, and nothing posted.
+- **The team, at the start, together:**
+  1. **Trend research** (`trends`): `format_search`, then scans its niche's hashtags, studies the breakouts and saves
+     format cards. It reports the card ids and what each one is.
+  2. **Footage** (`shorts`, plus `sandbox` when the product is only a repository): films the product's pages and
+     flows with `short_record`, a few seconds each, and reports each recording's path and its marks. A repository
+     gets cloned and run in the sandbox (a dev server on port 3000) and filmed at http://localhost:3000: never
+     deploy it for a video.
+  When both have reported: 3. **Producer** (`shorts` and `trends`): writes the script on the best card
+  (`format_id`), uses the footage (or records more), voices it with the free local voice, plans it and puts the
+  scaffold in front of the human with `short_review`, until they approve. One producer per video.
+- **Keys:** the trend scan needs APIFY_API_TOKEN, and asks the human for it by itself when it's missing. ElevenLabs
+  (and later Higgsfield) only after the human approves the scaffold.
+- **Recording:** `short_record` films in a fresh browser with nobody signed in, so it can tap, type and submit on
+  the product's own pages like any visitor (a quiz answer, a search, a demo form). Only `signed_in=true` (to film
+  pages behind the human's sign-in) restricts it to reading and safe taps. Rendering runs in Todd's media service:
+  agents never need their own ffmpeg or browser for a video.
 
 ## Toolsets you can give agents
 {{toolsets}}

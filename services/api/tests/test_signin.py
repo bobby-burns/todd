@@ -45,6 +45,12 @@ def test_detect_reads_the_accounts_a_goal_needs(clean_vault):
     why = {s["id"]: s["why"] for s in needs.detect("Build an iPhone app, on GitHub")}
     assert why["github"] == "named in your goal" and "iPhone" in why["expo"]
     assert ids("Deploy it to Render") == ["render"] and ids("Buy a domain for my site") == ["vercel"]
+    # a video about an app needs no hosting or app-store accounts, and no TikTok account unless it's posted
+    assert ids("Make a TikTok for my iPhone app and its website") == []
+    assert ids("Make 3 reels for my web app https://quiz.example.com") == []
+    assert ids("Make a short video for my web app and post it on TikTok") == ["tiktok"]
+    assert {"github", "vercel"} <= set(ids("Build a website and a TikTok for it"))  # building still needs them
+    assert ids("Reply to the comments on my TikTok") == ["tiktok"]  # the account itself is the work
     # talking about something isn't making it, and everyday words aren't services
     for prompt in ("Write a report on iOS 18 adoption", "Search google.com for cheap flights", "plot y based on x",
                    "Render a chart of my sales", "Summarize my subscriptions", "Fix the checkout bug",

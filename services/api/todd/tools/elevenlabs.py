@@ -17,10 +17,9 @@ API = "https://api.elevenlabs.io"
 MODELS = {"eleven_multilingual_v2": 0.08, "eleven_v3": 0.08, "eleven_turbo_v2_5": 0.04, "eleven_flash_v2_5": 0.04}
 DEFAULT_MODEL = "eleven_multilingual_v2"
 DEFAULT_SETTINGS = {"stability": 0.45, "similarity_boost": 0.8, "style": 0.2, "speed": 1.0, "use_speaker_boost": True}
-NO_KEY = ("ELEVENLABS_API_KEY isn't in the vault. The human can make one at "
-          "https://elevenlabs.io/app/settings/api-keys (the free plan is enough to try it; commercial use needs a paid "
-          "plan). Ask for it with "
-          "ask_human(..., secret_name=\"ELEVENLABS_API_KEY\").")
+ASK_KEY = ("Todd needs an ElevenLabs API key for the final voiceover (about 2¢ per take). Make one at "
+           "https://elevenlabs.io/app/settings/api-keys (with Text to Speech and Voices access; the free plan is enough "
+           "to try it, commercial use needs a paid plan) and paste it here: it goes straight into Todd's vault.")
 
 
 def cost_usd(chars: int, model: str) -> float:

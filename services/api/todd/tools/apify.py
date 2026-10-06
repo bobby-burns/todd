@@ -20,8 +20,10 @@ TIKTOK = "clockworks~tiktok-scraper"
 PRICES: dict[str, dict[str, float]] = {
     TIKTOK: {"actor-start": 0.001, "result": 0.0037, "video-download": 0.0013},
 }
-NO_KEY = ("APIFY_API_TOKEN isn't in the vault. The human finds it at https://console.apify.com/settings/integrations "
-          "(the free plan includes $5 a month). Ask for it with ask_human(..., secret_name=\"APIFY_API_TOKEN\").")
+ASK_KEY = ("Todd needs your Apify API token to find what's trending in this niche (a scan costs about $0.05–0.25; "
+           "Apify's free plan includes $5 a month). Sign in at https://console.apify.com, copy the token from "
+           "Settings → API & Integrations (https://console.apify.com/settings/integrations) and paste it here: it "
+           "goes straight into Todd's vault.")
 DONE = ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT")
 
 

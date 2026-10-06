@@ -38,9 +38,18 @@ changes).
 - **Todd films its own products:** `short_record` opens a 9:16 phone tab (or a desktop one) in the agents' browser,
   runs simple steps (wait, scroll, scroll to, tap, type, go to, mark) with real touch gestures, and saves a 30 fps
   recording with the time of every step, so a shot can land a recorded moment on a spoken word. Todd built the
-  product, so it records the real pages and flows (live site or local preview). Recordings only read: no taps on
-  social or payment sites or on buttons that buy, post, send, delete or approve, no typing into password fields, no
-  form submits. The media service assembles the frames (`/screencast/put`, `/screencast/assemble`).
+  product, so it records the real pages and flows (the live site, or a repository running in the sandbox, filmed at
+  `http://localhost:PORT`). A recording runs in a fresh browser with nobody signed in, so it goes through a flow like
+  any visitor (answers a quiz, submits a demo form); it never pays, subscribes, deletes, deploys or publishes, never
+  types a password, and never acts on social or payment sites. `signed_in=true` films pages behind the human's
+  sign-in, and then only reads and makes safe taps. The media service assembles the frames (`/screencast/put`,
+  `/screencast/assemble`).
+- **Tools ask for their own keys:** a trend scan without `APIFY_API_TOKEN`, or an ElevenLabs voiceover without
+  `ELEVENLABS_API_KEY`, shows the human a card with a password field (where to find the key, what it costs) and
+  carries on once it's saved, instead of failing and relying on the agent to ask; calls side by side share one card.
+- **Short videos in the planner:** a video goal gets trend research and product footage as two agents side by side,
+  then one producer per video for the script and the scaffold review; a product that's only a repository is run in
+  the sandbox and filmed on localhost, never deployed for a video. The sandbox image now includes ffmpeg.
 - **A free scaffold:** `short_voiceover` uses a local voice by default (Piper, timed by a local faster-whisper
   recogniser; caption words come from the script, only the times from what was heard), so a whole scaffold (voice,
   captions, Todd's recordings, priced AI placeholders) costs nothing. ElevenLabs (`provider="elevenlabs"`) is the final
@@ -156,6 +165,10 @@ changes).
   rows that need you have an **Open browser** button.
 
 ### Changed
+
+- **Content goals skip the website checks:** a goal that makes content (a TikTok, reels, posts) about something that
+  already exists no longer gets the launch plan card (where to host it), the GitHub/Vercel or app-store sign-ins, or a
+  social sign-in unless it asks to post there (`goal.py`).
 
 - The sandbox's `agent` user now has an explicit uid (1001, the same it had), which the `media` container shares so
   both can write run folders.

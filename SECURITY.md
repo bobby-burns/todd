@@ -134,9 +134,14 @@ held back only by the agents' instructions. Now (`todd/gates.py`):
 - **Trend data stays analysis:** the Apify token is only sent to api.apify.com (results that point elsewhere are
   never fetched with it); reference videos are downloaded only to take frames and are deleted right after, and
   nothing from them is republished.
-- **Recordings only read** (`short_record`, the shorts toolset filming a product in the agents' browser, which is
-  signed in to the human's accounts): no taps on social or payment sites, none on buttons that buy, post, send,
-  delete or approve, no typing into password fields and no form submits; it holds the browser lock while it records.
+- **Recordings act like a visitor, never as the human** (`short_record`, the shorts toolset filming a product): by
+  default a recording runs in a fresh browser context with no cookies or storage from the human's sign-ins, disposed
+  when it ends, so it can tap, type and submit on the product's own pages (a quiz answer, a demo form) as any
+  first-time visitor could. Signed in or not, it never acts on social or payment sites, never presses a short command
+  that buys, pays, subscribes, deletes, deploys or publishes, and never types into a password field. Only
+  `signed_in=true` films in the agents' context with the human's sessions, and then it only reads and makes safe
+  taps: nothing that posts, sends, confirms or approves, and no form submits. It holds the browser lock while it
+  records.
 - **One browser, one driver.** The browser lock covers every run and the Accounts page's CLI sign-ins, not just
   one run.
 

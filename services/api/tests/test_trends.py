@@ -3,6 +3,7 @@ sandbox server on a temp folder, a fake media service and a fake Apify: no netwo
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import json
@@ -119,11 +120,34 @@ def ledger(run_id: str) -> list[LedgerEntry]:
         return s.exec(select(LedgerEntry).where(LedgerEntry.run_id == run_id)).all()
 
 
-def test_scan_ranks_breakouts_and_keeps_everything(loop, lab):
+def test_scan_ranks_breakouts_and_keeps_everything(loop, lab, monkeypatch):
+    from todd.sdk import get_ctx
+    asked: list[tuple[str, dict]] = []
+
     async def go():
-        with pytest.raises(ToolError, match="console.apify.com"):
-            await trends.trend_scan.ainvoke({"hashtags": ["beerleaguehockey"]})
-        vault.set_secret("APIFY_API_TOKEN", "apify-test-token")
+        async def later(question, agent=None, data=None):
+            asked.append((question, data))
+            await asyncio.sleep(0.05)
+            return "later"
+
+        monkeypatch.setattr(get_ctx(), "ask_human", later)
+        # the scan asks for its own key (side-by-side scans share one card)
+        for res in await asyncio.gather(*[trends.trend_scan.ainvoke({"hashtags": ["beerleaguehockey"]})
+                                          for _ in range(2)], return_exceptions=True):
+            assert isinstance(res, ToolError) and "didn't add APIFY_API_TOKEN" in str(res)
+        assert len(asked) == 2 and asked[0][1] == {"secret_name": "APIFY_API_TOKEN"}  # one at a time, not two at once
+        assert "console.apify.com/settings/integrations" in asked[0][0]
+
+        async def paste(question, agent=None, data=None):
+            asked.append((question, data))
+            await asyncio.sleep(0.05)
+            vault.set_secret(data["secret_name"], "apify-test-token")
+            return ""
+
+        asked.clear()
+        monkeypatch.setattr(get_ctx(), "ask_human", paste)
+        assert await asyncio.gather(trends._key(), trends._key()) == ["apify-test-token"] * 2
+        assert len(asked) == 1  # one card, and both went ahead with the key it saved
         for bad in ([], ["#ok", "not ok"], [f"t{i}" for i in range(9)]):
             with pytest.raises(ToolError, match="hashtags"):
                 await trends.trend_scan.ainvoke({"hashtags": bad})

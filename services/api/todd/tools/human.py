@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
-from ..sdk import get_agent_id, get_ctx, todd_tool
+import asyncio
+
+from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
+
+_asking: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+async def secret_or_ask(name: str, question: str) -> str:
+    """The vault secret `name` for a tool that needs it. When it's missing the tool asks the human itself, on a card
+    with a password field that saves straight to the vault, and carries on once it's there (the agent doesn't have to
+    know to ask). Calls running side by side share one card."""
+    from .. import vault
+
+    ctx = get_ctx()
+    async with _asking.setdefault((ctx.run_id, name), asyncio.Lock()):
+        key = vault.get_secret(name)
+        if key:
+            return key
+        answer = await ctx.ask_human(question, agent=get_agent_id(), data={"secret_name": name})
+        key = vault.get_secret(name)
+    if not key:
+        raise ToolError(f"The human didn't add {name} ({answer or 'no answer'}). Carry on without it if the work "
+                        "allows, and say what it would add.")
+    return key
 
 
 @todd_tool
@@ -80,7 +103,8 @@ async def plan_launch(what: str = "", wait: bool = False) -> str:
     """The human's launch plan for something that will be online: where it lives (their own domain, a new domain,
     or a free address), whether the GitHub repository is private or public, and whether to ask them before it goes
     live. For a website goal Todd shows this card when the run starts; call this to read the answer, or to ask if
-    nobody has yet. Don't hold up building for it: it's needed at the repository, deploy and domain steps.
+    nobody has yet. Don't hold up building for it: it's needed at the repository, deploy and domain steps. Not for
+    content (a video, posts) about something that already exists: nothing new goes online.
 
     Args:
         what: what's being launched, in a few words (e.g. "your AI quiz site"), used on the card if it's asked now

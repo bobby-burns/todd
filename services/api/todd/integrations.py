@@ -149,14 +149,15 @@ CATALOG: list[Integration] = [
                    "(sources=[\"workspace\"])."),
     I("apify", "Apify", ["tiktok trends", "trending videos", "viral videos"], toolset="trends",
       api_docs="https://docs.apify.com/api/v2", api_secrets=["APIFY_API_TOKEN"],
-      browser_note="Needs an API token: the human finds it at https://console.apify.com/settings/integrations (the "
-                   "free plan includes $5 a month). Ask for it with ask_human(..., secret_name=\"APIFY_API_TOKEN\")."),
+      browser_note="Needs an API token (the free plan includes $5 a month): trend_scan asks the human for it by "
+                   "itself when it's missing, so just give the agent the trends toolset. The token is at "
+                   "https://console.apify.com/settings/integrations."),
     I("elevenlabs", "ElevenLabs", ["voiceover", "voice over", "text to speech", "tts"], toolset="shorts",
       api_docs="https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps",
       api_secrets=["ELEVENLABS_API_KEY"],
-      browser_note="Needs an API key: the human makes one at https://elevenlabs.io/app/settings/api-keys (the free "
-                   "plan works for trying it; commercial use needs a paid plan). Ask for it with "
-                   "ask_human(..., secret_name=\"ELEVENLABS_API_KEY\")."),
+      browser_note="Needs an API key (the free plan works for trying it; commercial use needs a paid plan): "
+                   "short_voiceover(provider=\"elevenlabs\") asks the human for it by itself when it's missing. Keys "
+                   "are made at https://elevenlabs.io/app/settings/api-keys."),
     I("higgsfield", "Higgsfield", ["ai video", "video generation", "image to video"], toolset="shorts",
       api_docs="https://docs.higgsfield.ai/", api_secrets=["HIGGSFIELD_API_KEY", "HIGGSFIELD_API_SECRET"],
       browser_note="Needs an API key id and secret from the human's Higgsfield account (pay as you go from a prepaid "

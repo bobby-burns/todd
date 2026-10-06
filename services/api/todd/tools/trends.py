@@ -19,11 +19,11 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .. import vault
 from ..db import FormatCard, select, session, utcnow
 from ..policy import SpendDenied, authorize_spend, settle
 from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 from . import apify, media, sandbox
+from .human import secret_or_ask
 from .shorts import _read_json, _write_json
 from .sandbox_tools import _root
 from .video import _slugify
@@ -33,11 +33,8 @@ MAX_TAGS, MAX_PER_TAG, MAX_ANALYZE = 8, 30, 6
 REACH_FLOOR = 100  # followers counted for tiny accounts, so a 50-follower fluke doesn't top the list
 
 
-def _key() -> str:
-    key = vault.get_secret("APIFY_API_TOKEN")
-    if not key:
-        raise ToolError(apify.NO_KEY)
-    return key
+async def _key() -> str:
+    return await secret_or_ask("APIFY_API_TOKEN", apify.ASK_KEY)
 
 
 def _emit(text: str, data: dict[str, Any]) -> None:
@@ -106,7 +103,7 @@ async def trend_scan(hashtags: list[str], per_tag: int = 15, days: int = 120, mi
     if not 1 <= len(tags) <= MAX_TAGS or not all(TAG.fullmatch(t) for t in tags):
         raise ToolError(f"1–{MAX_TAGS} hashtags of letters, digits or _, without #")
     per_tag = max(5, min(int(per_tag), MAX_PER_TAG))
-    key = _key()
+    key = await _key()
     ctx = get_ctx()
     est = apify.estimate(apify.TIKTOK, len(tags) * per_tag)
     try:
@@ -181,7 +178,7 @@ async def trend_analyze(scan: str, ids: list[str], frames: bool = True) -> dict:
     ids = list(dict.fromkeys(str(i) for i in ids or []))
     if not 1 <= len(ids) <= MAX_ANALYZE or any(i not in by_id for i in ids):
         raise ToolError(f"1–{MAX_ANALYZE} ids from scan {scan}")
-    key = _key()
+    key = await _key()
     ctx = get_ctx()
     videos: dict[str, bytes] = {}
     if frames:

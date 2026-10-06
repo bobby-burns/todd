@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from . import accounts, vault
+from . import accounts, goal, vault
 
 # Other ways people refer to catalog services. Matched case-insensitively on word boundaries.
 ALIASES: dict[str, list[str]] = {
@@ -48,6 +48,7 @@ class Rule:
     why: str
     blurb: str  # the sign-in card's "why these accounts", in the human's terms
     needs_make: bool = True  # only when the goal is to make or ship something
+    for_content: bool = False  # also when the goal is only content (a video, posts) about something that exists
 
 
 # What the work implies only counts when the goal is to make or ship something ("write a report on iOS 18" isn't).
@@ -66,12 +67,12 @@ RULES: list[Rule] = [
          ("github", "vercel"), "code and hosting for the site",
          "You're making a website, so Todd needs somewhere to keep the code and to put the site online."),
     Rule(r"\b(buy|register|purchase)\b[^.\n]{0,40}\bdomain\b", ("vercel",), "buying the domain",
-         "You want a domain, so Todd needs an account to buy it through.", needs_make=False),
+         "You want a domain, so Todd needs an account to buy it through.", needs_make=False, for_content=True),
     Rule(r"\b(takes?|taking|accepts?|accepting|collects?|collecting) (payments?|money)|\b(paid subscriptions?|paywall|charge (users|customers))\b|"
          r"\bsubscriptions? (with|through|via) stripe\b", ("stripe",), "payments",
          "Your goal takes payments, so Todd needs a payments account to set them up."),
     Rule(r"\b(launch (post|thread|tweet)|tweet|post (it )?on x)\b", ("x",), "posting the launch",
-         "Your goal includes a launch post, so Todd needs the account to post it from."),
+         "Your goal includes a launch post, so Todd needs the account to post it from.", for_content=True),
 ]
 NAMED = "named in your goal"
 
@@ -151,8 +152,10 @@ def detect(prompt: str, skip_usable: bool = True) -> list[dict[str, str]]:
     cat = accounts.catalog()
     found: dict[str, str] = {}
     named_hosts: set[str] = set()
+    # A TikTok for an existing app needs no hosting or app-store accounts, and no TikTok account unless it's posted.
+    content = goal.content_only(prompt)
     for sid, svc in cat.items():
-        if svc.custom:
+        if svc.custom or (content and svc.category == "Social" and not goal.wants_posting(prompt)):
             continue
         if any(_mentions(prompt, term, cs) for term, cs in _names(sid, svc)):
             found.setdefault(sid, NAMED)
@@ -160,6 +163,8 @@ def detect(prompt: str, skip_usable: bool = True) -> list[dict[str, str]]:
                 named_hosts.add(sid)
     making = MAKE.search(prompt) is not None
     for rule in RULES:
+        if content and not rule.for_content:
+            continue
         if (making or not rule.needs_make) and re.search(rule.pattern, prompt, re.IGNORECASE):
             for sid in rule.services:
                 if sid == "vercel" and named_hosts - {"vercel"}:
