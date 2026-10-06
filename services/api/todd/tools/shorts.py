@@ -450,8 +450,8 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
     warnings = list(p.report["warnings"])
     script = await _load(slug)
     if mode == "final" and (script.get("takes") or {}).get(hook, {}).get("provider") == "local":
-        warnings.append("this cut uses the free scaffold voice: for the final, short_voiceover(provider=\"elevenlabs\") "
-                        "and render again")
+        warnings.append("this cut uses the free scaffold voice: for the final, "
+                        "short_voiceover(provider=\"elevenlabs\") and render again")
     result = {"video": r["path"], "duration_s": r["duration_s"], "mode": mode, "warnings": warnings,
               "generate": p.generate, "generate_usd": sp.total_usd(p.generate)}
     _emit(f"Rendered {mode} {slug} {hook}: {r['duration_s']:g}s", {"slug": slug, "video": r["path"]})

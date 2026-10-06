@@ -1,4 +1,5 @@
-"""Recording the product in the agents' browser: Todd built it, so it knows the pages and the flows, and films them itself.
+"""Recording the product in the agents' browser: Todd built it, so it knows the pages and the flows, and films them
+itself.
 
 A phone-sized tab (414×736 CSS px at 2.6×, so frames are exactly 1080×1920) or a desktop one (1440×810), driven by
 simple steps, captured with CDP screencast. Every frame and every step has a timestamp, so a shot can land a moment of
@@ -34,7 +35,8 @@ PHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/
 MAX_S = 45
 MAX_STEPS = 40
 RISKY = re.compile(r"\b(buy|pay|purchase|checkout|check out|order|subscribe|upgrade|post|publish|tweet|send|share|"
-                   r"delete|remove|approve|confirm|submit|donate|deploy|launch|go live|unsubscribe|cancel plan)\b", re.I)
+                   r"delete|remove|approve|confirm|submit|donate|deploy|launch|go live|unsubscribe|cancel plan)\b",
+                   re.I)
 STEP_KEYS = ("wait", "scroll", "scroll_to", "tap", "type", "goto", "mark")
 
 FIND_JS = r"""(q, kind) => {

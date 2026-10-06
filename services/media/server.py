@@ -16,7 +16,8 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
   /render/timeline {run_id, out, fps, width, height, video, voice?, music?, captions, overlays}
                                                         -> {path, duration_s, frames, size_bytes}
   /screencast/put {run_id, session, frames: [{i, data_b64}]} -> {stored}   (JPEG frames of a browser recording)
-  /tts/local      {run_id, text, out, speed}            -> {path, duration_s, alignment, voice}  (the free scaffold voice)
+  /tts/local      {run_id, text, out, speed}            -> {path, duration_s, alignment, voice}
+                                                           (the free scaffold voice)
   /screencast/assemble {run_id, session, times, end_s, out, fps}            -> {path, duration_s, frames, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
 """
