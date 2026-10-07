@@ -24,6 +24,8 @@ import math
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from .. import screencast
@@ -80,6 +82,56 @@ async def _load(slug: str) -> dict[str, Any]:
 
 def _emit(text: str, data: dict[str, Any]) -> None:
     get_ctx().emit(get_agent_id(), "step", text, data)
+
+
+LOCK_WAIT_S = 180  # how long a recording waits for another agent to finish with the browser
+
+
+@asynccontextmanager
+async def _browser(what: str) -> AsyncIterator[None]:
+    """Hold the one agents' browser for a recording. An agent that already has it (its own browser_start session)
+    records straight away instead of waiting on itself; waiting on someone else is announced, and gives up after
+    LOCK_WAIT_S with who has it."""
+    ctx, agent = get_ctx(), get_agent_id()
+    lock, mine = ctx.browser_lock, f"{ctx.run_id}:{agent}"
+    if lock.locked() and lock.holder == mine:
+        yield
+        return
+    holder = f"{mine} {what}"
+    if lock.locked():
+        who = lock.holder or "someone"
+        who = (f"another agent in this run ({who.split(':', 1)[1]})" if who.startswith(f"{ctx.run_id}:")
+               else "another run")
+        _emit(f"Waiting for the browser ({who} is using it)…", {"waiting_for": lock.holder})
+        try:
+            await asyncio.wait_for(lock.acquire(holder), LOCK_WAIT_S)
+        except asyncio.TimeoutError:
+            raise ToolError(f"The browser has been busy for {LOCK_WAIT_S // 60} minutes ({who} is using it). Do "
+                            "the work that doesn't need it (script, voice, plan) and record after.") from None
+    else:
+        await lock.acquire(holder)
+    try:
+        yield
+    finally:
+        lock.release(holder)
+
+
+def _show(b64: str | None, mime: str = "image/png") -> None:
+    """Let the agent see an image with this tool's result (a contact sheet, a screenshot)."""
+    if b64:
+        get_ctx().push_image(get_agent_id(), b64, mime)
+
+
+async def _sheet(src: str, out: str, times: list[float], labels: list[str]) -> str | None:
+    """A labelled contact sheet of `src` at `times`, shown to the agent; its path, or None if it couldn't be made."""
+    pairs = sorted({round(t, 2): lab for t, lab in zip(times, labels)}.items())[:12]
+    try:
+        r = await media.call("/frames", {"run_id": get_ctx().run_id, "src": src, "out": out, "inline": True,
+                                         "times": [t for t, _ in pairs], "labels": [lab for _, lab in pairs]})
+    except ToolError:
+        return None
+    _show(r.get("png_b64"))
+    return r.get("sheet")
 
 
 # ------------------------------------------------------------------------------------------ the script
@@ -152,8 +204,7 @@ def _check_length(script: dict[str, Any]) -> list[str]:
     rules = sp.PLATFORMS[script["platform"]]
     if est > rules["max_s"]:
         raise ToolError(f"this script runs about {est:.0f}s; {script['platform']} allows {rules['max_s']}s")
-    lo, hi = rules["ideal_s"]
-    return [] if lo <= est <= hi else [f"about {est:.0f}s: outside the {lo}–{hi}s sweet spot"]
+    return sp.length_notes(est, rules, about="about ")
 
 
 @todd_tool(toolset="shorts")
@@ -478,7 +529,12 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
         warnings.append("this cut uses the free scaffold voice: for the final, "
                         "short_voiceover(provider=\"elevenlabs\") and render again")
     result = {"video": r["path"], "duration_s": r["duration_s"], "mode": mode, "warnings": warnings,
-              "generate": p.generate, "generate_usd": sp.total_usd(p.generate)}
+              "generate": p.generate, "generate_usd": sp.total_usd(p.generate),
+              "sheet": await _cut_sheet(r["path"], p.report),
+              "check": "look at the contact sheet (a frame from each beat). Would someone scrolling believe a person "
+                       "filmed and edited this on their phone? Real screens or footage full-frame, no designed "
+                       "backgrounds, mockups, logos or end cards, one short line of text, every beat showing what its "
+                       "line says. Fix what doesn't pass before short_review."}
     _emit(f"Rendered {mode} {slug} {hook}: {r['duration_s']:g}s", {"slug": slug, "video": r["path"]})
     return result
 
@@ -515,16 +571,14 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     except screencast.RecordError as e:
         raise ToolError(str(e)) from e
     ctx = get_ctx()
-    holder = f"{ctx.run_id}:{get_agent_id()} recording {name}"
     _emit(f"Recording {name}: {url}", {"url": url, "steps": len(steps)})
-    lock = ctx.browser_lock
-    await lock.acquire(holder)
-    try:
-        rec = await screencast.record(url, steps, device, start_at=start_at, signed_in=bool(signed_in))
-    except screencast.RecordError as e:
-        raise ToolError(f"recording {name} stopped: {e}") from e
-    finally:
-        lock.release(holder)
+    async with _browser(f"recording {name}"):
+        try:
+            rec = await screencast.record(url, steps, device, start_at=start_at, signed_in=bool(signed_in))
+        except screencast.RecordError as e:
+            _show(e.shot, "image/jpeg")  # the screen when it stopped
+            raise ToolError(f"recording {name} stopped: {e}\nFix the steps from this (or short_look the page) "
+                            "and record again.") from e
     session = uuid.uuid4().hex[:16]
     out = f"video/recordings/{name}.mp4"
     await media.cast_upload(ctx.run_id, session, [f for _, f in rec["frames"]])
@@ -535,9 +589,46 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
             "frames": len(rec["frames"]), "width": rec["width"], "height": rec["height"]}
     await _write_json(f"video/recordings/{name}.json", meta)
     _emit(f"Recorded {name}: {r['duration_s']:g}s", {"path": out, "marks": rec["marks"]})
-    return {"path": out, "duration_s": r["duration_s"], "marks": rec["marks"],
-            "next": f"use it as a shot: {{\"source\": \"screen\", \"path\": \"{out}\"}}, and land a moment on a "
-                    "word with \"sync\": {\"word\": …, \"at_s\": a mark's t}"}
+    # what it looks like at every step (just after each one, once it has happened on screen), for the agent to check
+    moments = [(min(m["t"] + 0.7, r["duration_s"]), m["step"].split(" ", 1)[0]) for m in rec["marks"]]
+    moments.append((r["duration_s"], "end"))
+    sheet = await _sheet(out, f"video/recordings/{name}.png", [t for t, _ in moments], [lab for _, lab in moments])
+    return {"path": out, "duration_s": r["duration_s"], "marks": rec["marks"], "sheet": sheet,
+            "next": ("look at the contact sheet (a frame just after each step): is every moment what its beat needs? "
+                     f"Then use it as a shot: {{\"source\": \"screen\", \"path\": \"{out}\"}}, and land a moment on "
+                     "a word with \"sync\": {\"word\": …, \"at_s\": a mark's t}. A recording a little short for "
+                     "its slot is fine: the plan holds its first or last frame.")}
+
+
+async def _cut_sheet(video: str, report: dict[str, Any]) -> str | None:
+    """One frame from each beat of a rendered cut, labelled b1, b2…, shown to the agent."""
+    beats = report.get("beats") or []
+    times = [b["start_s"] + 0.6 * (b["end_s"] - b["start_s"]) for b in beats]
+    return await _sheet(video, re.sub(r"\.mp4$", ".png", video), times, [b["id"] for b in beats])
+
+
+@todd_tool(toolset="shorts")
+async def short_look(url: str, device: str = "phone", start_at: str | None = None, signed_in: bool = False) -> dict:
+    """Look at a page before recording it: a screenshot of what a recording would open on, and an outline of the
+    whole page (headings, things to tap, fields, each with how many screens down it is), so the steps you write
+    find their texts the first time. Nothing is filmed or saved.
+
+    Args:
+        url: the page
+        device: "phone" or "desktop"
+        start_at: visible text to bring to the top first, as short_record would
+        signed_in: look with the human's sign-ins (only for pages that need them)
+    """
+    async with _browser("looking at a page"):
+        try:
+            seen = await screencast.look(url, device, start_at=start_at, signed_in=bool(signed_in))
+        except screencast.RecordError as e:
+            _show(e.shot, "image/jpeg")
+            raise ToolError(str(e)) from e
+    _show(seen["shot"], "image/jpeg")
+    return {"outline": screencast.outline_text(seen["outline"]),
+            "next": "write short_record steps with these exact texts (tap / scroll_to / type into), and scroll to "
+                    "anything more than a screen down before tapping it"}
 
 
 def _with_tags(timeline: dict[str, Any]) -> dict[str, Any]:
@@ -590,9 +681,13 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
     ctx = get_ctx()
     script, plans = await _plan(slug, [hook])
     p = plans[hook]
+    if p.report["duration_s"] > sp.CEILING_S + 5:
+        raise ToolError(f"this cut runs {p.report['duration_s']:.0f}s: get it under {sp.CEILING_S}s before showing it "
+                        "to the human (shorter lines with short_edit, or short_new with fewer beats)")
     version = len(script.get("reviews") or []) + 1
     out = f"{_dir(slug)}/{slug}-{hook}-scaffold-v{version}.mp4"
     r = await media.render_timeline(ctx.run_id, out, _with_tags(p.timeline))
+    sheet = await _cut_sheet(out, p.report)  # the agent sees what the human is watching
     price = sp.total_usd(p.generate)
     shots = ", ".join(f"{g['beat']} ({g['seconds']}s)" for g in p.generate)
     pc = p.report["pace"]
@@ -626,9 +721,9 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
         nxt = f"applied \"{applied}\": short_voiceover (the voice speed changed), short_plan, short_review again"
     else:
         nxt = "act on the feedback (short_edit, short_pace, short_record), voice, plan, then short_review again"
-    return {"approved": approved, "feedback": answer, "version": version, "video": out, "applied": applied,
-            "pace": script["pace"], "next": nxt}
+    return {"approved": approved, "feedback": answer, "version": version, "video": out, "sheet": sheet,
+            "applied": applied, "pace": script["pace"], "next": nxt}
 
 
-SHORTS_TOOLS = [short_record, short_new, short_edit, short_pace, short_voices, short_voiceover, short_plan,
+SHORTS_TOOLS = [short_look, short_record, short_new, short_edit, short_pace, short_voices, short_voiceover, short_plan,
                 short_render, short_review]

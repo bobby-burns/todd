@@ -54,6 +54,38 @@ class Toolset:
                 "tools": [t.name for t in self.tools]}
 
 
+# How a short gets made, for agents with the shorts toolset. The look comes first: it decides whether anyone believes it.
+SHORTS_GUIDE = """\
+The look: it has to pass for something a person filmed on their phone and cut in an editing app, never a template.
+- Footage is real: the product's own screens filmed full-frame with short_record (that reads as a phone screen
+  recording: no device frame, no backdrop around it), or phone-camera footage of real places and people (AI shots are
+  prompted as handheld phone video in natural light, with no text in them).
+- Never design frames: no made-up backgrounds or gradients, slides, cards, phone mockups, logos, brand-colour badges,
+  progress bars, countdowns or end cards, and no URLs or calls to action on screen (the link goes in the post's
+  caption). Never build a page, image or animation just for the video: if the product doesn't show it, film
+  something else.
+- Text: one short line at the top in the native style (a beat's `text`, often only on the hook), written the way
+  people type; the captions do the rest. Hard cuts, no transitions.
+- Length: as short as the idea allows. Most land at 8–20 s; 30 s is a ceiling, not a target, and a real example's
+  length isn't one to match. When you make several, make at least one under 12 s.
+Steps:
+0) Film the product: short_look a page first (a screenshot and an outline with the exact texts to tap and scroll
+   to), then short_record its real pages and flows: the live site, or for a repository a local copy running in the
+   sandbox at http://localhost:3000; start_at opens on the right section. Recordings are signed out, so go through
+   the real flow like a visitor (answer the quiz, submit the demo form). Each recording comes back with a contact
+   sheet (a frame after each step): look at it before using the footage. Never write your own recorder or call
+   ffmpeg: Todd's media service renders everything.
+1) Base the script on a format card (trends toolset: format_search, or a fresh scan) and pass its id to short_new
+   (format_id); follow its hook, beats and sound. Never a feature tour. short_new: 2–3 hook variants (the first line
+   decides whether anyone keeps watching) and the beats, each one spoken line, optional on-screen text and one shot.
+   Prefer your recordings over AI shots. Write the way people in the niche talk, never like an ad; the product is
+   the payoff, not the pitch.
+2) short_voiceover (free local voice), short_plan, fix every warning and plan again, then short_render the animatic
+   and look at its contact sheet (a frame from each beat) against the look above; fix what doesn't pass.
+3) short_review: the human watches the free scaffold and approves or asks for changes (pace, a line, a shot); apply
+   them and review again until they approve. Only then: short_voiceover(provider="elevenlabs"), plan again, and
+   (later) generate. Never post."""
+
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
     "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "
                        "workspace shared by all agents in this run: shell, read/write/list files, git and git_push (signed in to GitHub), the "
@@ -96,21 +128,7 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                       "film the product in the agents' browser, write the script, voice it (free local voice for the "
                       "scaffold, ElevenLabs for the final), plan every cut, caption and clip length from the take, "
                       "and render a free scaffold to approve before anything is spent.", SHORTS_TOOLS,
-                      guide="0) Todd built the product, so film it: short_record its real pages and flows (the "
-                            "live site, or for a repository a local copy running in the sandbox at "
-                            "http://localhost:3000; start_at to open on the right section) for every beat that shows "
-                            "the product. Recordings are signed out, so go through the real flow like a visitor "
-                            "(answer the quiz, submit the demo form). Never write your own recorder or call ffmpeg: "
-                            "Todd's media service renders everything. 1) Base the script on a format card (trends toolset: format_search, or a "
-                            "fresh scan) and pass its id to short_new (format_id); follow its hook, beats and sound. "
-                            "Never a feature tour. short_new: 2–3 hook variants (the first line decides whether anyone "
-                            "keeps watching) and the beats, each one spoken line, optional on-screen text and one "
-                            "shot. Prefer your recordings over AI shots. Write the way people in the niche talk, never "
-                            "like an ad; the product is the payoff, not the pitch. 2) short_voiceover (free local "
-                            "voice), short_plan, fix every warning and plan again. 3) short_review: the human watches "
-                            "the free scaffold and approves or asks for changes (pace, a line, a shot); apply them "
-                            "and review again until they approve. Only then: short_voiceover(provider="
-                            "\"elevenlabs\"), plan again, and (later) generate. Never post."),
+                      guide=SHORTS_GUIDE),
     "trends": Toolset("trends", "What's working right now in a niche: recent TikToks for its hashtags ranked by how "
                       "far they outperformed their creator's audience, their transcripts and frames, and a shared "
                       "library of format cards (hook, beats, why it works) to build shorts from.", TRENDS_TOOLS,

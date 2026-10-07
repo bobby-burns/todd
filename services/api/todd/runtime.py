@@ -117,7 +117,7 @@ class RunContext:
         self.cancelled = False
         self.user_notes = Inbox()  # the human's messages to the planner
         self._waiting = 0
-        self._images: dict[str, str] = {}  # agent_id -> latest screenshot to hand to the model (Claude Code engine)
+        self._images: dict[str, tuple[str, str]] = {}  # agent_id -> (base64, mime): the next image to show the model
         self.agents: dict[str, Any] = {}  # agent_id -> AgentHandle (see agents/dynamic.py)
         self.gates: dict[str, PauseGate] = {}  # agent_id -> pause switch ("planner" included)
 
@@ -130,10 +130,11 @@ class RunContext:
     def emit(self, agent: str, kind: str, text: str, data: dict[str, Any] | None = None) -> None:
         events.emit(self.run_id, agent, kind, text, data)
 
-    def push_image(self, agent_id: str, png_b64: str) -> None:
-        self._images[agent_id] = png_b64
+    def push_image(self, agent_id: str, b64: str, mime: str = "image/png") -> None:
+        """Show the agent an image with its next tool result (a screenshot, a recording's contact sheet)."""
+        self._images[agent_id] = (b64, mime)
 
-    def pop_image(self, agent_id: str) -> str | None:
+    def pop_image(self, agent_id: str) -> tuple[str, str] | None:
         return self._images.pop(agent_id, None)
 
     def add_llm_cost(self, usd: float) -> None:

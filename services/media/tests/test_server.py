@@ -4,6 +4,7 @@ no models, no network."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -392,7 +393,7 @@ def test_timeline_cuts_and_voice_stay_in_sync(media):
     assert not [p for p in (run / "short").iterdir() if p.name != "cut.mp4"]  # temp files gone
 
 
-def test_timeline_clips_trim_speed_and_freeze(media):
+def test_timeline_clips_trim_speed_hold_and_freeze(media):
     _, c, run = media
     # 1 s red, 1 s green, 1 s blue
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=540x960:r=30:d=1",
@@ -403,16 +404,19 @@ def test_timeline_clips_trim_speed_and_freeze(media):
     r = c.post("/render/timeline", json={"run_id": RUN, "out": "c.mp4", "width": 540, "height": 960, "video": [
         {"kind": "clip", "src": "rgb.mp4", "in_s": 1.0, "frames": 15},  # green only
         {"kind": "clip", "src": "rgb.mp4", "in_s": 0.0, "speed": 2.0, "frames": 30},  # 2 s of source in 1 s
-        {"kind": "clip", "src": "rgb.mp4", "in_s": 2.5, "frames": 30, "freeze_s": 0.5}]}, headers=H)  # 0.5 s + hold
+        {"kind": "clip", "src": "rgb.mp4", "in_s": 2.5, "frames": 30, "freeze_s": 0.5},  # 0.5 s + hold
+        {"kind": "clip", "src": "rgb.mp4", "in_s": 0.9, "frames": 30, "hold_s": 0.5}]}, headers=H)  # held, then plays
     assert r.status_code == 200, r.text
     out = run / "c.mp4"
-    assert r.json()["frames"] == 75
+    assert r.json()["frames"] == 105
     def color(n):
         p = frame_at(out, n).getpixel((270, 480))
         return "rgb"[max(range(3), key=lambda k: p[k])]
     assert [color(n) for n in (0, 14)] == ["g", "g"]
     assert [color(n) for n in (16, 28, 31, 44)] == ["r", "r", "g", "g"]  # 2×: 1 s of red in 0.5 s, then green
     assert [color(n) for n in (46, 74)] == ["b", "b"]  # the last 0.5 s of blue, then held on its last frame
+    # its first frame (red) held 0.5 s, then 0.1 s of red plays and green starts at frame 75 + 15 + 3
+    assert [color(n) for n in (75, 88, 91, 95, 104)] == ["r", "r", "r", "g", "g"]
 
 
 def test_timeline_placeholder_music_and_bad_input(media, tmp_path):
@@ -506,16 +510,17 @@ def test_timeline_holds_split_the_voice_between_lines(media):
 def test_screencast_frames_become_a_steady_30fps_video(media):
     import base64
     mod, c, run = media
-    def jpg(color):
+    def jpg(color, size=(1080, 1920)):
         buf = io.BytesIO()
-        Image.new("RGB", (1080, 1920), color).save(buf, "JPEG", quality=80)
+        Image.new("RGB", size, color).save(buf, "JPEG", quality=80)
         return base64.b64encode(buf.getvalue()).decode()
-    # the browser sends frames only on change: red at 0.05 s, green at 1.0 s, blue at 1.6 s; recording ends at 2.5 s
-    frames = [{"i": 0, "data_b64": jpg((220, 20, 20))}, {"i": 1, "data_b64": jpg((20, 200, 20))}]
+    # the browser sends frames only on change: red at 0.05 s, green at 1.0 s, blue at 1.6 s; recording ends at 2.5 s.
+    # Frames taken in motion are smaller (414×736) than the sharp ones of a still page: the video takes the biggest.
+    frames = [{"i": 0, "data_b64": jpg((220, 20, 20), (414, 736))}, {"i": 1, "data_b64": jpg((20, 200, 20))}]
     assert c.post("/screencast/put", json={"run_id": RUN, "session": "abc12345", "frames": frames}, headers=H).json() \
         == {"stored": 2}
     c.post("/screencast/put", json={"run_id": RUN, "session": "abc12345",
-                                    "frames": [{"i": 2, "data_b64": jpg((20, 20, 220))}]}, headers=H)
+                                    "frames": [{"i": 2, "data_b64": jpg((20, 20, 220), (414, 736))}]}, headers=H)
     r = c.post("/screencast/assemble", json={"run_id": RUN, "session": "abc12345", "times": [0.05, 1.0, 1.6],
                                              "end_s": 2.5, "out": "video/recordings/home.mp4"}, headers=H)
     assert r.status_code == 200, r.text
@@ -588,6 +593,17 @@ def test_frames_make_a_contact_sheet_and_delete_the_reference(media):
     with Image.open(run / "research" / "ref.png") as im:
         assert im.width > 4 * 270 and im.height > 480
     assert not (run / "ref.mp4").exists()  # the reference is gone once studied
+    # chosen moments with labels (a recording's marks), returned inline for a model to look at
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=540x960:r=30:d=3",
+                    "-pix_fmt", "yuv420p", str(run / "rec.mp4")], check=True)
+    r = c.post("/frames", json={"run_id": RUN, "src": "rec.mp4", "out": "rec.png", "times": [0, 1.2, 9],
+                                "labels": ["open", "tap Games", "end"], "inline": True}, headers=H)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["times"] == [0.0, 1.2, 2.95]  # clamped into the video
+    assert base64.b64decode(got["png_b64"]) == (run / "rec.png").read_bytes()
+    with Image.open(run / "rec.png") as im:
+        assert 3 * 270 < im.width < 4 * 270
     assert c.post("/frames", json={"run_id": RUN, "src": "../x.mp4", "out": "a.png"}, headers=H).status_code == 400
     (run / "song.mp3").write_text("#EXTM3U\nfile:///etc/passwd\n")
     assert c.post("/frames", json={"run_id": RUN, "src": "song.mp3", "out": "a.png"}, headers=H).status_code == 400

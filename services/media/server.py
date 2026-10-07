@@ -752,6 +752,7 @@ class TLVideo(BaseModel):
     in_s: float = Field(0.0, ge=0)
     speed: float = Field(1.0, ge=0.25, le=4)
     freeze_s: float = Field(0.0, ge=0, le=10)
+    hold_s: float = Field(0.0, ge=0, le=10)  # the first frame held this long before the clip plays (screen recordings)
     fit: Literal["cover", "contain"] = "cover"
     zoom: Literal["in", "out", "none"] = "none"
     label: str = Field("", max_length=400)  # placeholders: what will be generated here (animatic)
@@ -904,7 +905,8 @@ def _segment(req: TimelineReq, i: int, item: TLVideo, tmp: Path) -> Path:
             raise HTTPException(400, f"{item.src} is an image: use kind=image")
         fmt = video_format(src)
         graph = (f"[0:v]setpts=(PTS-STARTPTS)/{item.speed:g},fps={fps},{fit_filter(item.fit, w, h)},"
-                 f"tpad=stop_mode=clone:stop_duration={item.freeze_s + 1:.3f},format=yuv420p[v]")
+                 f"tpad=start_mode=clone:start_duration={item.hold_s:.3f}:"
+                 f"stop_mode=clone:stop_duration={item.freeze_s + 1:.3f},format=yuv420p[v]")
         ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{item.in_s:.3f}", "-i", str(src), "-filter_complex", graph,
                "-map", "[v]", "-frames:v", str(item.frames), "-r", str(fps), *ENCODE, "-an", str(out))
         return out
@@ -1088,11 +1090,18 @@ def _cast_assemble(req: CastAssembleReq) -> dict:
             lines += [f"file '{f.name}'", f"duration {max(dur, 0.001):.4f}"]
         lines.append(f"file '{files[-1].name}'")  # the concat demuxer needs the last file again
         (d / "frames.txt").write_text("\n".join(lines) + "\n")
-        with Image.open(files[0]) as im:
-            w, h = im.width - im.width % 2, im.height - im.height % 2
+        # The biggest frame sets the size: sharp full-resolution frames (a still page) and smaller ones taken in
+        # motion can be mixed, and the small ones are scaled up to match.
+        sizes = []
+        for f in files:
+            with Image.open(f) as im:
+                sizes.append(im.size)
+        w, h = max(sizes, key=lambda wh: wh[0] * wh[1])
+        w, h = w - w % 2, h - h % 2
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = d / "cast.mp4"
-        ffmpeg(*LOCAL_ONLY, "-f", "concat", "-i", "frames.txt", "-vf",
+        # -reinit_filter 0: one filter graph for every frame size (a new graph per size change cuts the video short)
+        ffmpeg(*LOCAL_ONLY, "-reinit_filter", "0", "-f", "concat", "-i", "frames.txt", "-vf",
                f"fps={req.fps},scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
                f"format=yuv420p", "-r", str(req.fps), *ENCODE, "-an", "-t", f"{req.end_s:.4f}",
                "-movflags", "+faststart", "cast.mp4", cwd=d)
@@ -1267,6 +1276,9 @@ class FramesReq(BaseModel):
     src: str
     out: str  # .png
     count: int = Field(8, ge=2, le=16)
+    times: list[float] | None = Field(None, min_length=1, max_length=16)  # these moments instead of `count` even ones
+    labels: list[str] | None = Field(None, max_length=16)  # one per time, shown under its frame
+    inline: bool = False  # also return the sheet as base64, for handing to a model
     delete_source: bool = False
 
 
@@ -1281,9 +1293,13 @@ def _frames(req: FramesReq) -> dict:
         total = duration(src)
         if total <= 0:
             raise HTTPException(400, "the video has no length")
-        times = [round(total * (k + 0.5) / req.count, 2) for k in range(req.count)]
+        if req.times:
+            times = [round(min(max(float(t), 0.0), max(total - 0.05, 0.0)), 2) for t in req.times]
+        else:
+            times = [round(total * (k + 0.5) / req.count, 2) for k in range(req.count)]
+        labels = [str(x)[:28] for x in (req.labels or [])]
         tiles = []
-        font = ImageFont.truetype(FONT, 22)
+        font = ImageFont.truetype(FONT, 20)
         with tempfile.TemporaryDirectory(dir=src.parent) as td:
             for k, t in enumerate(times):
                 f = Path(td) / f"{k:02d}.png"
@@ -1292,9 +1308,10 @@ def _frames(req: FramesReq) -> dict:
                 im = Image.open(f).convert("RGB")
                 tile = Image.new("RGB", (im.width, im.height + 30), (16, 16, 18))
                 tile.paste(im, (0, 0))
-                ImageDraw.Draw(tile).text((6, im.height + 4), f"{t:.1f}s", fill="white", font=font)
+                label = f"{t:.1f}s {labels[k]}" if k < len(labels) and labels[k] else f"{t:.1f}s"
+                ImageDraw.Draw(tile).text((6, im.height + 5), label, fill="white", font=font)
                 tiles.append(tile)
-        cols = min(8, len(tiles))
+        cols = min(6 if req.times else 8, len(tiles))
         tw, th = max(t.width for t in tiles), max(t.height for t in tiles)
         rows = math.ceil(len(tiles) / cols)
         sheet = Image.new("RGB", (cols * (tw + 6) + 6, rows * (th + 6) + 6), (0, 0, 0))
@@ -1305,7 +1322,10 @@ def _frames(req: FramesReq) -> dict:
     finally:
         if req.delete_source:
             src.unlink(missing_ok=True)
-    return {"sheet": rel(req.run_id, out), "duration_s": round(total, 2), "times": times}
+    res = {"sheet": rel(req.run_id, out), "duration_s": round(total, 2), "times": times}
+    if req.inline:
+        res["png_b64"] = base64.b64encode(out.read_bytes()).decode()
+    return res
 
 
 @app.post("/frames", dependencies=[Depends(auth)])

@@ -44,6 +44,23 @@ changes).
   types a password, and never acts on social or payment sites. `signed_in=true` films pages behind the human's
   sign-in, and then only reads and makes safe taps. The media service assembles the frames (`/screencast/put`,
   `/screencast/assemble`).
+- **Recordings that don't get stuck, and agents that can see them:** `short_look` opens a page the way a recording
+  would and returns a screenshot plus an outline (headings, things to tap, fields, each with how many screens down),
+  so steps find their texts the first time; a step that fails says what the page shows instead, with a screenshot.
+  Every recording comes back with a contact sheet (a frame just after each step), and `short_render` /
+  `short_review` with one frame per beat, shown to the agent as an image. A recording no longer waits on its own
+  agent's browser session (which used to hang it), says who has the browser when it's busy, and gives up after three
+  minutes; taps find clickable text that isn't a button (a quiz answer in a `<div>`); scrolling past the end of a page
+  is a no-op instead of a failure; pages that keep polling load in 8 s instead of 12.
+- **Sharp recordings:** Chrome's screencast only delivers frames at CSS-pixel size (414×736), so recordings were
+  upscaled 2.6×. They're now filmed with full-resolution screenshots, one at a time (two in flight make Chrome
+  misplace later taps), and use the screencast only while scrolling; the assembler sizes the video by its largest
+  frame. A screen recording a little short for its slot holds its first or last frame (up to 3 s) instead of asking
+  for a re-record (`hold_s` in the timeline).
+- **Shorts look human-made and stay short:** the shorts guide now starts with the look (real screens full-frame or
+  real phone footage, one line of native-style text, hard cuts; never designed backgrounds, slides, mockups, logos,
+  end cards or pages built for the video) and the length (most 8–20 s; 30 s is a ceiling: the plan says cut past it
+  and `short_review` won't show a cut over 35 s).
 - **Tools ask for their own keys:** a trend scan without `APIFY_API_TOKEN`, or an ElevenLabs voiceover without
   `ELEVENLABS_API_KEY`, shows the human a card with a password field (where to find the key, what it costs) and
   carries on once it's saved, instead of failing and relying on the agent to ask; calls side by side share one card.

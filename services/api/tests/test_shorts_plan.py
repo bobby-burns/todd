@@ -114,20 +114,31 @@ def test_a_shot_can_pin_its_moment_to_a_word():
     assert item["in_s"] == pytest.approx(3.2 - (spoken - slot_start), abs=1e-3)
     # the recording's 3.2 s mark is on screen exactly when "checked" is said
     assert item["in_s"] + (spoken - slot_start) * item["speed"] == pytest.approx(3.2, abs=1e-3)
+    # a moment too early in the recording: the page's first frame is held until it can play into the word
+    s["beats"][1]["shot"]["sync"] = {"word": "checked", "at_s": 0.3}
+    p = run(s)
+    item = p.timeline["video"][2]
+    assert item["in_s"] == 0 and item["hold_s"] == pytest.approx((spoken - slot_start) - 0.3, abs=1e-3)
+    assert item["hold_s"] + 0.3 == pytest.approx(spoken - slot_start, abs=1e-3)  # 0.3 s plays, then the word
+    assert not [w for w in p.report["warnings"] if "sync" in w or "too short" in w]
+    assert p.report["beats"][2]["fit"].startswith("holds its first frame")
     s["beats"][1]["shot"]["sync"] = {"word": "nope", "at_s": 1}
     assert any("isn't in this beat" in w for w in run(s).report["warnings"])
 
 
-@pytest.mark.parametrize("dur,speed,expect", [
-    (6.0, 1, "trim"),
-    (1.9, 1, "slowed to"),  # the slot is 2.07 s: 0.92× is barely visible
-    (1.65, 1, "holds its last frame"),  # 0.80× would show; a 0.42 s hold doesn't
-    (0.5, 1, "too short by"),
-    (8.0, "fit", "sped up"),
+@pytest.mark.parametrize("dur,speed,expect,source", [
+    (6.0, 1, "trim", "screen"),
+    (1.9, 1, "slowed to", "screen"),  # the slot is 2.07 s: 0.92× is barely visible
+    (1.65, 1, "holds its last frame", "ai"),  # 0.80× would show; a 0.42 s hold doesn't
+    (0.5, 1, "holds its last frame", "screen"),  # a still page for 1.57 s reads as the page waiting: no re-record
+    (0.5, 1, "too short by", "ai"),  # a generated clip frozen that long looks broken
+    (8.0, "fit", "sped up", "screen"),
 ])
-def test_how_a_recording_fills_its_slot(dur, speed, expect):
+def test_how_a_recording_fills_its_slot(dur, speed, expect, source):
     s = script()
     s["beats"][1]["shot"]["speed"] = speed
+    if source == "ai":
+        s["beats"][1]["shot"] = {"source": "ai", "prompt": "x", "clip": "shots/rec.mp4", "speed": speed}
     p = run(s, media={**MEDIA, "shots/rec.mp4": {"kind": "video", "duration_s": dur}})
     beat = p.report["beats"][2]
     assert beat["fit"].startswith(expect), beat
@@ -198,7 +209,11 @@ def test_captions_follow_the_voice_and_never_cross_a_beat():
 def test_platform_length_and_estimates():
     long_t = [(w, a * 6, b * 6) for w, a, b in H1]  # the same script read very slowly: ~29 s
     rep = run(t=long_t).report
-    assert any("outside the 7–20s sweet spot" in w for w in rep["warnings"])
+    assert any("past the 7–20s sweet spot" in w for w in rep["warnings"])
+    rep = run(t=[(w, a * 7, b * 7) for w, a, b in H1]).report  # ~34 s: a cut to make, whatever the platform allows
+    assert any("too long: cut lines until it's under 30s" in w for w in rep["warnings"])
+    assert sp.length_notes(12, sp.PLATFORMS["tiktok"]) == []
+    assert "ends before it lands" in sp.length_notes(5, sp.PLATFORMS["reels"])[0]
     assert 4 < sp.estimate_seconds(script()) < 8
     with pytest.raises(ValueError, match="no hook"):
         sp.take_text(script(), "h9")

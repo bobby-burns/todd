@@ -289,7 +289,7 @@ async def _call(sess: Session, name: str, args: dict) -> dict:
     content: list[dict] = [{"type": "text", "text": text}]
     image = ctx.pop_image(sess.agent_id)
     if image:
-        content.append({"type": "image", "data": image, "mimeType": "image/png"})
+        content.append({"type": "image", "data": image[0], "mimeType": image[1]})
     return {"content": content, "isError": getattr(res, "status", "success") == "error"}
 
 

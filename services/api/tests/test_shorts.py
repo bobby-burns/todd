@@ -4,6 +4,7 @@ FFmpeg."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import json
@@ -23,6 +24,7 @@ from todd.tools import elevenlabs, media, sandbox, shorts
 from .helpers import events_of, new_run
 
 SERVER = Path(__file__).resolve().parents[2] / "sandbox" / "server.py"
+PNG = b"\x89PNG\r\n\x1a\n a contact sheet"
 
 
 def fake_take(text: str) -> dict:
@@ -91,6 +93,10 @@ class FakeMedia:
             frames = sum(v["frames"] for v in payload["video"])
             return {"path": payload["out"], "duration_s": round(frames / payload["fps"], 3), "frames": frames,
                     "size_bytes": out.stat().st_size}
+        if path == "/frames":  # a contact sheet, handed back inline for the agent to look at
+            (run / payload["out"]).write_bytes(PNG)
+            return {"sheet": payload["out"], "times": payload["times"], "duration_s": 5.0,
+                    "png_b64": base64.b64encode(PNG).decode()}
         raise AssertionError(f"unexpected media call {path}")
 
     def last(self, path: str) -> dict:
@@ -254,6 +260,8 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
         body = m.last("/render/timeline")
         assert body["out"] == r["video"] and [v["kind"] for v in body["video"]] == ["image", "placeholder", "clip"]
         assert "Seedance 2.5" in body["video"][1]["label"] and body["captions"] and body["voice"]["segments"]
+        sheet = m.last("/frames")  # the agent sees a frame from each beat of what it rendered
+        assert sheet["src"] == r["video"] and sheet["labels"] == ["h1", "b1", "b2"] and r["sheet"].endswith(".png")
         with pytest.raises(ToolError, match="aren't generated yet"):
             await shorts.short_render.ainvoke({"slug": slug, "hook": "h1", "mode": "final"})
         assert any(e.text.startswith("Rendered animatic") for e in events_of(studio["run"]))
@@ -275,9 +283,9 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
 
 def test_shorts_toolset_and_elevenlabs_routing(loop):
     ts = registry.all_toolsets()
-    assert [t.name for t in ts["shorts"].tools] == ["short_record", "short_new", "short_edit", "short_pace",
-                                                    "short_voices", "short_voiceover", "short_plan", "short_render",
-                                                    "short_review"]
+    assert [t.name for t in ts["shorts"].tools] == ["short_look", "short_record", "short_new", "short_edit",
+                                                    "short_pace", "short_voices", "short_voiceover", "short_plan",
+                                                    "short_render", "short_review"]
     assert ts["shorts"].source == "builtin" and "scaffold" in ts["shorts"].guide
     vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
     try:
@@ -336,7 +344,7 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
     studio_lock = lambda: studio["ctx_lock"]  # noqa: E731
 
     async def go():
-        from todd.sdk import get_ctx
+        from todd.sdk import get_agent_id, get_ctx
         studio["ctx_lock"] = get_ctx().browser_lock
         r = await shorts.short_record.ainvoke({"name": "week-view", "url": "https://dropin-hockey.vercel.app/",
                                                "steps": [{"wait": 1}, {"tap": "Games"}], "start_at": "Today"})
@@ -350,16 +358,65 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         meta = json.loads((studio["dir"] / "video" / "recordings" / "week-view.json").read_text())
         assert meta["marks"][1]["t"] == 1.2 and meta["device"] == "phone" and meta["frames"] == 90
         assert meta["signed_in"] is False
+        # the agent sees a frame just after every step, labelled
+        sheet = m.last("/frames")
+        assert sheet["src"] == "video/recordings/week-view.mp4" and sheet["inline"] is True
+        assert sheet["times"] == [0.7, 1.9, 4.6] and sheet["labels"] == ["open", "tap", "end"]
+        assert r["sheet"] == "video/recordings/week-view.png" and "contact sheet" in r["next"]
+        assert get_ctx().pop_image(get_agent_id()) == (base64.b64encode(PNG).decode(), "image/png")
         for bad, msg in (({"name": "Week View"}, "lowercase"), ({"steps": [{"wait": 99}]}, "0–10 seconds")):
             with pytest.raises(ToolError, match=msg):
                 await shorts.short_record.ainvoke({"name": "x", "url": "https://a.b/", "steps": [], **bad})
 
         async def refuse(url, steps, device="phone", max_s=45, start_at=None, signed_in=False):
-            raise screencast.RecordError('"Buy now" looks like it buys')
+            raise screencast.RecordError('"Buy now" looks like it buys', shot="SCREEN")
         monkeypatch.setattr(screencast, "record", refuse)
         with pytest.raises(ToolError, match="recording shop stopped: .*Buy now"):
             await shorts.short_record.ainvoke({"name": "shop", "url": "https://a.b/", "steps": [{"tap": "Buy now"}]})
         assert not studio["ctx_lock"].locked()
+        assert get_ctx().pop_image(get_agent_id()) == ("SCREEN", "image/jpeg")  # what the screen showed
+
+        # an agent that has the browser itself (its own browser_start session) records without waiting on itself
+        monkeypatch.setattr(screencast, "record", record)
+        lock = get_ctx().browser_lock
+        await lock.acquire(f"{get_ctx().run_id}:{get_agent_id()}")
+        try:
+            r = await asyncio.wait_for(shorts.short_record.ainvoke(
+                {"name": "mine", "url": "https://a.b/", "steps": [{"wait": 1}]}), 5)
+            assert r["path"] == "video/recordings/mine.mp4" and lock.locked()  # still that session's
+        finally:
+            lock.release()
+        # someone else's: it says who, and gives up instead of hanging
+        monkeypatch.setattr(shorts, "LOCK_WAIT_S", 0.2)
+        await lock.acquire("other-run:browser")
+        try:
+            with pytest.raises(ToolError, match="another run is using it"):
+                await shorts.short_record.ainvoke({"name": "late", "url": "https://a.b/", "steps": [{"wait": 1}]})
+        finally:
+            lock.release()
+        assert any("Waiting for the browser (another run" in e.text for e in events_of(get_ctx().run_id))
+    loop.run_until_complete(go())
+
+
+def test_short_look_shows_the_page_and_its_outline(loop, studio, monkeypatch):
+    seen = {}
+
+    async def look(url, device="phone", start_at=None, signed_in=False):
+        seen.update(url=url, start_at=start_at, signed_in=signed_in)
+        return {"shot": "JPEG", "outline": {"url": url, "title": "NeuralDaily", "screens": 3.2, "at": 0, "items": [
+            {"kind": "heading", "text": "Today's quiz", "screen": 0.1},
+            {"kind": "tap", "text": "Dropout removes random neurons", "screen": 0.6},
+            {"kind": "field", "text": "Your email", "screen": 2.4}]}}
+
+    monkeypatch.setattr(screencast, "look", look)
+
+    async def go():
+        from todd.sdk import get_agent_id, get_ctx
+        r = await shorts.short_look.ainvoke({"url": "https://aiml-daily-quiz.vercel.app/", "start_at": "Today"})
+        assert seen == {"url": "https://aiml-daily-quiz.vercel.app/", "start_at": "Today", "signed_in": False}
+        assert "3.2 screens tall" in r["outline"] and "0.6: tap: Dropout removes random neurons" in r["outline"]
+        assert get_ctx().pop_image(get_agent_id()) == ("JPEG", "image/jpeg")
+        assert not get_ctx().browser_lock.locked()
     loop.run_until_complete(go())
 
 

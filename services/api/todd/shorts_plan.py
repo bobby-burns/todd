@@ -32,6 +32,7 @@ MIN_BEAT_S = 0.7
 MAX_SPEEDUP = 2.0  # a recording may be sped up this much to fit its slot ("speed": "fit")
 MIN_SPEED = 0.85  # and slowed down this little
 MAX_FREEZE_S = 0.5  # holding a clip's last frame longer than this is flagged
+MAX_SCREEN_HOLD_S = 3.0  # a screen recording is a still page at either end: holding it this long reads naturally
 WORDS_PER_S = 2.8  # for estimating a script's length before it's voiced
 MIN_PAGE_S = 0.25  # a caption page shown shorter than this can't be read
 PAGE_WORDS, PAGE_CHARS = 3, 18
@@ -58,6 +59,8 @@ def pace(script: dict[str, Any], change: dict[str, Any] | None = None, preset: s
     out["voice_speed"] = round(out["voice_speed"], 2)
     return out
 
+# The most a short should run, whatever the platform allows: a ceiling, not a target. Most land at 8–20 s.
+CEILING_S = 30
 # Platform rules as data: max length, the sweet spot, and safe zones (shares of the height) for text.
 PLATFORMS: dict[str, dict[str, Any]] = {
     "tiktok": {"max_s": 60, "ideal_s": (7, 20), "safe": (0.15, 0.70)},
@@ -171,6 +174,20 @@ def _caption_text(w: str) -> str:
     return w.rstrip(",.;:—–-") or w
 
 
+def length_notes(seconds: float, platform: dict[str, Any], about: str = "") -> list[str]:
+    """What's wrong with a short's length, if anything: past the ceiling is a cut to make, not a style."""
+    lo, hi = platform["ideal_s"]
+    if seconds > min(platform["max_s"], CEILING_S):
+        return [f"{about}{seconds:.0f}s is too long: cut lines until it's under {CEILING_S}s ({CEILING_S}s is a "
+                f"ceiling, not a target; most shorts land at {lo + 1}–{hi}s, and a real example's length isn't one "
+                "to match)"]
+    if seconds > hi:
+        return [f"{about}{seconds:.0f}s is past the {lo}–{hi}s sweet spot: keep only the lines that earn their place"]
+    if seconds < lo:
+        return [f"{about}{seconds:.0f}s is under {lo}s: it ends before it lands"]
+    return []
+
+
 def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media: dict[str, dict[str, Any]],
          take_audio: str, fps: int = FPS) -> Plan:
     """Plan one cut (one hook variant). `media` maps file paths to {kind, duration_s} for the shots' files."""
@@ -264,10 +281,7 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
 
     duration = total_f / fps
     lo, hi = platform["ideal_s"]
-    if duration > platform["max_s"]:
-        warnings.append(f"{duration:.1f}s is over the platform's {platform['max_s']}s limit")
-    elif not lo <= duration <= hi:
-        warnings.append(f"{duration:.1f}s is outside the {lo}–{hi}s sweet spot")
+    warnings += length_notes(duration, platform)
     music = script.get("music")
     timeline = {
         "version": 1, "slug": script["slug"], "hook": hook_id, "fps": fps, "width": script["width"],
@@ -299,6 +313,10 @@ def _fit_shot(beat_id: str, shot: dict[str, Any], slot: float, start_s: float, w
     sync = shot.get("sync") or {}
     speed_mode = shot.get("speed", 1)
     speed = 1.0 if speed_mode in (None, "fit") else float(speed_mode)
+    # Screen recordings start and end on a still page, so holding a first or last frame looks like the page waiting;
+    # a generated clip frozen that long looks broken.
+    max_hold = MAX_SCREEN_HOLD_S if source == "screen" else MAX_FREEZE_S
+    hold = 0.0  # the first frame, held before the clip plays
     if sync.get("word"):
         target = sync["word"].lower().strip(".,!?")
         hit = next((w for w in ws if w.text.lower().strip(".,!?\"'") == target), None)
@@ -307,29 +325,35 @@ def _fit_shot(beat_id: str, shot: dict[str, Any], slot: float, start_s: float, w
         else:
             offset = tl(hit.start, k) - start_s  # seconds into the slot where the word is spoken
             in_s = float(sync.get("at_s", 0)) - offset * speed
-            if in_s < 0:
+            if in_s < 0 and source == "screen" and -in_s <= MAX_SCREEN_HOLD_S:
+                hold = min(-in_s, slot)
+                in_s = 0.0
+            elif in_s < 0:
                 notes.append(f"sync: the clip would have to start {-in_s:.2f}s before its beginning; starts at 0")
                 in_s = 0.0
+    room = slot - hold  # what the clip itself has to fill
     available = max(0.0, dur - in_s)
-    fit = "trim"
-    if speed_mode == "fit" and available > slot:
-        speed = min(available / slot, MAX_SPEEDUP)
+    fit = f"holds its first frame {hold:.2f}s, then plays" if hold else "trim"
+    if speed_mode == "fit" and available > room:
+        speed = min(available / room, MAX_SPEEDUP)
         fit = f"sped up {speed:.2f}×"
-        if available / slot > MAX_SPEEDUP:
-            notes.append(f"recording is {available:.1f}s for a {slot:.1f}s slot: sped up {MAX_SPEEDUP}× and trimmed")
+        if available / room > MAX_SPEEDUP:
+            notes.append(f"recording is {available:.1f}s for a {room:.1f}s slot: sped up {MAX_SPEEDUP}× and trimmed")
     covered = available / speed
     freeze = 0.0
-    if covered < slot - 1e-6:  # short: a slight slow-down shows less than a freeze, a short freeze less than a gap
-        short = slot - covered
-        if available / slot >= MIN_SPEED:
-            speed, fit = available / slot, f"slowed to {available / slot:.2f}×"
-        elif short <= MAX_FREEZE_S:
-            freeze, fit = short, f"holds its last frame {short:.2f}s"
+    if covered < room - 1e-6:  # short: a slight slow-down shows less than a freeze, a short freeze less than a gap
+        short = room - covered
+        if available / room >= MIN_SPEED and not hold:
+            speed, fit = available / room, f"slowed to {available / room:.2f}×"
+        elif short + hold <= max_hold:
+            freeze, fit = short, (f"{fit}; " if hold else "") + f"holds its last frame {short:.2f}s"
         else:
             freeze, fit = short, f"too short by {short:.2f}s (holds its last frame)"
             notes.append(f"{path} is {short:.2f}s too short for its slot: re-record or re-generate it longer")
     item = {"kind": "clip", "src": path, "in_s": round(in_s, 3), "speed": round(speed, 4),
             "freeze_s": round(freeze, 3), "fit": shot.get("fit", "cover")}
+    if hold:
+        item["hold_s"] = round(hold, 3)
     return item, fit
 
 

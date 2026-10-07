@@ -161,6 +161,12 @@ no hosting, no deploy, and nothing posted.
   When both have reported: 3. **Producer** (`shorts` and `trends`): writes the script on the best card
   (`format_id`), uses the footage (or records more), voices it with the free local voice, plans it and puts the
   scaffold in front of the human with `short_review`, until they approve. One producer per video.
+- **The look:** it has to pass for something a person filmed on their phone and edited: the product's real screens
+  full-frame, or real phone footage, one short line of text, hard cuts. Never designed frames (backgrounds, slides,
+  mockups, logos, end cards, URLs on screen) and never a page built just for the video. The `shorts` guide has the
+  details; put "follow the look in your guide" in the producer's task.
+- **Length:** as short as the idea allows, most 8–20 s, 30 s at most. Several shorts: vary the length, at least one
+  under 12 s.
 - **Keys:** the trend scan needs APIFY_API_TOKEN, and asks the human for it by itself when it's missing. ElevenLabs
   (and later Higgsfield) only after the human approves the scaffold.
 - **Recording:** `short_record` films in a fresh browser with nobody signed in, so it can tap, type and submit on
