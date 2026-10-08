@@ -170,6 +170,16 @@ def test_critique_loop_runs_with_guards(loop, studio, monkeypatch):  # noqa: F81
         s = script_of(studio, slug)
         assert [c["version"] for c in s["critiques"]] == [1, 2, 3] and s["critiques"][0]["overall"] == 2
         assert len(fake.tasks) == 3
+        # rebuilding as a new short doesn't reset the producer's allowance
+        fake.verdicts = [_v(2), _v(2), _v(2)]
+        again = (await shorts.short_new.ainvoke({"title": "loop again", "hooks": HOOKS[:1], "beats": BEATS}))["slug"]
+        await shorts.short_voiceover.ainvoke({"slug": again})
+        await shorts.short_critique.ainvoke({"slug": again})
+        await shorts.short_edit.ainvoke({"slug": again, "part": "b1", "text": "z"})
+        await shorts.short_critique.ainvoke({"slug": again})
+        await shorts.short_edit.ainvoke({"slug": again, "part": "b1", "text": "zz"})
+        with pytest.raises(ToolError, match="5 critiques across your shorts"):
+            await shorts.short_critique.ainvoke({"slug": again})
     loop.run_until_complete(go())
 
 

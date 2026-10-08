@@ -20,8 +20,9 @@ changes).
     concrete fixes the producer applies.
   - Todd's own checks come with it: a line the voice says differently from the script, a picture that doesn't move,
     dead air, nothing to read or hear at the start, every shot the same length.
-  - Iterating is free, and it can't loop: at most three critiques per cut, only after something changed, none
-    after a pass, and the producer is told to stop as soon as the score stops improving. A critic that doesn't
+  - Iterating is free, and it can't loop: at most three critiques per cut and five per producer (a rebuilt short
+    doesn't reset that), only after something changed, none after a pass, and the producer is told to stop as soon
+    as the score stops improving. A critic that doesn't
     answer within ten minutes is stopped, and the producer judges the filmstrip itself.
   - `short_review` needs a critique first (`without_critique` when the human wants to see it now), and shows the
     critic's score.

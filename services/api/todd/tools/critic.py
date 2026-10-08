@@ -32,6 +32,7 @@ from ..sdk import ToolError, get_agent_id, get_ctx, todd_tool
 from . import media, sandbox
 
 MAX_CRITIQUES = 3  # per cut (slug + hook): then it goes to the human whatever the score
+MAX_PER_AGENT = 5  # per producer, across every short it starts (rebuilding as a new short doesn't reset the count)
 CRITIC_TIMEOUT_S = 600
 STRIP_FPS, STRIP_MAX = 2.0, 72  # a frame every half second, up to 36 s (longer cuts are sampled a little wider)
 MAX_FIXES, MAX_LESSONS = 6, 10
@@ -475,6 +476,12 @@ async def short_critique(slug: str, hook: str = "h1") -> dict:
     if mine and mine[-1].get("fingerprint") == fp:
         raise ToolError(f"nothing changed since critique v{mine[-1]['version']}: apply its fixes first (or take it to "
                         "the human with short_review)")
+    ctx, agent = get_ctx(), get_agent_id()
+    counts: dict[str, int] = ctx.__dict__.setdefault("critiques_by_agent", {})
+    if counts.get(agent, 0) >= MAX_PER_AGENT:
+        raise ToolError(f"you've had {MAX_PER_AGENT} critiques across your shorts: put the best one in front of the "
+                        "human (short_review) and say what's still open")
+    counts[agent] = counts.get(agent, 0) + 1
     version = len(mine) + 1
     _emit(f"Critic watching {slug} {hook} (v{version})", {"slug": slug, "hook": hook, "version": version})
     pkg = await package(slug, hook, version)
