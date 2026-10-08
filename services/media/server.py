@@ -1003,7 +1003,7 @@ def crop_filter(crop: "TLCrop | None", w: int, h: int) -> str:
     return f",crop={cw}:{ch}:{x}:{y},scale={w}:{h}:flags=lanczos"
 
 
-GRADES = {"none": "", "phone": ",eq=saturation=0.88:contrast=0.96,noise=alls=5:allf=t"}
+GRADES = {"none": "", "phone": ",eq=saturation=0.88:contrast=0.96,noise=alls=3:allf=t"}  # light grain: more makes big files
 
 
 def fit_filter(fit: str, w: int, h: int) -> str:

@@ -716,8 +716,9 @@ async def short_record(name: str, url: str, steps: list[dict], device: str = "ph
     return {"path": out, "duration_s": r["duration_s"], "marks": rec["marks"], "sheet": sheet,
             "next": ("look at the contact sheet (a frame just after each step): is every moment what its beat needs? "
                      f"Then use it as a shot: {{\"source\": \"screen\", \"path\": \"{out}\"}}, and land a moment on "
-                     "a word with \"sync\": {\"word\": …, \"at_s\": a mark's t}. A recording a little short for "
-                     "its slot is fine: the plan holds its first or last frame.")}
+                     "a word with \"sync\": {\"word\": …, \"at_s\": a mark's t}. A tap's mark has x and y (where "
+                     "it landed): punch in there with \"focus\": {\"x\", \"y\", \"zoom\", \"at_s\": the mark's t}. A "
+                     "recording a little short for its slot is fine: the plan holds its first or last frame.")}
 
 
 async def _cut_sheet(video: str, report: dict[str, Any]) -> str | None:

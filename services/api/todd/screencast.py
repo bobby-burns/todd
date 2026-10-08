@@ -213,6 +213,7 @@ class _Tab:
         self.inflight = 0  # a screenshot asked for and not back yet
         self.motion_gen = 0
         self.motion: list[tuple[float, float]] = []  # when the scrolls were
+        self.point: tuple[float, float] | None = None  # where the last tap or typing landed, in CSS px
 
     async def open(self) -> None:
         try:
@@ -356,11 +357,13 @@ async def _step(tab: _Tab, st: dict[str, Any], dev: dict[str, Any], signed_in: b
         why = may_act(await _current_url(tab), el.get("label", ""), el.get("type", ""), signed_in)
         if why:
             raise RecordError(why)
+        tab.point = (el["x"], el["y"])
         await _tap(tab, el["x"], el["y"], dev["mobile"])
         await asyncio.sleep(0.6)
         return f"tap {val!r}"
     if key == "type":
         el = await _find(tab, st["into"], "field")
+        tab.point = (el["x"], el["y"]) if el.get("x") is not None else None
         if el.get("type") == "password":
             raise RecordError("recordings never type into password fields")
         why = may_act(await _current_url(tab), signed_in=signed_in)
@@ -552,7 +555,12 @@ async def record(url: str, steps: list[dict[str, Any]], device: str = "phone", m
                     what = await _step(tab, st, dev, signed_in)
                 except RecordError as e:
                     raise await ses.stuck(f"step {n} {json.dumps(st)} failed: {e}") from e
-                marks.append({"t": round(t, 3), "step": what})
+                mark: dict[str, Any] = {"t": round(t, 3), "step": what}
+                if tab.point:  # where it happened, as shares of the frame: a punch-in can centre on it (focus x, y)
+                    mark |= {"x": round(min(max(tab.point[0] / dev["width"], 0), 1), 3),
+                             "y": round(min(max(tab.point[1] / dev["height"], 0), 1), 3)}
+                    tab.point = None
+                marks.append(mark)
             await asyncio.sleep(0.8)
         finally:
             stills.cancel()

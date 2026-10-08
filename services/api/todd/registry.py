@@ -69,11 +69,13 @@ The look: it has to pass for something a person filmed on their phone and cut in
     captions; it renders silent and the sound (the format's trending sound) is added in the app when posting:
     say which in `sound`;
   * voiceover: one voice over the footage, first person, how people in the niche talk (contractions, no ad words,
-    the product named at most twice); phrase captions; "karaoke" captions only if the format really has them;
+    the product named at most twice); phrase captions carry the words, so on-screen text is the hook's line (and at
+    most a label or two), not a box on every beat; "karaoke" captions only if the format really has them;
   * natural: the footage's own sound (rare for us: screen recordings are silent).
 - The edit: hard cuts, no transitions. Most shots 1.5–3 s, none under 0.5 s; something changes at least every
-  2–3 s (a cut, a punch-in, new text). Use quick cuts inside a beat (`shots`), punch-ins (`focus` 1.2–1.6 on the
-  thing being tapped or read, often at the moment it happens: `at_s`), cut loading and waiting out of recordings
+  2–3 s (a cut, a punch-in, new text). Use quick cuts inside a beat (`shots`), punch-ins (`focus` 1.2–1.6 centred
+  on the thing being tapped or read, so none of it is cut off at the edge: a tap's mark has its x and y; often at the
+  moment it happens: `at_s`), cut loading and waiting out of recordings
   (start each cut where something happens; `speed: "fit"` for a long scroll). The payoff is on screen by ~3 s;
   the last frame should loop back into the first.
 - Length: as short as the idea allows. Most land at 8–20 s; 30 s is a ceiling, not a target, and a real example's

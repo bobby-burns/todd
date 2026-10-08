@@ -397,6 +397,12 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any] | None,
                              "warnings": notes})
         warnings += [f"{p['id']}: {x}" for x in notes]
 
+    spoken_beats = [p for p in ps[1:] if p.get("vo")]
+    if caption_mode != "none" and len(spoken_beats) >= 3 and \
+            sum(1 for p in spoken_beats if p.get("text") or any(sh.get("text") for sh in _shots_of(p))) \
+            > len(spoken_beats) / 2:
+        warnings.append("on-screen text on most spoken beats competes with the captions: keep text to the hook and a "
+                        "label or two")
     if len(video) > MAX_ITEMS:
         raise ValueError(f"{len(video)} pieces of video is more than one render takes ({MAX_ITEMS}): fewer cuts")
     duration = total_f / fps
