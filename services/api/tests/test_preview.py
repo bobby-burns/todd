@@ -21,8 +21,9 @@ def _free() -> int:
     return p
 
 
-def test_the_relay_chain_reaches_a_dev_server_on_the_sandbox_localhost(loop, monkeypatch):
+def test_the_relay_chain_reaches_a_dev_server_on_the_sandbox_localhost(loop, monkeypatch, tmp_path):
     dev, sandbox_side, api_side = _free(), _free(), _free()
+    monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path))  # the sandbox server's startup makes it (not /workspace)
     monkeypatch.setenv("PREVIEW_PORTS", f"{dev},7000")  # the sandbox's own exec port is never relayed
     monkeypatch.setenv("PREVIEW_RELAY_BASE", str(sandbox_side))
     spec = importlib.util.spec_from_file_location("todd_sandbox_server_preview", SERVER)

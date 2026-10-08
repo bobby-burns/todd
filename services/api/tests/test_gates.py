@@ -11,6 +11,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -299,7 +300,12 @@ def chrome_with_hosts():
     proc = subprocess.Popen([CHROME, "--headless=new", "--no-sandbox", f"--remote-debugging-port={cdp_port}",
                              f"--user-data-dir={prof}", f"--host-resolver-rules={rules}", "about:blank"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2.5)
+    for _ in range(150):  # until Chrome answers on its debugging port (a fixed wait was too short on slow CI runners)
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version", timeout=1).read()
+            break
+        except OSError:
+            time.sleep(0.1)
     yield f"http://127.0.0.1:{cdp_port}", srv.server_port
     proc.terminate()
     srv.shutdown()
