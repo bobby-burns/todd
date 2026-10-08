@@ -114,7 +114,7 @@ services:
     environment:
       MEDIA_TOKEN_FILE: /secret/token
       WORKSPACE_ROOT: /workspace
-      MEDIA_FETCH_HOSTS: ${MEDIA_FETCH_HOSTS:-images.pexels.com,pixabay.com,cdn.pixabay.com}
+      MEDIA_FETCH_HOSTS: ${MEDIA_FETCH_HOSTS:-images.pexels.com,videos.pexels.com,pixabay.com,cdn.pixabay.com}
     volumes:
       - workspace:/workspace
       - media-token:/secret:ro

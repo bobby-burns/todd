@@ -7,6 +7,8 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
                                                         -> {model, dim, results: [{ok, vector, sha256, width, height,
                                                             path, unchanged, error}]}
   /fetch          {run_id, url, save_dir, sha256?}      -> {path, sha256}
+  /fetch/video    {run_id, url, out}                    -> {path, kind, duration_s, width, height, fps, size_bytes}
+  /thumbs         {run_id, urls, labels, out}           -> {sheet, png_b64, missing}  (stock candidates, to pick by eye)
   /slides/compose {run_id, width, height, slides: [{image, caption, caption_position, fit}], out_dir, sheet?}
                                                         -> {slides: [path], sheet}
   /render/slideshow {run_id, slides: [path], durations_s, out, fps, motion, music?, music_volume, width, height}
@@ -18,6 +20,10 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
   /screencast/put {run_id, session, frames: [{i, data_b64}]} -> {stored}   (JPEG frames of a browser recording)
   /tts/local      {run_id, text, out, speed}            -> {path, duration_s, alignment, voice}
   /frames         {run_id, src, out, count, delete_source} -> {sheet, duration_s, times}  (a reference's contact sheet)
+  /shots          {run_id, src, out, threshold, inline, delete_source}
+                                                        -> {shots: [{n, start, end, jump?}], cuts, jump_cuts,
+                                                            avg_shot_s, longest_shot_s, sheets, images_b64?}
+                                                           (a reference's edit: its cuts and a frame from every shot)
   /transcribe     {run_id, src}                         -> {text, words: [{word, start, end}]}  (local, free)
                                                            (the free scaffold voice)
   /screencast/assemble {run_id, session, times, end_s, out, fps}            -> {path, duration_s, frames, size_bytes}
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import difflib
 import hashlib
 import hmac
@@ -59,12 +66,15 @@ TEXT_MODEL = os.getenv("MEDIA_TEXT_MODEL", "Qdrant/clip-ViT-B-32-text")
 MODELS_DIR = os.getenv("MEDIA_MODELS_DIR", "/models")  # downloaded at build time
 FAKE_EMBED = os.getenv("MEDIA_FAKE_EMBED") == "1"  # tests: deterministic vectors, no model
 DIM = int(os.getenv("MEDIA_DIM", "512"))
-FETCH_DEFAULT = "images.pexels.com,pixabay.com,cdn.pixabay.com"  # the stock photo sites the video toolset uses
+FETCH_DEFAULT = "images.pexels.com,videos.pexels.com,pixabay.com,cdn.pixabay.com"  # the stock sites Todd uses
 FETCH_HOSTS = {h.strip().lower() for h in (os.getenv("MEDIA_FETCH_HOSTS") or FETCH_DEFAULT).split(",") if h.strip()}
 FETCH_MAX = 20_000_000
 FETCH_TIMEOUT = 20
 USER_AGENT = "Todd-media/0.1 (+https://github.com/bobby-burns/todd)"  # image hosts turn away default client names
 FONT = os.getenv("MEDIA_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+# On-screen text and captions in a short use the app's own typeface (TikTok Sans, OFL), so they read as typed in the app
+TEXT_FONTS = Path(os.getenv("MEDIA_TEXT_FONTS", str(Path(__file__).resolve().parent / "fonts")))
+TEXT_FONT, CAPTION_FONT = "TikTok Sans 36pt SemiBold", "TikTok Sans 36pt ExtraBold"
 FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MAX_PIXELS = 40_000_000  # larger images are refused before they're decoded (decompression bombs)
@@ -139,14 +149,14 @@ def _check_url(url: str) -> None:
         raise HTTPException(400, f"host {host or '?'} isn't allowed (MEDIA_FETCH_HOSTS)")
 
 
-async def download(url: str) -> bytes:
-    """GET an allow-listed https URL (redirects only to allow-listed hosts), at most FETCH_MAX bytes."""
+async def download(url: str, limit: int = FETCH_MAX, timeout: float = FETCH_TIMEOUT) -> bytes:
+    """GET an allow-listed https URL (redirects only to allow-listed hosts), at most `limit` bytes."""
     _check_url(url)
-    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=False,
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
                                  headers={"User-Agent": USER_AGENT}) as c:
         for _ in range(5):
             try:
-                async with asyncio.timeout(FETCH_TIMEOUT):
+                async with asyncio.timeout(timeout):
                     async with c.stream("GET", url) as r:
                         if r.is_redirect:
                             url = urljoin(url, r.headers.get("location", ""))
@@ -154,13 +164,13 @@ async def download(url: str) -> bytes:
                             continue
                         if r.status_code >= 400:
                             raise HTTPException(502, f"fetch failed: HTTP {r.status_code}")
-                        if int(r.headers.get("content-length") or 0) > FETCH_MAX:
-                            raise HTTPException(413, "image too large")
+                        if int(r.headers.get("content-length") or 0) > limit:
+                            raise HTTPException(413, "file too large")
                         buf = bytearray()
                         async for chunk in r.aiter_bytes():
                             buf += chunk
-                            if len(buf) > FETCH_MAX:
-                                raise HTTPException(413, "image too large")
+                            if len(buf) > limit:
+                                raise HTTPException(413, "file too large")
                         return bytes(buf)
             except (httpx.HTTPError, TimeoutError) as e:
                 raise HTTPException(502, f"fetch failed: {type(e).__name__}") from e
@@ -317,6 +327,84 @@ async def fetch(req: FetchReq) -> dict:
     _, ext = decode(data)
     path, sha = save(req.run_id, req.save_dir, data, ext)
     return {"path": path, "sha256": sha}
+
+
+VIDEO_FETCH_MAX = 60_000_000  # a stock clip (Pexels and Pixabay serve 720p–1080p files of a few MB)
+
+
+class FetchVideoReq(BaseModel):
+    run_id: str
+    url: str
+    out: str  # .mp4 path in the run folder
+
+
+@app.post("/fetch/video", dependencies=[Depends(auth)])
+async def fetch_video(req: FetchVideoReq) -> dict:
+    """A stock video clip from an allow-listed host, checked to be a real video (FFprobe) before it's kept."""
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".mp4":
+        raise HTTPException(400, "out must be an .mp4 path")
+    data = await download(req.url, VIDEO_FETCH_MAX, timeout=90)
+
+    def keep() -> dict:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".part")
+        tmp.write_bytes(data)
+        try:
+            video_format(tmp)  # refuses anything that isn't a plain video container
+            info = media_info(req.run_id, tmp)
+        except HTTPException:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.replace(out)
+        return {**info, "path": rel(req.run_id, out), "size_bytes": len(data)}
+    return await asyncio.to_thread(keep)
+
+
+class ThumbsReq(BaseModel):
+    run_id: str
+    urls: list[str] = Field(min_length=1, max_length=16)
+    labels: list[str] = Field(default_factory=list, max_length=16)
+    out: str  # .png
+
+
+@app.post("/thumbs", dependencies=[Depends(auth)])
+async def thumbs(req: ThumbsReq) -> dict:
+    """A labelled sheet of preview images (stock search results), for a model to choose from by eye."""
+    out = within(req.run_id, req.out)
+    if out.suffix.lower() != ".png":
+        raise HTTPException(400, "out must be a .png path")
+    got: list[bytes | None] = []
+    for u in req.urls:
+        try:
+            got.append(await download(u))
+        except HTTPException:
+            got.append(None)
+
+    def sheet() -> dict:
+        font = ImageFont.truetype(FONT, 20)
+        tiles = []
+        for k, data in enumerate(got):
+            label = req.labels[k] if k < len(req.labels) else str(k + 1)
+            try:
+                im, _ = decode(data) if data else (None, None)
+            except HTTPException:
+                im = None
+            im = ImageOps.fit(im.convert("RGB"), (240, 320)) if im is not None else Image.new("RGB", (240, 320))
+            tile = Image.new("RGB", (240, 352), (16, 16, 18))
+            tile.paste(im, (0, 0))
+            ImageDraw.Draw(tile).text((6, 326), label[:30], fill="white", font=font)
+            tiles.append(tile)
+        cols = min(4, len(tiles))
+        rows = math.ceil(len(tiles) / cols)
+        img = Image.new("RGB", (cols * 246 + 6, rows * 358 + 6), (0, 0, 0))
+        for k, tile in enumerate(tiles):
+            img.paste(tile, (6 + k % cols * 246, 6 + k // cols * 358))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img.save(out, "PNG")
+        return {"sheet": rel(req.run_id, out), "png_b64": base64.b64encode(out.read_bytes()).decode(),
+                "missing": [k + 1 for k, d in enumerate(got) if d is None]}
+    return await asyncio.to_thread(sheet)
 
 
 # ------------------------------------------------------------------------------------------ slides
@@ -650,7 +738,6 @@ PUT_KINDS = {".mp3": "audio", ".wav": "audio", ".m4a": "audio", ".ogg": "audio",
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 SAMPLE_RATE = 48000
 CAPTION_Y = 0.66  # caption baseline, as a share of the height: inside TikTok's safe zone (15–70%)
-OVERLAY_Y = 0.17  # top of the on-screen text box, just below the platform's top bar
 HIGHLIGHT = "&H0000E5FF&"  # the spoken word: warm yellow (ASS colours are &HAABBGGRR)
 
 
@@ -729,7 +816,7 @@ async def put_file(req: PutReq) -> dict:
 
 class ProbeReq(BaseModel):
     run_id: str
-    paths: list[str] = Field(min_length=1, max_length=40)
+    paths: list[str] = Field(min_length=1, max_length=80)
 
 
 @app.post("/probe", dependencies=[Depends(auth)])
@@ -745,6 +832,12 @@ async def probe_files(req: ProbeReq) -> dict:
     return await asyncio.to_thread(go)
 
 
+class TLCrop(BaseModel):
+    x: float = Field(0.5, ge=0, le=1)  # the region's centre, as shares of the frame
+    y: float = Field(0.5, ge=0, le=1)
+    zoom: float = Field(1.3, ge=1, le=3)
+
+
 class TLVideo(BaseModel):
     kind: Literal["clip", "image", "placeholder"]
     frames: int = Field(ge=1, le=60 * 120)
@@ -756,6 +849,8 @@ class TLVideo(BaseModel):
     fit: Literal["cover", "contain"] = "cover"
     zoom: Literal["in", "out", "none"] = "none"
     label: str = Field("", max_length=400)  # placeholders: what will be generated here (animatic)
+    crop: TLCrop | None = None  # a punch-in: the frame cut down to a region around (x, y), scaled back up
+    grade: Literal["none", "phone"] = "none"  # "phone": stock or generated footage toned down to look phone-shot
 
 
 class TLSegment(BaseModel):
@@ -790,7 +885,8 @@ class TLOverlay(BaseModel):
     text: str = Field(max_length=120)
     start: float = Field(ge=0)
     end: float = Field(ge=0)
-    position: Literal["top", "middle", "tag"] = "top"  # tag: a small label in the corner (scaffold beat ids)
+    position: Literal["top", "middle", "low", "tag"] = "top"  # tag: a small label in the corner (scaffold beat ids)
+    style: Literal["box", "outline"] = "box"  # the app's two text looks: a white box, or white with a black edge
 
 
 class TimelineReq(BaseModel):
@@ -799,10 +895,11 @@ class TimelineReq(BaseModel):
     fps: int = Field(30, ge=12, le=60)
     width: int = Field(1080, ge=240, le=2160)
     height: int = Field(1920, ge=240, le=3840)
-    video: list[TLVideo] = Field(min_length=1, max_length=60)
+    video: list[TLVideo] = Field(min_length=1, max_length=120)  # quick cuts and punch-ins: up to ~4 pieces a beat
     voice: TLVoice | None = None
     music: TLMusic | None = None
     captions: list[TLCaption] = Field(default_factory=list, max_length=200)
+    caption_style: Literal["phrase", "karaoke"] = "karaoke"  # phrase: the words of a page shown together, no colour pop
     overlays: list[TLOverlay] = Field(default_factory=list, max_length=120)
 
 
@@ -815,10 +912,16 @@ def ass_text(t: str) -> str:
     return " ".join(t.replace("\\", "/").replace("{", "(").replace("}", ")").split())
 
 
+OVERLAY_Y = {"top": 0.17, "middle": 0.42, "low": 0.56}  # where on-screen text sits (its top, as a share of height)
+
+
 def ass_script(req: TimelineReq) -> str:
-    """Captions (the spoken word highlighted) and on-screen text boxes as an ASS script for libass."""
+    """Captions and on-screen text as an ASS script for libass, in the app's typeface: captions white with a black
+    edge (the spoken word highlighted in karaoke style, or a whole phrase at once), on-screen text in a white box or
+    white with a black edge, all inside the platform's safe zone."""
     w, h = req.width, req.height
-    cap, box = round(76 * w / 1080), round(52 * w / 1080)
+    cap, box = round(84 * w / 1080), round(78 * w / 1080)  # TikTok Sans draws small for its size: these read like the app
+    edge = max(2, round(box * 0.09))
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {w}", f"PlayResY: {h}", "WrapStyle: 0",
         "ScaledBorderAndShadow: yes", "",
@@ -827,14 +930,18 @@ def ass_script(req: TimelineReq) -> str:
         "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
         "MarginR, MarginV, Encoding",
         # captions: white, black outline, bottom-anchored at CAPTION_Y
-        f"Style: Caption,DejaVu Sans,{cap},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,"
-        f"{max(2, round(cap * 0.09))},{max(1, round(cap * 0.03))},2,{round(w * 0.08)},{round(w * 0.08)},"
-        f"{round(h * (1 - CAPTION_Y))},1",
-        # on-screen text: black on a white box (BorderStyle 3 draws OutlineColour as the box)
-        f"Style: Box,DejaVu Sans,{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,"
-        f"{round(box * 0.28)},0,8,{round(w * 0.1)},{round(w * 0.1)},{round(h * OVERLAY_Y)},1",
-        f"Style: BoxMid,DejaVu Sans,{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,"
-        f"{round(box * 0.28)},0,5,{round(w * 0.1)},{round(w * 0.1)},0,1",
+        f"Style: Caption,{CAPTION_FONT},{cap},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,"
+        f"{max(3, round(cap * 0.1))},0,2,{round(w * 0.1)},{round(w * 0.1)},{round(h * (1 - CAPTION_Y))},1",
+    ]
+    for pos, y in OVERLAY_Y.items():
+        # box: black text on a white box (BorderStyle 3 draws OutlineColour as the box); outline: white, black edge
+        lines += [
+            f"Style: Box-{pos},{TEXT_FONT},{box},&H00000000,&H00000000,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,"
+            f"{round(box * 0.26)},0,8,{round(w * 0.1)},{round(w * 0.1)},{round(h * y)},1",
+            f"Style: Outline-{pos},{TEXT_FONT},{box},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,"
+            f"0,1,{edge},0,8,{round(w * 0.1)},{round(w * 0.1)},{round(h * y)},1",
+        ]
+    lines += [
         # beat labels on a scaffold: small, bottom-left, clear of captions and text boxes
         f"Style: Tag,DejaVu Sans,{round(28 * w / 1080)},&H00FFFFFF,&H00FFFFFF,&H90000000,&H00000000,-1,0,0,0,100,100,"
         f"0,0,3,{round(8 * w / 1080)},0,1,{round(w * 0.04)},{round(w * 0.04)},{round(h * 0.03)},1",
@@ -842,10 +949,14 @@ def ass_script(req: TimelineReq) -> str:
     ]
     for o in req.overlays:
         if o.end > o.start and ass_text(o.text):
-            style = {"top": "Box", "middle": "BoxMid", "tag": "Tag"}[o.position]
+            style = "Tag" if o.position == "tag" else f"{o.style.capitalize()}-{o.position}"
             lines.append(f"Dialogue: 1,{ass_time(o.start)},{ass_time(o.end)},{style},,0,0,0,,{ass_text(o.text)}")
     for c in req.captions:
         words = [ass_text(wd.text) for wd in c.words]
+        if req.caption_style == "phrase":
+            if c.end > c.start:
+                lines.append(f"Dialogue: 0,{ass_time(c.start)},{ass_time(c.end)},Caption,,0,0,0,,{' '.join(words)}")
+            continue
         for i, wd in enumerate(c.words):  # one event per spoken word, that word highlighted
             start = c.start if i == 0 else wd.start
             end = c.words[i + 1].start if i + 1 < len(c.words) else c.end
@@ -882,6 +993,19 @@ def placeholder(img: Image.Image | None, label: str, w: int, h: int) -> Image.Im
     return slide
 
 
+def crop_filter(crop: "TLCrop | None", w: int, h: int) -> str:
+    """A punch-in on a frame already at w×h: the region around (x, y), 1/zoom of the frame, scaled back to w×h."""
+    if crop is None or crop.zoom <= 1.001:
+        return ""
+    cw, ch = 2 * round(w / crop.zoom / 2), 2 * round(h / crop.zoom / 2)
+    x = min(max(round(crop.x * w - cw / 2), 0), w - cw)
+    y = min(max(round(crop.y * h - ch / 2), 0), h - ch)
+    return f",crop={cw}:{ch}:{x}:{y},scale={w}:{h}:flags=lanczos"
+
+
+GRADES = {"none": "", "phone": ",eq=saturation=0.88:contrast=0.96,noise=alls=5:allf=t"}
+
+
 def fit_filter(fit: str, w: int, h: int) -> str:
     if fit == "contain":  # the whole frame on a blurred, darkened copy of itself
         return (f"split[a][b];[a]scale={w // 8}:{h // 8}:force_original_aspect_ratio=increase,crop={w // 8}:{h // 8},"
@@ -904,7 +1028,8 @@ def _segment(req: TimelineReq, i: int, item: TLVideo, tmp: Path) -> Path:
         if src.suffix.lower() in IMAGE_EXT:
             raise HTTPException(400, f"{item.src} is an image: use kind=image")
         fmt = video_format(src)
-        graph = (f"[0:v]setpts=(PTS-STARTPTS)/{item.speed:g},fps={fps},{fit_filter(item.fit, w, h)},"
+        graph = (f"[0:v]setpts=(PTS-STARTPTS)/{item.speed:g},fps={fps},{fit_filter(item.fit, w, h)}"
+                 f"{crop_filter(item.crop, w, h)}{GRADES[item.grade]},"
                  f"tpad=start_mode=clone:start_duration={item.hold_s:.3f}:"
                  f"stop_mode=clone:stop_duration={item.freeze_s + 1:.3f},format=yuv420p[v]")
         ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{item.in_s:.3f}", "-i", str(src), "-filter_complex", graph,
@@ -922,6 +1047,11 @@ def _segment(req: TimelineReq, i: int, item: TLVideo, tmp: Path) -> Path:
         raise HTTPException(400, f"video item {i + 1}: an image needs a src")
     else:
         still = contain(img, w, h, None) if item.fit == "contain" else cover(img, w, h)
+        if item.crop is not None and item.crop.zoom > 1.001:
+            cw, ch = round(w / item.crop.zoom), round(h / item.crop.zoom)
+            x = min(max(round(item.crop.x * w - cw / 2), 0), w - cw)
+            y = min(max(round(item.crop.y * h - ch / 2), 0), h - ch)
+            still = still.crop((x, y, x + cw, y + ch)).resize((w, h), Image.LANCZOS)
     frame = tmp / f"still_{i:02d}.png"
     still.save(frame, "PNG")
     ffmpeg(*still_args(frame, item.frames, w, h, fps, item.zoom), "-frames:v", str(item.frames), "-r", str(fps),
@@ -997,7 +1127,12 @@ def _timeline(req: TimelineReq) -> dict:
             vf: list[str] = []
             if req.captions or req.overlays:
                 (tmp / "captions.ass").write_text(ass_script(req), encoding="utf-8")
-                vf = ["-vf", f"ass=captions.ass:fontsdir={Path(FONT).parent}"]
+                fonts = tmp / "fonts"  # the app's typeface for text, DejaVu for scaffold labels
+                fonts.mkdir()
+                for f in [*TEXT_FONTS.glob("*.ttf"), Path(FONT)]:
+                    if f.is_file():
+                        shutil.copy(f, fonts / f.name)
+                vf = ["-vf", "ass=captions.ass:fontsdir=fonts"]
             ffmpeg(*LOCAL_ONLY, "-i", "video.mp4", "-i", "audio.wav", *vf, "-map", "0:v", "-map", "1:a",
                    "-frames:v", str(frames), "-r", str(req.fps), *ENCODE[:4], "-crf", "19", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "160k", "-ar", str(SAMPLE_RATE), "-t", f"{total:.4f}",
@@ -1331,6 +1466,153 @@ def _frames(req: FramesReq) -> dict:
 @app.post("/frames", dependencies=[Depends(auth)])
 async def frames(req: FramesReq) -> dict:
     return await asyncio.to_thread(_frames, req)
+
+
+# A reference's edit, shot by shot: where it cuts (FFmpeg's scene score), and a frame from every shot, so whoever
+# studies it sees the shot list (how many cuts, what each shot is, the text on it) rather than evenly spaced moments.
+# Cuts are spikes against the local level, as PySceneDetect's adaptive detector does: a hard cut scores high anywhere,
+# a jump cut in a talking head scores ~0.15 against a near-zero background, and a fast scroll scores high on every
+# frame, so it isn't a string of cuts.
+SCENE_THRESHOLD = 0.3  # a hard cut (0.4–1 in practice)
+JUMP_THRESHOLD = 0.12  # a jump cut or a big change on a steady shot, if it stands out from the frames around it
+SPIKE_RATIO = 3.0  # how far above the local median score a frame must be to count
+WINDOW_S = 0.5  # the "frames around it", each side
+MIN_SHOT_S = 0.3  # cuts closer than this are one transition (a flash, a whip), not two shots
+LONG_SHOT_S = 3.5  # a shot this long gets a frame every SAMPLE_EVERY_S (a scroll, a reveal, text that changes)
+SAMPLE_EVERY_S = 2.5
+SHOT_TILE_W, SHOTS_PER_SHEET, MAX_SHOT_TILES = 320, 15, 45
+
+
+class ShotsReq(BaseModel):
+    run_id: str
+    src: str
+    out: str  # .jpg (or .png): the first sheet; more sheets (a fast edit) get -2, -3… before the extension
+    threshold: float = Field(SCENE_THRESHOLD, ge=0.1, le=0.9)
+    inline: bool = False
+    delete_source: bool = False
+
+
+def scene_scores(src: Path, fmt: str) -> list[tuple[float, float]]:
+    """(time, FFmpeg scene-change score) for every frame, on a small copy of the frames."""
+    with tempfile.TemporaryDirectory(dir=src.parent) as td:
+        log = Path(td) / "scenes.txt"
+        ffmpeg(*LOCAL_ONLY, "-f", fmt, "-i", str(src), "-an", "-vf",
+               f"scale=192:-2,select='gte(scene,0)',metadata=print:file={log.name}", "-f", "null", "-", cwd=Path(td))
+        text = log.read_text() if log.is_file() else ""
+    out, t = [], None
+    for line in text.splitlines():
+        m = re.search(r"pts_time:([0-9.]+)", line)
+        if m:
+            t = float(m.group(1))
+            continue
+        m = re.search(r"scene_score=([0-9.]+)", line)
+        if m and t is not None:
+            out.append((t, float(m.group(1))))
+    return out
+
+
+def find_cuts(scores: list[tuple[float, float]], threshold: float = SCENE_THRESHOLD) -> list[tuple[float, str]]:
+    """(time, "cut" | "jump") where the picture changes: a hard cut, or a jump cut / big change on a steady shot. The
+    local level is the median score within WINDOW_S each side (a sliding window over the time-ordered scores)."""
+    scores = sorted(scores)
+    times = [t for t, _ in scores]
+    out = []
+    for i, (t, sc) in enumerate(scores):
+        if sc < JUMP_THRESHOLD:
+            continue
+        lo, hi = bisect.bisect_left(times, t - WINDOW_S), bisect.bisect_right(times, t + WINDOW_S)
+        near = sorted(v for j, (_, v) in enumerate(scores[lo:hi], lo) if j != i)
+        level = near[len(near) // 2] if near else 0.0
+        if sc >= threshold and (sc >= 0.5 or sc >= SPIKE_RATIO * level):
+            out.append((t, "cut"))
+        elif sc >= SPIKE_RATIO * max(level, 0.01):
+            out.append((t, "jump"))
+    return out
+
+
+def shot_list(cuts: list[tuple[float, str]] | list[float], total: float) -> list[tuple[float, float, str]]:
+    """(start, end, how it begins) of every shot: cuts too close together or to either end are merged."""
+    edges: list[tuple[float, str]] = [(0.0, "start")]
+    for c in sorted((c if isinstance(c, tuple) else (c, "cut")) for c in cuts):
+        if c[0] - edges[-1][0] >= MIN_SHOT_S and total - c[0] >= MIN_SHOT_S:
+            edges.append(c)
+        elif c[1] == "cut" and edges[-1][1] == "jump" and c[0] - edges[-1][0] < MIN_SHOT_S:
+            edges[-1] = (edges[-1][0], "cut")
+    bounds = [*edges, (total, "end")]
+    return [(round(a[0], 2), round(b[0], 2), a[1]) for a, b in zip(bounds, bounds[1:])]
+
+
+def _shots(req: ShotsReq) -> dict:
+    src, out = within(req.run_id, req.src), within(req.run_id, req.out)
+    kind = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG"}.get(out.suffix.lower())
+    if kind is None:
+        raise HTTPException(400, "out must be a .jpg or .png path")
+    if not src.is_file():
+        raise HTTPException(404, f"no such file: {req.src}")
+    try:
+        fmt = video_format(src)
+        total = duration(src)
+        if total <= 0:
+            raise HTTPException(400, "the video has no length")
+        shots = shot_list(find_cuts(scene_scores(src, fmt), req.threshold), total)
+        # what to show: the very first moment (the hook), then each shot at its middle, or every SAMPLE_EVERY_S of a
+        # long one (what changes inside it: a scroll, new text)
+        moments: list[tuple[float, str]] = [(min(0.15, total / 2), "#1 start")]
+        for n, (a, b, _) in enumerate(shots, 1):
+            if b - a >= LONG_SHOT_S:
+                k = math.ceil((b - a) / SAMPLE_EVERY_S)
+                moments += [(a + (j + 0.5) * (b - a) / k, f"#{n}" if j == 0 else f"#{n} +{(j + 0.5) * (b - a) / k:.0f}s")
+                            for j in range(k)]
+            else:
+                moments.append((a + 0.5 * (b - a), f"#{n}"))
+        if len(moments) > MAX_SHOT_TILES:  # a very fast edit: every shot still listed, an even sample shown
+            step = len(moments) / MAX_SHOT_TILES
+            moments = [moments[int(k * step)] for k in range(MAX_SHOT_TILES)]
+        font = ImageFont.truetype(FONT, 22)
+        tiles = []
+        with tempfile.TemporaryDirectory(dir=src.parent) as td:
+            for k, (t, label) in enumerate(moments):
+                f = Path(td) / f"{k:02d}.png"
+                t = min(max(t, 0.0), max(total - 0.05, 0.0))
+                ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{t:.2f}", "-i", str(src), "-frames:v", "1", "-vf",
+                       f"scale={SHOT_TILE_W}:-2", str(f))
+                im = Image.open(f).convert("RGB")
+                tile = Image.new("RGB", (im.width, im.height + 32), (16, 16, 18))
+                tile.paste(im, (0, 0))
+                ImageDraw.Draw(tile).text((6, im.height + 5), f"{label} · {t:.1f}s", fill="white", font=font)
+                tiles.append(tile)
+        sheets, b64 = [], []
+        out.parent.mkdir(parents=True, exist_ok=True)
+        for s, at in enumerate(range(0, len(tiles), SHOTS_PER_SHEET)):
+            group = tiles[at:at + SHOTS_PER_SHEET]
+            cols = min(5, len(group))
+            tw, th = max(t.width for t in group), max(t.height for t in group)
+            rows = math.ceil(len(group) / cols)
+            sheet = Image.new("RGB", (cols * (tw + 6) + 6, rows * (th + 6) + 6), (0, 0, 0))
+            for k, tile in enumerate(group):
+                sheet.paste(tile, (6 + k % cols * (tw + 6), 6 + k // cols * (th + 6)))
+            path = out if s == 0 else out.with_name(f"{out.stem}-{s + 1}{out.suffix}")
+            sheet.save(path, kind, **({"quality": 82} if kind == "JPEG" else {}))
+            sheets.append(rel(req.run_id, path))
+            if req.inline:
+                b64.append(base64.b64encode(path.read_bytes()).decode())
+    finally:
+        if req.delete_source:
+            src.unlink(missing_ok=True)
+    lengths = [b - a for a, b, _ in shots]
+    res = {"duration_s": round(total, 2),
+           "shots": [{"n": n, "start": a, "end": b, **({"jump": True} if how == "jump" else {})}
+                     for n, (a, b, how) in enumerate(shots, 1)],
+           "cuts": len(shots) - 1, "jump_cuts": sum(1 for *_, how in shots if how == "jump"),
+           "avg_shot_s": round(total / len(shots), 2), "longest_shot_s": round(max(lengths), 2), "sheets": sheets}
+    if req.inline:
+        res["images_b64"] = b64
+    return res
+
+
+@app.post("/shots", dependencies=[Depends(auth)])
+async def shots(req: ShotsReq) -> dict:
+    return await asyncio.to_thread(_shots, req)
 
 
 class TranscribeReq(BaseModel):

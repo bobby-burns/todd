@@ -9,6 +9,45 @@ changes).
 
 ### Added
 
+- **Shorts learn the edit, not just the words:** `trend_analyze` decodes each reference shot by shot. It finds the
+  cuts (hard cuts, and jump cuts as spikes against the frames around them, so a fast scroll isn't a string of cuts),
+  shows the agent a sheet with a frame from every shot (and every 2.5 s of a long one), and lines the words up with
+  the shots. It measures how much of the video is speech. Before this, the agent wrote cards from transcripts and
+  never looked at the frames.
+- **Format cards v2:** `format_save` takes the shot list as it really is (each shot's type from a fixed list: screen,
+  screenshot, talking-head, person, pov-hands, place, object, text-only, reused), the audio mode (voiceover,
+  to-camera, skit, text + sound, natural) and the text style. Todd attaches the examples' measured pace (shots,
+  average shot length, speech share, length) and what the card needs on camera. `format_search` flags older cards
+  that have no shot list.
+- **Trend scans by search phrase:** `trend_scan(queries=…)` searches TikTok the way the niche does. Hashtags still
+  work, and `related=[ids]` follows TikTok's related videos from the best on-niche results. Captions in another
+  language are dropped (`language`, default "en"). Every Apify run is capped at the approved amount, or $0.50 when
+  that's less, Apify's smallest allowed cap.
+- **Shorts that aren't all voiceover over a screen recording:**
+  - A beat can be silent: no `vo`, a `seconds` length. A reveal can sit between lines, and a whole short can be
+    text + sound, rendered silent for the trending sound to be added in the app. That needs no voiceover at all.
+  - A beat can hold up to four quick cuts (`shots`, with a `share` each, and their own text).
+  - A clip can punch in on what matters (`focus`: a spot and a zoom, optionally from a moment `at_s`).
+  - Stock and generated clips are toned down to sit with phone footage (`grade`).
+  - On-screen text uses the app's own typeface (TikTok Sans, OFL, in `services/media/fonts/`), in its two looks
+    (`text_style` "box" or "outline", positions top, middle and low).
+  - Captions default to phrases rather than per-word karaoke colour.
+  - Plans report the number of shots and the average shot length, next to the format's examples (`vs_format`).
+- **Stock b-roll:** `short_stock` searches Pixabay or Pexels videos and shows a numbered sheet of candidates.
+  `short_stock_pick` downloads one into `video/stock/` and credits it in `video/stock/CREDITS.md`. The free
+  `PIXABAY_API_KEY` is asked for by the tool itself. The media service fetches the clips (`/fetch/video`, checked as
+  a real video) and the candidate previews (`/thumbs`), from its host allow-list only (now including
+  videos.pexels.com).
+- **A different flow for short-video goals:** trend research and a product scout work side by side. The scout looks
+  through the product and films only a key moment or two. Then one producer per video, each on its own card,
+  writes the shot list from the card and gets exactly that footage. Several videos vary their format and audio, and
+  at most one is a screen recording with a voiceover. The shorts guide maps each shot type to a source and gives a
+  phone-video prompt for AI shots. The editing rules (shot lengths, something changing every 2–3 s, hard cuts) and
+  the honesty rules (no stock or AI "customers", no fake posts or numbers) come from TikTok's and Meta's creative
+  guidance and from an eye-tracking study of cut pace.
+- A tool can show the agent several images with one result (`push_image` collects them), e.g. a sheet per reference
+  video.
+
 - **Slideshow videos (video, step 1):** a `video` toolset (`video_new`, `video_find_shots`, `video_pick`,
   `video_render`) that writes a storyboard to `video/<slug>/storyboard.json`, searches each shot by meaning across stock
   photos (Pixabay, Pexels) and the run's own images (`video/library/`, or paths the agent names), ranks them by fit to

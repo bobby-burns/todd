@@ -69,13 +69,14 @@ async def probe(run_id: str, paths: list[str]) -> dict[str, dict[str, Any]]:
     """{path: {kind, duration_s, width, height, fps}} for the files that could be read."""
     if not paths:
         return {}
-    r = await call("/probe", {"run_id": run_id, "paths": paths[:40]}, timeout=120)
+    r = await call("/probe", {"run_id": run_id, "paths": paths[:80]}, timeout=120)
     return {i["path"]: i for i in r.get("items") or [] if i.get("ok")}
 
 
 async def render_timeline(run_id: str, out: str, timeline: dict[str, Any]) -> dict[str, Any]:
     """Render a shorts timing plan (shorts_plan.plan) to an MP4: {path, duration_s, frames, size_bytes}."""
-    body = {k: timeline[k] for k in ("fps", "width", "height", "video", "captions", "overlays") if k in timeline}
+    body = {k: timeline[k] for k in ("fps", "width", "height", "video", "captions", "caption_style", "overlays")
+            if k in timeline}
     if timeline.get("voice"):
         body["voice"] = timeline["voice"]
     if timeline.get("music"):

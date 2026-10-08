@@ -87,7 +87,8 @@ def test_cuts_land_two_frames_before_each_line_and_the_hook_starts_at_once():
     seg1 = tl["voice"]["segments"][1]
     assert seg1["src_in"] == pytest.approx((1.90 + 2.30) / 2) and seg1["at"] == pytest.approx(seg1["src_in"] - lead)
     assert tl["voice"]["segments"][2]["src_out"] == pytest.approx(4.90 + sp.TAIL)
-    assert tl["overlays"][0] == {"text": "5 guys", "start": 0.0, "end": round(cut1 / FPS, 3), "position": "top"}
+    assert tl["overlays"][0] == {"text": "5 guys", "start": 0.0, "end": round(cut1 / FPS, 3), "position": "top",
+                               "style": "box"}
 
 
 def test_a_hold_adds_silence_between_lines_and_moves_everything_after_it():
@@ -265,3 +266,118 @@ def test_emoji_are_left_out_of_on_screen_text():
     assert "🧠" not in texts and len(texts) == 1  # an emoji-only text box is dropped
     assert any("emoji left out" in w for w in p.report["warnings"])
     assert sp.plain("TRUE ✅ ok") == "TRUE ok"
+
+
+def test_a_text_and_sound_short_is_timed_by_its_beats_seconds():
+    s = script(captions="none", hooks=[{"id": "h1", "vo": "", "seconds": 1.5, "text": "pov: it's tuesday",
+                                        "shot": {"source": "screen", "path": "shots/rec.mp4"}}],
+               beats=[{"id": "b1", "vo": "", "seconds": 2.0, "text": "the rink schedule is on 4 pages",
+                       "shot": {"source": "screen", "path": "shots/rec.mp4", "in_s": 1}},
+                      {"id": "b2", "vo": "", "seconds": 0.8, "text": "one site has all of it, on your phone, finally",
+                       "shot": {"source": "image", "path": "shots/b.png"}}])
+    p = sp.plan(s, "h1", None, MEDIA, None)
+    tl = p.timeline
+    assert tl["voice"] is None and tl["captions"] == []
+    assert [v["frames"] for v in tl["video"]] == [45, 60, 24] and tl["frames"] == 129  # 1.5 + 2 + 0.8 s, no end hold
+    assert [(o["text"], o["start"], o["end"]) for o in tl["overlays"]] == [
+        ("pov: it's tuesday", 0.0, 1.5), ("the rink schedule is on 4 pages", 1.5, 3.5),
+        ("one site has all of it, on your phone, finally", 3.5, 4.3)]
+    assert any("isn't enough to read" in w for w in p.report["warnings"])  # 9 words in 0.8 s
+    assert sp.estimate_seconds(s) == pytest.approx(4.3)
+    with pytest.raises(ValueError, match="needs seconds"):
+        sp.plan({**s, "beats": [{"id": "b1", "vo": "", "shot": {"source": "image", "path": "shots/b.png"}}]}, "h1",
+                None, MEDIA, None)
+
+
+def test_silent_beats_sit_between_the_lines_without_moving_the_voice_against_its_picture():
+    base = run()
+    s = script()
+    s["hooks"][0] = {"id": "h1", "vo": "", "seconds": 1.0, "text": "wait for it",
+                     "shot": {"source": "image", "path": "shots/bench.png"}}
+    s["beats"].insert(1, {"id": "b2", "vo": "", "seconds": 0.9, "shot": {"source": "image", "path": "shots/b.png"}})
+    s["beats"][2]["id"] = "b3"
+    s["beats"].append({"id": "b4", "vo": "", "seconds": 1.2, "text": "that's it",
+                       "shot": {"source": "image", "path": "shots/b.png"}})
+    # the take is just the spoken lines: "Full pro gear." and "And the one who checked first."
+    t = [(w, a - 2.3 + 0.4, b - 2.3 + 0.4) for w, a, b in H1[5:]]
+    p = sp.plan(s, "h1", take(t), MEDIA, "x.mp3")
+    tl = p.timeline
+    ids = [b["id"] for b in p.report["beats"]]
+    assert ids == ["h1", "b1", "b2", "b3", "b4"]
+    slots = {b["id"]: (b["start_s"], b["end_s"]) for b in p.report["beats"]}
+    assert slots["h1"] == (0.0, 1.0)  # the silent hook, then the first line starts
+    assert slots["b2"][1] - slots["b2"][0] == pytest.approx(0.9, abs=1 / FPS)
+    assert slots["b4"][1] - slots["b4"][0] == pytest.approx(1.2, abs=1 / FPS) and slots["b4"][1] == tl["duration_s"]
+    segs = tl["voice"]["segments"]
+    assert len(segs) == 2 and segs[0]["at"] == pytest.approx(1.0)  # the voice waits for the silent hook
+    # the second line is pushed back by the silent beat before it, and is still on its own picture
+    lead = 0.4 - sp.PRE_ROLL
+    first_word_b3 = 3.5 - 2.3 + 0.4
+    assert slots["b3"][0] == pytest.approx(first_word_b3 - lead + 1.0 + 0.9 - 2 / FPS, abs=1.5 / FPS)
+    for pg in tl["captions"]:  # no caption runs into a silent beat
+        assert not (slots["b2"][0] < pg["start"] < slots["b2"][1]) and pg["end"] <= slots["b4"][0] + 1e-6
+    assert [o["text"] for o in tl["overlays"]] == ["wait for it", "1. pro gear", "that's it"]
+    assert base.timeline["voice"]["segments"][0]["at"] == 0.0
+
+
+def test_quick_cuts_split_a_beat_and_a_punch_in_lands_on_its_moment():
+    s = script()
+    s["beats"][1] = {"id": "b2", "vo": "And the one who checked first.", "shots": [
+        {"source": "screen", "path": "shots/rec.mp4", "in_s": 0.5, "text": "the one who checked"},
+        {"source": "screen", "path": "shots/rec.mp4", "in_s": 2.0, "share": 2,
+         "focus": {"x": 0.5, "y": 0.3, "zoom": 1.6, "at_s": 2.6}}]}
+    p = run(s)
+    tl = p.timeline
+    beat = p.report["beats"][2]
+    items = tl["video"][2:]
+    assert len(items) == 3  # the first cut, then the second cut before and after its punch-in
+    total = sum(v["frames"] for v in items)
+    assert items[0]["frames"] == round(total / 3) and "crop" not in items[0]
+    assert "crop" not in items[1] and items[2]["crop"] == {"x": 0.5, "y": 0.3, "zoom": 1.6}
+    assert items[1]["frames"] == round(0.6 * FPS) and items[2]["in_s"] == 2.6  # punched in 0.6 s into the cut
+    assert "b2.2" in beat["fit"] and "punches in 1.6" in beat["fit"]
+    texts = [(o["text"], o["end"]) for o in tl["overlays"]]
+    assert ("the one who checked", round(beat["start_s"] + items[0]["frames"] / FPS, 3)) in texts
+    assert p.report["cuts"] == 4  # five pieces of video on the timeline
+    # a whole cut punched in, and one long unchanging shot is flagged
+    s["beats"][1]["shots"] = [{"source": "screen", "path": "shots/rec.mp4", "focus": {"x": 0.2, "y": 0.8, "zoom": 1.2}}]
+    item = run(s).timeline["video"][-1]
+    assert item["crop"] == {"x": 0.2, "y": 0.8, "zoom": 1.2}
+    slow = [(w, a * 3, b * 3) for w, a, b in H1]
+    assert any("stays on one shot" in w for w in run(s, t=slow).report["warnings"])
+
+
+def test_stock_and_generated_clips_are_toned_down_and_screens_are_not():
+    s = script()
+    s["beats"][1]["shot"] = {"source": "clip", "path": "video/stock/rink.mp4"}
+    s["hooks"][0]["shot"] = {"source": "screen", "path": "shots/rec.mp4"}
+    p = run(s, media={**MEDIA, "video/stock/rink.mp4": {"kind": "video", "duration_s": 9.0}})
+    assert p.timeline["video"][2]["grade"] == "phone" and "grade" not in p.timeline["video"][0]
+
+
+def test_a_punch_in_past_the_end_of_its_clip_doesnt_cut_into_nothing():
+    s = script()
+    s["beats"][1]["shot"] = {"source": "screen", "path": "shots/rec.mp4", "focus": {"x": 0.5, "y": 0.5, "zoom": 1.5,
+                                                                                   "at_s": 9.0}}
+    p = run(s, media={**MEDIA, "shots/rec.mp4": {"kind": "video", "duration_s": 1.0}})
+    items = p.timeline["video"][2:]
+    assert len(items) == 1 and items[0]["crop"]["zoom"] == 1.5  # punched in from the start instead
+    assert any("past the end" in w for w in p.report["warnings"])
+    assert sum(v["frames"] for v in p.timeline["video"]) == p.timeline["frames"]
+
+
+def test_too_many_cuts_for_a_beat_is_an_error_not_a_bad_render():
+    with pytest.raises(ValueError, match="cuts don't fit"):
+        sp._split(2, [{}, {}, {}])
+    assert sp._split(7, [{}, {}, {"share": 5}]) == [1, 1, 5]
+
+
+def test_one_hook_spoken_and_another_silent_plan_from_their_own_takes():
+    s = script(beats=[{"id": "b1", "vo": "", "seconds": 1.5, "shot": {"source": "image", "path": "shots/b.png"}}])
+    s["hooks"][1] = {"id": "h2", "vo": "", "seconds": 2.0, "text": "rating every guy",
+                     "shot": {"source": "image", "path": "shots/b.png"}}
+    assert sp.take_text(s, "h2")[0] == ""
+    silent = sp.plan(s, "h2", None, MEDIA, None)
+    assert silent.timeline["voice"] is None and silent.timeline["frames"] == 105
+    spoken = sp.plan(s, "h1", take(H1[:5]), MEDIA, "x.mp3")
+    assert spoken.timeline["voice"] and sum(v["frames"] for v in spoken.timeline["video"]) == spoken.timeline["frames"]

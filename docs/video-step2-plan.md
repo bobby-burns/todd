@@ -2,6 +2,9 @@
 
 Status: proposal (2026-10-06). Builds on step 1 (`video` toolset, `media` service) on branch `video-step1-slideshows`.
 Folds in the original step 2 (app demo clips via browser screencast) and the AI-generation part of step 4.
+Built since as the `shorts` and `trends` toolsets: the tool names below are the proposal's. As of 2026-10-08 references
+are decoded shot by shot, format cards carry a shot list and audio mode, and shorts can be text + sound, have silent
+beats, quick cuts, punch-ins and stock b-roll; why, with sources, is in [shorts-research.md](shorts-research.md).
 
 **Todd is a generic system.** Nothing below is tuned to one product: the engine works out the niche, the trends and the
 formats itself from whatever the human points it at (a URL, a repo, a sentence). dropin.hockey (a local consumer site)

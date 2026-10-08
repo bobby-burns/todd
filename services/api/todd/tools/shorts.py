@@ -39,8 +39,11 @@ from .video import IMAGE_EXT, _rel, _slugify
 
 SOURCES = ("screen", "clip", "image", "ai")
 VIDEO_EXT = (".mp4", ".mov", ".webm", ".m4v")
-MAX_HOOKS, MAX_BEATS = 3, 10
+AUDIO_EXT = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac")
+MAX_HOOKS, MAX_BEATS, MAX_CUTS = 3, 12, 4
 MAX_VO_CHARS, MAX_TEXT_CHARS, MAX_PROMPT = 160, 60, 600
+CAPTIONS = ("phrase", "karaoke", "none")  # phrase: a few words at a time, the way the app's auto-captions look
+TEXT_STYLES, TEXT_POSITIONS = ("box", "outline"), ("top", "middle", "low")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 PART_ID = re.compile(r"(h|b)[0-9]{1,2}")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,40}")
@@ -177,26 +180,80 @@ def _shot(raw: Any, where: str) -> dict[str, Any]:
         if speed != "fit" and not (isinstance(speed, (int, float)) and 0.5 <= speed <= 2):
             raise ToolError(f"{where}: speed is a number from 0.5 to 2, or \"fit\" (speed the recording up to fit)")
         shot["speed"] = speed
-    for k, allowed in (("fit", ("cover", "contain")), ("zoom", ("in", "out", "none"))):
+    for k, allowed in (("fit", ("cover", "contain")), ("zoom", ("in", "out", "none")), ("grade", ("phone", "none")),
+                       ("text_style", TEXT_STYLES), ("text_position", TEXT_POSITIONS)):
         if raw.get(k) is not None:
             if raw[k] not in allowed:
                 raise ToolError(f"{where}: {k} is {' or '.join(allowed)}")
             shot[k] = raw[k]
+    if raw.get("focus") is not None:
+        f = raw["focus"]
+        try:
+            focus = {"x": float(f.get("x", 0.5)), "y": float(f.get("y", 0.5)), "zoom": float(f.get("zoom", 1.3))}
+        except (AttributeError, TypeError, ValueError):
+            raise ToolError(f"{where}: focus is {{\"x\": 0–1, \"y\": 0–1, \"zoom\": 1.1–2.5, \"at_s\": optional}}") \
+                from None
+        if not (0 <= focus["x"] <= 1 and 0 <= focus["y"] <= 1 and 1.1 <= focus["zoom"] <= 2.5):
+            raise ToolError(f"{where}: focus x and y are 0–1 (shares of the frame), zoom 1.1–2.5")
+        if f.get("at_s") is not None:
+            focus["at_s"] = max(0.0, float(f["at_s"]))
+        shot["focus"] = focus
+    if raw.get("text"):
+        shot["text"] = _line(raw["text"], f"{where}: text", MAX_TEXT_CHARS)
+    if raw.get("share") is not None:
+        if not 0.2 <= float(raw["share"]) <= 5:
+            raise ToolError(f"{where}: share is 0.2–5 (how much of the beat this cut gets, relative to the others)")
+        shot["share"] = float(raw["share"])
     return shot
 
 
 def _part(raw: Any, pid: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise ToolError(f"{pid}: each hook and beat is an object with vo, text and shot")
-    part = {"id": pid, "vo": _line(raw.get("vo"), f"{pid}'s vo", MAX_VO_CHARS),
-            "text": _line(raw.get("text"), f"{pid}'s text", MAX_TEXT_CHARS, required=False),
-            "shot": _shot(raw.get("shot"), pid)}
+        raise ToolError(f"{pid}: each hook and beat is an object with vo or seconds, text and a shot")
+    vo = _line(raw.get("vo"), f"{pid}'s vo", MAX_VO_CHARS, required=False)
+    part: dict[str, Any] = {"id": pid, "vo": vo, "text": _line(raw.get("text"), f"{pid}'s text", MAX_TEXT_CHARS,
+                                                                required=False)}
+    if not vo:
+        try:
+            seconds = float(raw.get("seconds") or 0)
+        except (TypeError, ValueError):
+            seconds = 0
+        if not 0.4 <= seconds <= 8:
+            raise ToolError(f"{pid} has no spoken line, so give it seconds (0.4–8): how long it stays on screen")
+        part["seconds"] = round(seconds, 2)
+    shots = raw.get("shots")
+    if shots is not None:
+        if not isinstance(shots, list) or not 1 <= len(shots) <= MAX_CUTS:
+            raise ToolError(f"{pid}: shots is a list of 1–{MAX_CUTS} quick cuts")
+        part["shots"] = [_shot(sh, f"{pid}.{i}") for i, sh in enumerate(shots, 1)]
+    else:
+        part["shot"] = _shot(raw.get("shot"), pid)
+    for k, allowed in (("text_style", TEXT_STYLES), ("text_position", TEXT_POSITIONS)):
+        if raw.get(k) is not None:
+            if raw[k] not in allowed:
+                raise ToolError(f"{pid}: {k} is {' or '.join(allowed)}")
+            part[k] = raw[k]
     hold = float(raw.get("hold_s") or 0)
     if not 0 <= hold <= 3:
         raise ToolError(f"{pid}: hold_s is 0–3 seconds")
-    if hold:
+    if hold and not vo:
+        part["seconds"] = round(min(part["seconds"] + hold, 8), 2)  # a silent beat's hold is just more seconds
+    elif hold:
         part["hold_s"] = hold
     return part
+
+
+def _all_shots(script: dict[str, Any]) -> list[dict[str, Any]]:
+    return [sh for p in [*script["hooks"], *script["beats"]] for sh in (p.get("shots") or [p["shot"]])]
+
+
+def _voiced(script: dict[str, Any]) -> bool:
+    return any(p.get("vo") for p in [*script["hooks"], *script["beats"]])
+
+
+def _spoken(script: dict[str, Any], hook: str) -> bool:
+    """Whether this hook variant's cut has anything to say (a take to record)."""
+    return bool(sp.take_text(script, hook)[0])
 
 
 def _check_length(script: dict[str, Any]) -> list[str]:
@@ -210,30 +267,45 @@ def _check_length(script: dict[str, Any]) -> list[str]:
 @todd_tool(toolset="shorts")
 async def short_new(title: str, hooks: list[dict], beats: list[dict], format_id: str | None = None,
                     platform: str = "tiktok", voice_id: str | None = None, voice_model: str | None = None,
-                    end_hold_s: float = 0.6, pace: dict | None = None) -> dict:
+                    end_hold_s: float = 0.6, pace: dict | None = None, captions: str | None = None,
+                    text_style: str = "box", sound: str = "", music: dict | None = None) -> dict:
     """Start a short: writes its script to video/<slug>/script.json. Follow a format card (format_search, or a fresh
-    trend scan): its hook, its beats, its sound. Write the way people in the niche talk. Not a feature tour: the
-    product is the payoff of the format, not a list of what it does.
+    trend scan): its shots, its audio, its text style and its pace, with the product fitted in. Write the way people in
+    the niche talk. Not a feature tour: the product is the payoff of the format, not a list of what it does.
+
+    The audio decides the shape. A voiced short has a spoken line on its beats and is timed from the voice. A text +
+    sound short has no spoken lines at all: every beat carries `seconds` and its on-screen text tells the story, and
+    the sound (a trending one) is added in the app when posting. A voiced short can still have silent beats (a
+    reveal, a payoff): leave `vo` out and give `seconds`.
 
     Args:
         title: what it is, e.g. "drop-in roster skit"
         format_id: the format card this script follows (from format_search / format_save); shown to the human at
             review. Leave it out only if the human asked for something else.
-        hooks: 1–3 variants of the opening (each becomes its own cut for A/B): {"vo": spoken line, "text": optional
-            on-screen text, "shot": {...}}
-        beats: 1–10 beats after the hook, in order: {"vo": one spoken line (max 160 chars), "text": optional on-screen
-            text (max 60), "shot": {...}, "hold_s": optional extra seconds after the line (e.g. a visual payoff)}.
+        hooks: 1–3 variants of the opening (each becomes its own cut for A/B), shaped like a beat
+        beats: 1–12 beats after the hook, in order. A beat is {"vo": one spoken line (max 160 chars), or "seconds": how
+            long a silent beat stays on screen (0.4–8), "text": optional on-screen text (max 60), "text_style" / 
+            "text_position": optional, "shot": {...} or "shots": [up to 4 quick cuts inside the beat], "hold_s":
+            optional extra seconds after the line}.
             A shot is {"source": "screen" | "clip" | "image", "path": file in the run folder} or {"source": "ai",
             "prompt": what to generate, "start_image": optional still to start from, "model": "seedance-2.5"}.
             Optional on any shot: "in_s" (start that far into the clip), "sync": {"word": a word of this line,
-            "at_s": the moment in the clip to land on it}, "speed": "fit" (speed a long recording up to fit), "fit":
-            "contain" (show a non-9:16 frame whole).
+            "at_s": the moment in the clip to land on it}, "speed": a number (0.5–2) or "fit" (speed a long recording
+            up to fit), "fit": "contain" (show a non-9:16 frame whole), "focus": {"x", "y": the spot as shares of the
+            frame (0–1), "zoom": 1.1–2.5, "at_s": optional moment in the clip to punch in at} (a punch-in on what
+            matters, e.g. the button being tapped), "text": this cut's own on-screen text, "share": how much of the
+            beat this cut gets (relative, default equal), "grade": "phone" (tone stock or generated footage down).
         platform: "tiktok", "reels" or "shorts"
         voice_id: an ElevenLabs voice (see short_voices); chosen at voiceover time if not given
         voice_model: ElevenLabs model, default eleven_multilingual_v2
         end_hold_s: seconds after the last word before the video ends
         pace: optional {"voice_speed": 0.8–1.2, "beat_gap_s": pause after each line, "min_shot_s": least time any
-            shot stays on screen, "caption_words": 1–4}; defaults are calm enough to follow on a first watch
+            shot stays on screen, "caption_words": 1–4}
+        captions: "phrase" (a few words at a time, like the app's auto-captions: the default with a voice), "karaoke"
+            (the spoken word lights up: only when the format really does that) or "none" (the default without a voice)
+        text_style: on-screen text, as the app draws it: "box" (black on a white box) or "outline" (white, black edge)
+        sound: what plays under it, e.g. "trending sound: <name> (add in the app)", "original voice only"
+        music: a track the human gave you: {"path": audio file in the run folder, "volume": 0–1 (default 0.25)}
     """
     if platform not in sp.PLATFORMS:
         raise ToolError(f"platform is one of {', '.join(sp.PLATFORMS)}")
@@ -247,13 +319,28 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], format_id:
         raise ToolError(f"voice_model is one of {', '.join(elevenlabs.MODELS)}")
     if not 0 <= float(end_hold_s) <= 3:
         raise ToolError("end_hold_s is 0–3 seconds")
-    script = {"version": 1, "title": title.strip(), "platform": platform, "width": 1080, "height": 1920,
+    if captions is not None and captions not in CAPTIONS:
+        raise ToolError(f"captions is one of {', '.join(CAPTIONS)}")
+    if text_style not in TEXT_STYLES:
+        raise ToolError(f"text_style is {' or '.join(TEXT_STYLES)}")
+    script = {"version": 2, "title": title.strip(), "platform": platform, "width": 1080, "height": 1920,
               "fps": sp.FPS, "end_hold_s": float(end_hold_s),
               "voice": {"voice_id": voice_id, "model_id": voice_model or elevenlabs.DEFAULT_MODEL},
               "hooks": [_part(h, f"h{i}") for i, h in enumerate(hooks, 1)],
-              "beats": [_part(b, f"b{i}") for i, b in enumerate(beats, 1)], "takes": {}, "reviews": []}
+              "beats": [_part(b, f"b{i}") for i, b in enumerate(beats, 1)], "takes": {}, "reviews": [],
+              "text_style": text_style, "sound": " ".join(str(sound or "").split())[:200]}
+    script["captions"] = captions  # None: phrase captions on whatever is spoken
+    if music:
+        if not isinstance(music, dict) or not music.get("path"):
+            raise ToolError("music is {\"path\": an audio file in the run folder, \"volume\": 0–1}")
+        script["music"] = {"path": _rel(music["path"], AUDIO_EXT, "audio files"),
+                           "volume": min(max(float(music.get("volume", 0.25)), 0.0), 1.0)}
     script["pace"] = sp.pace(script, change={k: v for k, v in (pace or {}).items() if k in sp.DEFAULT_PACE})
     warnings = _check_length(script)
+    if not _voiced(script) and not script.get("music"):
+        warnings.append("no voice and no music: it renders silent, as a text + sound short is uploaded; say which "
+                        "sound to add in the app (sound=…)" if not script["sound"] else
+                        f"renders silent: add the sound in the app when posting ({script['sound']})")
     if format_id:
         from ..db import FormatCard, session
 
@@ -262,7 +349,8 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], format_id:
         if card is None:
             raise ToolError(f"no format card {format_id!r}: use an id from format_search or format_save")
         script["format"] = {"id": card.id, "name": card.name, "examples": len(card.examples),
-                            "plays": [e.get("plays") for e in card.examples][:5]}
+                            "plays": [e.get("plays") for e in card.examples][:5],
+                            "audio": (card.card or {}).get("audio"), "measured": (card.card or {}).get("measured")}
     else:
         warnings.append("no format card: shorts that follow a format seen working in the niche do better than "
                         "feature tours (trends: format_search)")
@@ -275,24 +363,28 @@ async def short_new(title: str, hooks: list[dict], beats: list[dict], format_id:
     script["slug"] = slug
     await _write_json(f"{_dir(slug)}/script.json", script)
     _emit(f"Short {slug}: {len(script['hooks'])} hooks, {len(script['beats'])} beats", {"slug": slug})
+    nxt = ("short_voiceover (free local voice), then short_plan" if _voiced(script)
+           else "nothing to voice: short_plan, then short_render")
     return {"slug": slug, "path": f"{_dir(slug)}/script.json", "estimate_s": round(sp.estimate_seconds(script), 1),
-            "warnings": warnings,
-            "next": "Show the script to the human; adjust with short_edit; then short_voiceover and short_plan."}
+            "warnings": warnings, "next": nxt}
 
 
 @todd_tool(toolset="shorts")
 async def short_edit(slug: str, part: str, vo: str | None = None, text: str | None = None,
-                     shot: dict | None = None, hold_s: float | None = None) -> dict:
-    """Change one hook or beat of a short. Changing a voiceover line means voicing it again (short_voiceover);
-    changing a shot, on-screen text or hold doesn't.
+                     shot: dict | None = None, shots: list[dict] | None = None, hold_s: float | None = None,
+                     seconds: float | None = None) -> dict:
+    """Change one hook or beat of a short. Changing a spoken line means voicing it again (short_voiceover); changing a
+    shot, on-screen text, hold or a silent beat's seconds doesn't.
 
     Args:
         slug: the short, from short_new
-        part: "h1".."h3" or "b1".."b10"
-        vo: the new spoken line
+        part: "h1".."h3" or "b1".."b12"
+        vo: the new spoken line ("" makes it a silent beat: give seconds too)
         text: the new on-screen text ("" to remove it)
         shot: the new shot (same format as in short_new)
+        shots: new quick cuts for the beat, replacing its shot(s)
         hold_s: extra seconds after the line (0 to remove)
+        seconds: how long a silent beat stays on screen
     """
     if not PART_ID.fullmatch(part or ""):
         raise ToolError("part is a hook id (h1…) or a beat id (b1…)")
@@ -301,25 +393,24 @@ async def short_edit(slug: str, part: str, vo: str | None = None, text: str | No
         p = next((x for x in [*script["hooks"], *script["beats"]] if x["id"] == part), None)
         if p is None:
             raise ToolError(f"no {part} in {slug}")
+        raw = {k: v for k, v in p.items() if k != "id"}
         changed = []
-        if vo is not None:
-            new = _line(vo, f"{part}'s vo", MAX_VO_CHARS)
-            if new != p["vo"]:
-                p["vo"] = new
-                changed.append("vo")
-        if text is not None:
-            p["text"] = _line(text, f"{part}'s text", MAX_TEXT_CHARS, required=False)
-            changed.append("text")
+        for k, v in (("vo", vo), ("text", text), ("hold_s", hold_s), ("seconds", seconds)):
+            if v is not None and raw.get(k) != v:
+                raw[k] = v
+                changed.append(k)
         if shot is not None:
-            p["shot"] = _shot(shot, part)
+            raw.pop("shots", None)
+            raw["shot"] = shot
             changed.append("shot")
-        if hold_s is not None:
-            if not 0 <= float(hold_s) <= 3:
-                raise ToolError("hold_s is 0–3 seconds")
-            p.pop("hold_s", None)
-            if hold_s:
-                p["hold_s"] = float(hold_s)
-            changed.append("hold_s")
+        if shots is not None:
+            raw.pop("shot", None)
+            raw["shots"] = shots
+            changed.append("shots")
+        new = _part(raw, part)
+        changed = [k for k in changed if k in ("shot", "shots") or new.get(k) != p.get(k)]
+        p.clear()
+        p.update(new)
         warnings = _check_length(script)
         await _write_json(f"{_dir(slug)}/script.json", script)
     stale = [h for h, t in (script.get("takes") or {}).items() if _take_stale(script, h, t)]
@@ -371,10 +462,13 @@ async def short_voiceover(slug: str, hooks: list[str] | None = None, provider: s
     ctx = get_ctx()
     script = await _load(slug)
     ids = [h["id"] for h in script["hooks"]]
-    todo = hooks or ids
-    unknown = [h for h in todo if h not in ids]
+    unknown = [h for h in hooks or [] if h not in ids]
     if unknown:
         raise ToolError(f"no hook {', '.join(unknown)}: hooks are {', '.join(ids)}")
+    todo = [h for h in hooks or ids if _spoken(script, h)]  # a cut with nothing spoken needs no take
+    if not todo:
+        return {"takes": {}, "usd": 0, "next": f"nothing to voice: {slug} has no spoken lines there (text + sound). "
+                                               f"short_plan(\"{slug}\")"}
     if provider == "local":
         return await _voice_local(slug, todo)
     key = await _key()
@@ -455,27 +549,48 @@ async def _plan(slug: str, hooks: list[str] | None) -> tuple[dict[str, Any], dic
     run_id = get_ctx().run_id
     script = await _load(slug)
     takes = script.get("takes") or {}
-    todo = hooks or [h["id"] for h in script["hooks"] if h["id"] in takes]
+    ids = [h["id"] for h in script["hooks"]]
+    if any(h not in ids for h in hooks or []):
+        raise ToolError(f"hooks are {', '.join(ids)}")
+    spoken = {h: _spoken(script, h) for h in ids}
+    todo = hooks or [h for h in ids if h in takes or not spoken[h]]
     if not todo:
         raise ToolError(f"{slug} isn't voiced yet: run short_voiceover first")
     for h in todo:
+        if not spoken[h]:
+            continue
         if h not in takes:
             raise ToolError(f"{h} isn't voiced yet: short_voiceover(\"{slug}\", hooks=[\"{h}\"])")
         if _take_stale(script, h, takes[h]):
             raise ToolError(f"the script changed since {h} was voiced: run short_voiceover(\"{slug}\") again")
-    paths = sorted({s.get(k) for p in [*script["hooks"], *script["beats"]] for s in [p["shot"]]
-                    for k in ("path", "clip") if s.get(k)})
+    paths = sorted({sh.get(k) for sh in _all_shots(script) for k in ("path", "clip") if sh.get(k)})
     info = await media.probe(run_id, paths)
     plans: dict[str, sp.Plan] = {}
     for h in todo:
-        take = await _read_json(takes[h]["timestamps"])
-        if take is None:
-            raise ToolError(f"{takes[h]['timestamps']} is missing: voice {h} again")
+        alignment, audio = None, None
+        if spoken[h]:
+            take = await _read_json(takes[h]["timestamps"])
+            if take is None:
+                raise ToolError(f"{takes[h]['timestamps']} is missing: voice {h} again")
+            alignment, audio = take["alignment"], takes[h]["audio"]
         try:
-            plans[h] = sp.plan(script, h, take["alignment"], info, takes[h]["audio"])
+            plans[h] = sp.plan(script, h, alignment, info, audio)
         except ValueError as e:
             raise ToolError(f"{h}: {e}") from e
     return script, plans
+
+
+def _vs_format(script: dict[str, Any], report: dict[str, Any]) -> dict[str, Any] | None:
+    """This cut's pace next to the format's real examples (cuts and average shot length), so a slow edit shows."""
+    m = (script.get("format") or {}).get("measured") or {}
+    if not m.get("avg_shot_s"):
+        return None
+    out = {"examples_avg_shot_s": m["avg_shot_s"], "this_avg_shot_s": report["avg_shot_s"],
+           "examples_length_s": m.get("length_s"), "this_length_s": report["duration_s"]}
+    if report["avg_shot_s"] > 1.5 * float(m["avg_shot_s"]):
+        out["note"] = (f"the examples cut every {m['avg_shot_s']}s and this every {report['avg_shot_s']}s: add cuts "
+                       "(quick cuts in a beat, punch-ins with focus) or it will feel slow next to them")
+    return out
 
 
 @todd_tool(toolset="shorts")
@@ -493,6 +608,8 @@ async def short_plan(slug: str, hook: str | None = None) -> dict:
         await _write_json(f"{_dir(slug)}/timeline-{h}.json", {**p.timeline, "report": p.report})
     specs = sp.merge_generation(list(plans.values()))
     out = {"cuts": {h: {"duration_s": p.report["duration_s"], "warnings": p.report["warnings"],
+                        "shots": p.report["cuts"] + 1, "avg_shot_s": p.report["avg_shot_s"],
+                        "vs_format": _vs_format(script, p.report),
                         "beats": [{k: b[k] for k in ("id", "start_s", "end_s", "fit")} for b in p.report["beats"]]}
                     for h, p in plans.items()},
            "generate": specs, "generate_usd": sp.total_usd(specs),
@@ -525,16 +642,19 @@ async def short_render(slug: str, hook: str, mode: str = "animatic") -> dict:
     r = await media.render_timeline(get_ctx().run_id, out, _with_tags(p.timeline) if mode == "animatic" else p.timeline)
     warnings = list(p.report["warnings"])
     script = await _load(slug)
-    if mode == "final" and (script.get("takes") or {}).get(hook, {}).get("provider") == "local":
+    if mode == "final" and _spoken(script, hook) and (script.get("takes") or {}).get(hook, {}).get("provider") == "local":
         warnings.append("this cut uses the free scaffold voice: for the final, "
                         "short_voiceover(provider=\"elevenlabs\") and render again")
     result = {"video": r["path"], "duration_s": r["duration_s"], "mode": mode, "warnings": warnings,
               "generate": p.generate, "generate_usd": sp.total_usd(p.generate),
               "sheet": await _cut_sheet(r["path"], p.report),
-              "check": "look at the contact sheet (a frame from each beat). Would someone scrolling believe a person "
-                       "filmed and edited this on their phone? Real screens or footage full-frame, no designed "
-                       "backgrounds, mockups, logos or end cards, one short line of text, every beat showing what its "
-                       "line says. Fix what doesn't pass before short_review."}
+              "shots": p.report["cuts"] + 1, "avg_shot_s": p.report["avg_shot_s"],
+              "vs_format": _vs_format(script, p.report),
+              "check": "look at the contact sheet (a frame from each beat) next to the format's examples. Would "
+                       "someone scrolling believe a person filmed and cut this on their phone? The hook readable in "
+                       "the first frame; real screens or footage full-frame, no designed backgrounds, mockups, logos "
+                       "or end cards; short native text; something changing every 2–3 s; every beat showing what it "
+                       "says. Fix what doesn't pass before short_review."}
     _emit(f"Rendered {mode} {slug} {hook}: {r['duration_s']:g}s", {"slug": slug, "video": r["path"]})
     return result
 
@@ -692,13 +812,17 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
     shots = ", ".join(f"{g['beat']} ({g['seconds']}s)" for g in p.generate)
     pc = p.report["pace"]
     fmt = script.get("format")
+    voiced = _spoken(script, hook)
     question = (f"Scaffold v{version} of \"{script['title']}\" is ready to watch in Files: {out} "
-                f"({r['duration_s']:.1f}s, free so far; beats are labelled b1, b2… in the corner). "
+                f"({r['duration_s']:.1f}s, {p.report['cuts'] + 1} shots, free so far; beats are labelled b1, b2… in "
+                "the corner). "
                 + (f"Format: {fmt['name']}, from {fmt['examples']} real video(s). " if fmt else "No format card. ")
                 + (f"Approving it means paying about ${price:.2f} to generate {len(p.generate)} AI shot(s): {shots}. "
                    if p.generate else "It's all real footage: nothing to generate. ")
-                + f"Pace now: voice {pc['voice_speed']}×, {pc['beat_gap_s']}s between lines, at least "
-                  f"{pc['min_shot_s']}s a shot. Approve, or tell me what to change (pace, a line, a shot, the hook).")
+                + (f"Sound: {script['sound']}. " if script.get("sound") else "")
+                + (f"Pace now: voice {pc['voice_speed']}×, {pc['beat_gap_s']}s between lines, at least "
+                   f"{pc['min_shot_s']}s a shot. " if voiced else "No voice: the text and the cuts carry it. ")
+                + "Approve, or tell me what to change (pace, a line, a shot, the hook).")
     options = ["Looks good: generate it" if p.generate else "Looks good", "Slower", "Faster"]
     answer = (await ctx.ask_human(question, agent=get_agent_id(), data={"options": options, "file": out})).strip()
     approved = answer.lower().startswith("looks good")
@@ -714,7 +838,10 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
         await _write_json(f"{_dir(slug)}/script.json", script)
     _emit(f"Scaffold v{version} of {slug}: {'approved' if approved else 'changes asked'}",
           {"slug": slug, "version": version, "video": out, "answer": answer[:300]})
-    if approved:
+    if approved and not voiced:
+        nxt = ("generate the AI shots, then short_render(mode=\"final\")" if p.generate
+               else "short_render(mode=\"final\")")
+    elif approved:
         nxt = ("short_voiceover(provider=\"elevenlabs\"), short_plan, then generate the AI shots" if p.generate
                else "short_voiceover(provider=\"elevenlabs\"), short_plan, short_render(mode=\"final\")")
     elif applied:
@@ -725,5 +852,7 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
             "applied": applied, "pace": script["pace"], "next": nxt}
 
 
-SHORTS_TOOLS = [short_look, short_record, short_new, short_edit, short_pace, short_voices, short_voiceover, short_plan,
-                short_render, short_review]
+from .stock import STOCK_TOOLS  # noqa: E402  (stock.py uses this module's file helpers)
+
+SHORTS_TOOLS = [short_look, short_record, *STOCK_TOOLS, short_new, short_edit, short_pace, short_voices,
+                short_voiceover, short_plan, short_render, short_review]

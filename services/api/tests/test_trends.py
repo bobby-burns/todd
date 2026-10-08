@@ -72,11 +72,13 @@ def lab(tmp_path, monkeypatch):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(base64.b64decode(payload["data_b64"]))
             return {"path": payload["path"], "size_bytes": p.stat().st_size, "sha256": "x"}
-        if path == "/frames":
+        if path == "/shots":
             (run / payload["out"]).write_bytes(b"png")
             if payload.get("delete_source"):
                 (run / payload["src"]).unlink()
-            return {"sheet": payload["out"], "duration_s": 30.0, "times": [1.9, 5.6]}
+            return {"duration_s": 7.0, "shots": [{"n": 1, "start": 0.0, "end": 3.9}, {"n": 2, "start": 3.9, "end": 7.0}],
+                    "cuts": 1, "avg_shot_s": 3.5, "longest_shot_s": 3.9, "sheets": [payload["out"]],
+                    "images_b64": [base64.b64encode(b"sheet-" + payload["src"].encode()).decode()]}
         if path == "/transcribe":
             return {"text": "heard words", "words": [{"word": "heard", "start": 0.5, "end": 0.8},
                                                      {"word": "words", "start": 0.8, "end": 1.2}]}
@@ -91,9 +93,14 @@ def lab(tmp_path, monkeypatch):
         tiktok("7", 3000, 100), tiktok("1", 212000, 7505, tag="beerleague"), {"error": "No videos", "input": "x"},
         tiktok("8", 60000, 30000, subs=False)]}
 
-    async def run_actor(token, actor, payload, max_wait=600):
+    async def run_actor(token, actor, payload, max_wait=600, max_charge_usd=None):
         assert token == "apify-test-token" and actor == apify.TIKTOK
+        assert max_charge_usd and max_charge_usd >= 0.01  # every run is capped at what was approved
         runs.append((actor, payload))
+        if payload.get("scrapeRelatedVideos"):
+            return {"id": "r3", "usageTotalUsd": 0.02}, [
+                tiktok("1", 212000, 7505), {**tiktok("20", 90000, 500), "searchHashtag": None, "isRelated": True},
+                {**tiktok("21", 80000, 400), "searchHashtag": None, "textLanguage": "nl"}]
         if payload.get("postURLs"):
             ids = [u.rsplit("/", 1)[1] for u in payload["postURLs"]]
             return {"id": "r2", "usageTotalUsd": 0.011}, [
@@ -179,12 +186,20 @@ def test_analyze_reads_transcripts_takes_frames_and_deletes_the_video(loop, lab)
             await trends.trend_analyze.ainvoke({"scan": "../x", "ids": ["1"]})
         r = await trends.trend_analyze.ainvoke({"scan": scan, "ids": ["1", "8"]})
         one, eight = r["videos"]
-        assert one["transcript_source"] == "subtitles" and one["transcript"][0] == {
-            "t": 0.8, "text": "I ball in some kids or what?"}
+        # decoded shot by shot: the words said over each shot, from the subtitles
+        assert one["transcript_source"] == "subtitles" and one["cuts"] == 1 and one["avg_shot_s"] == 3.5
+        assert one["shots"] == [{"n": 1, "start": 0.0, "end": 3.9, "said": "I ball in some kids or what?"},
+                                {"n": 2, "start": 3.9, "end": 7.0, "said": "Sorry. Like you scout these kids."}]
+        assert one["speech_share"] == pytest.approx((3.36 - 0.82 + 6.38 - 4.18) / 7.0, abs=0.01)
         assert eight["transcript_source"] == "local transcription"  # no subtitles: transcribed here, free
-        assert one["frames"] == f"video/research/{scan}/1.png"
+        assert eight["shots"][0]["said"] == "heard words"
+        assert one["sheets"] == [f"video/research/{scan}/1.jpg"] and r["sheets_shown"] == 2
+        from todd.sdk import get_agent_id, get_ctx
+        shown = get_ctx().pop_images(get_agent_id())  # the agent sees every sheet, in the order of the videos
+        assert [base64.b64decode(b) for b, _ in shown] == [f"sheet-video/research/{scan}/{i}.mp4".encode()
+                                                          for i in ("1", "8")]
         d = lab["dir"] / "video" / "research" / scan
-        assert (d / "1.png").exists() and not (d / "1.mp4").exists()  # the reference itself is gone
+        assert (d / "1.jpg").exists() and not (d / "1.mp4").exists()  # the reference itself is gone
         assert json.loads((d / "1.json").read_text())["caption"] == "video 1 #hockey"
         dl = lab["runs"][-1][1]
         assert dl["postURLs"] == ["https://www.tiktok.com/@u1/video/1", "https://www.tiktok.com/@u8/video/8"]
@@ -201,16 +216,32 @@ def test_format_cards_are_saved_with_real_examples_and_found_by_niche(loop, lab)
         await trends.trend_scan.ainvoke({"hashtags": ["beerleaguehockey"]})
         card = {"name": "men's-league guy, deadpan", "tags": ["BeerLeagueHockey", "adulthockey"],
                 "hook": {"visual": "rink-side phone camera", "line": "I ball in some kids or what?"},
-                "beats": [{"what": "escalating misunderstanding", "seconds": 20}],
+                "shots": [{"seconds": 3.9, "type": "talking-head", "shows": "a guy in full gear on the bench",
+                           "camera": "handheld, rink-side", "said": "I ball in some kids or what?"},
+                          {"seconds": 3.1, "type": "person", "shows": "the kid skating away", "text": "he's 12"}],
+                "audio": "skit",
                 "why": "The gap between how seriously he takes men's league and reality", "examples": ["1", "2", "zz"],
                 "length_s": [30, 60], "adapt": "the product is how the sane friend knows the schedule"}
         with pytest.raises(ToolError, match="examples must be"):
             await trends.format_save.ainvoke({**card, "examples": ["nope"]})
+        with pytest.raises(ToolError, match="audio is one of"):
+            await trends.format_save.ainvoke({**card, "audio": "music"})
+        with pytest.raises(ToolError, match="shot 2"):
+            await trends.format_save.ainvoke({**card, "shots": [card["shots"][0], {"type": "drone", "shows": "x"}]})
         saved = await trends.format_save.ainvoke(card)
-        assert saved["examples"] == 2
+        assert saved["examples"] == 2 and saved["needs"] == ["person", "talking-head"]
+        assert saved["measured"] is None and "no measured pace" in saved["note"]  # nothing studied shot by shot yet
+        # (a different size of scan: the same charge twice in a run would stop to ask the human)
+        scan = (await trends.trend_scan.ainvoke({"hashtags": ["beerleaguehockey"], "per_tag": 12}))["scan"]
+        await trends.trend_analyze.ainvoke({"scan": scan, "ids": ["1", "2"]})
+        studied = await trends.format_save.ainvoke(card)
+        assert studied["measured"] == {"examples": 2, "shots": 2, "avg_shot_s": 3.5, "length_s": [7.0, 7.0],
+                                       "speech_share": pytest.approx(0.68, abs=0.01)}
         found = (await trends.format_search.ainvoke({"tags": ["adulthockey", "goalie"]}))["cards"]
         mine = next(c for c in found if c["id"] == saved["id"])
         assert mine["tags"] == ["beerleaguehockey", "adulthockey"] and mine["hook"]["line"].startswith("I ball")
+        assert mine["audio"] == "skit" and mine["shots"][1] == {"seconds": 3.1, "type": "person",
+                                                                "shows": "the kid skating away", "text": "he's 12"}
         assert [e["id"] for e in mine["examples"]] == ["1", "2"] and mine["examples"][0]["reach"] == 28.25
         assert saved["id"] not in [c["id"] for c in (await trends.format_search.ainvoke({"tags": ["saas"]}))["cards"]]
     loop.run_until_complete(go())
@@ -242,3 +273,27 @@ def test_trends_toolset_and_apify_routing(loop):
         assert [s["route"] for s in r["services"]] == ["toolset", "toolset"]
     finally:
         vault.delete_secret("APIFY_API_TOKEN")
+
+
+def test_scan_searches_phrases_keeps_the_language_and_follows_related_videos(loop, lab):
+    vault.set_secret("APIFY_API_TOKEN", "apify-test-token")
+
+    async def go():
+        with pytest.raises(ToolError, match="search phrases"):
+            await trends.trend_scan.ainvoke({"queries": ["x"]})
+        r = await trends.trend_scan.ainvoke({"queries": ["Drop In  Hockey", "beer league goalie"],
+                                             "hashtags": ["beerleague"], "per_tag": 5})
+        assert lab["runs"][-1][1] == {"searchQueries": ["drop in hockey", "beer league goalie"],
+                                      "searchSection": "/video", "hashtags": ["beerleague"], "resultsPerPage": 5,
+                                      "downloadSubtitlesOptions": "DOWNLOAD_SUBTITLES"}  # no sort/date: those break
+        assert r["scan"].startswith("drop-in-hockey") and r["top"][0]["found_by"] == "#beerleaguehockey"
+        assert "search found nothing for drop in hockey" in r["note"]
+        with pytest.raises(ToolError, match="from this run's scans"):
+            await trends.trend_scan.ainvoke({"related": ["999"]})
+        rel = await trends.trend_scan.ainvoke({"related": ["1"], "min_plays": 1000})
+        payload = lab["runs"][-1][1]
+        assert payload["postURLs"] == ["https://www.tiktok.com/@u1/video/1"] and payload["scrapeRelatedVideos"]
+        assert [v["id"] for v in rel["top"]] == ["20"]  # not the seed itself, not the Dutch caption
+        saved = json.loads((lab["dir"] / "video" / "research" / rel["scan"] / "scan.json").read_text())
+        assert saved["other_language"] == 1 and saved["related"] == ["1"]
+    loop.run_until_complete(go())

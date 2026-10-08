@@ -152,7 +152,7 @@ def test_fetch_allowlist(media, monkeypatch):
 def test_stock_photo_hosts_are_allowed_by_default(tmp_path, monkeypatch):
     for env in (None, ""):  # unset, or set but empty (an empty line in .env)
         mod = load(monkeypatch, tmp_path, MEDIA_FETCH_HOSTS=env)
-        assert mod.FETCH_HOSTS == {"images.pexels.com", "pixabay.com", "cdn.pixabay.com"}
+        assert mod.FETCH_HOSTS == {"images.pexels.com", "videos.pexels.com", "pixabay.com", "cdn.pixabay.com"}
     mod = load(monkeypatch, tmp_path, MEDIA_FETCH_HOSTS="cdn.pixabay.com")
     c = TestClient(mod.app)
     r = c.post("/fetch", json={"run_id": RUN, "url": "https://images.pexels.com/x.jpg"}, headers=H)
@@ -608,3 +608,75 @@ def test_frames_make_a_contact_sheet_and_delete_the_reference(media):
     (run / "song.mp3").write_text("#EXTM3U\nfile:///etc/passwd\n")
     assert c.post("/frames", json={"run_id": RUN, "src": "song.mp3", "out": "a.png"}, headers=H).status_code == 400
     assert c.post("/transcribe", json={"run_id": RUN, "src": "nope.mp4"}, headers=H).status_code == 404
+
+
+def test_shots_find_the_cuts_and_show_a_frame_from_every_shot(media):
+    _, c, run = media
+    # three shots: 1.5 s red, 4 s of moving test pattern (a long shot: two frames), 1 s blue
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=540x960:r=30:d=1.5",
+                    "-f", "lavfi", "-i", "testsrc2=s=540x960:r=30:d=4",
+                    "-f", "lavfi", "-i", "color=c=blue:s=540x960:r=30:d=1",
+                    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1[v]", "-map", "[v]", "-pix_fmt", "yuv420p",
+                    str(run / "ref.mp4")], check=True)
+    r = c.post("/shots", json={"run_id": RUN, "src": "ref.mp4", "out": "research/ref.jpg", "inline": True,
+                               "delete_source": True}, headers=H)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["cuts"] == 2 and [s["n"] for s in out["shots"]] == [1, 2, 3]
+    assert abs(out["shots"][0]["end"] - 1.5) < 0.1 and abs(out["shots"][1]["end"] - 5.5) < 0.1
+    assert abs(out["avg_shot_s"] - 6.5 / 3) < 0.1 and abs(out["longest_shot_s"] - 4) < 0.1
+    assert out["sheets"] == ["research/ref.jpg"] and len(out["images_b64"]) == 1
+    assert base64.b64decode(out["images_b64"][0])[:3] == b"\xff\xd8\xff"  # JPEG: small enough to hand a model
+    with Image.open(run / "research" / "ref.jpg") as im:  # the hook, #1, #2 twice (4 s: every 2.5 s), #3: five tiles
+        assert 5 * 320 < im.width < 6 * 320 and im.height < 2 * 600
+    assert not (run / "ref.mp4").exists()
+
+
+def test_shot_list_merges_flashes_and_cuts_at_the_ends(media):
+    mod, _, _ = media
+    assert mod.shot_list([], 5.0) == [(0.0, 5.0, "start")]
+    assert mod.shot_list([0.1, 1.0, 1.1, 3.0, 4.9], 5.0) == [(0.0, 1.0, "start"), (1.0, 3.0, "cut"), (3.0, 5.0, "cut")]
+    # a talking head: near-zero scores, a jump cut at 2 s stands out; a hard cut at 4 s
+    talk = [(k / 30, 0.01) for k in range(180)]
+    talk[60] = (2.0, 0.15)
+    talk[120] = (4.0, 0.7)
+    assert mod.find_cuts(talk) == [(2.0, "jump"), (4.0, "cut")]
+    # a fast scroll scores high on every frame: no cuts in it, but a real cut in the middle of it still counts
+    scroll = [(k / 30, 0.2 + 0.02 * (k % 3)) for k in range(90)]
+    assert mod.find_cuts(scroll) == []
+    scroll[45] = (1.5, 0.8)
+    assert mod.find_cuts(scroll) == [(1.5, "cut")]
+
+
+def test_stock_video_is_fetched_checked_and_previewed(media, monkeypatch):
+    mod, c, run = media
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=360x640:r=30:d=2",
+                    "-pix_fmt", "yuv420p", str(run / "src.mp4")], check=True)
+    clip = (run / "src.mp4").read_bytes()
+    served = {"https://cdn.pixabay.com/video/1.mp4": clip, "https://cdn.pixabay.com/video/1.jpg": jpeg(),
+              "https://cdn.pixabay.com/video/bad.mp4": b"<html>not a video</html>"}
+
+    async def download(url, limit=mod.FETCH_MAX, timeout=mod.FETCH_TIMEOUT):
+        mod._check_url(url)
+        if url not in served:
+            raise mod.HTTPException(502, "fetch failed: HTTP 404")
+        return served[url]
+
+    monkeypatch.setattr(mod, "download", download)
+    r = c.post("/fetch/video", json={"run_id": RUN, "url": "https://cdn.pixabay.com/video/1.mp4",
+                                     "out": "video/stock/rink.mp4"}, headers=H)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["path"] == "video/stock/rink.mp4" and got["kind"] == "video" and abs(got["duration_s"] - 2) < 0.1
+    assert (got["width"], got["height"]) == (360, 640)
+    r = c.post("/fetch/video", json={"run_id": RUN, "url": "https://cdn.pixabay.com/video/bad.mp4",
+                                     "out": "video/stock/bad.mp4"}, headers=H)
+    assert r.status_code == 400 and not list((run / "video" / "stock").glob("bad*"))  # nothing kept
+    assert c.post("/fetch/video", json={"run_id": RUN, "url": "https://evil.example/x.mp4", "out": "x.mp4"},
+                  headers=H).status_code == 400
+    r = c.post("/thumbs", json={"run_id": RUN, "urls": ["https://cdn.pixabay.com/video/1.jpg",
+                                                        "https://cdn.pixabay.com/video/gone.jpg"],
+                                "labels": ["1 · 9s", "2 · 4s"], "out": "video/stock/search.png"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["missing"] == [2] and base64.b64decode(r.json()["png_b64"])[:4] == b"\x89PNG"

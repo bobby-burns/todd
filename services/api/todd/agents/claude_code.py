@@ -287,9 +287,8 @@ async def _call(sess: Session, name: str, args: dict) -> dict:
     if notes:
         text += "\n\n---\nNew message(s) while you work (adapt your plan):\n" + "\n".join(notes)
     content: list[dict] = [{"type": "text", "text": text}]
-    image = ctx.pop_image(sess.agent_id)
-    if image:
-        content.append({"type": "image", "data": image[0], "mimeType": image[1]})
+    for data, mime in ctx.pop_images(sess.agent_id):
+        content.append({"type": "image", "data": data, "mimeType": mime})
     return {"content": content, "isError": getattr(res, "status", "success") == "error"}
 
 

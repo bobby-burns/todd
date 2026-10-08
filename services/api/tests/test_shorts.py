@@ -93,6 +93,15 @@ class FakeMedia:
             frames = sum(v["frames"] for v in payload["video"])
             return {"path": payload["out"], "duration_s": round(frames / payload["fps"], 3), "frames": frames,
                     "size_bytes": out.stat().st_size}
+        if path == "/thumbs":
+            return {"sheet": payload["out"], "png_b64": base64.b64encode(b"thumbs").decode(), "missing": []}
+        if path == "/fetch/video":
+            out = run / payload["out"]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\x00\x00\x00\x20ftypisom stock")
+            self.durations[payload["out"]] = 12.0
+            return {"path": payload["out"], "kind": "video", "duration_s": 12.0, "width": 1080, "height": 1920,
+                    "fps": 30, "size_bytes": 20}
         if path == "/frames":  # a contact sheet, handed back inline for the agent to look at
             (run / payload["out"]).write_bytes(PNG)
             return {"sheet": payload["out"], "times": payload["times"], "duration_s": 5.0,
@@ -283,9 +292,9 @@ def test_plan_then_animatic_and_editing_a_line_needs_a_new_take(loop, studio):
 
 def test_shorts_toolset_and_elevenlabs_routing(loop):
     ts = registry.all_toolsets()
-    assert [t.name for t in ts["shorts"].tools] == ["short_look", "short_record", "short_new", "short_edit",
-                                                    "short_pace", "short_voices", "short_voiceover", "short_plan",
-                                                    "short_render", "short_review"]
+    assert [t.name for t in ts["shorts"].tools] == ["short_look", "short_record", "short_stock", "short_stock_pick",
+                                                    "short_new", "short_edit", "short_pace", "short_voices",
+                                                    "short_voiceover", "short_plan", "short_render", "short_review"]
     assert ts["shorts"].source == "builtin" and "scaffold" in ts["shorts"].guide
     vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
     try:
@@ -363,7 +372,7 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         assert sheet["src"] == "video/recordings/week-view.mp4" and sheet["inline"] is True
         assert sheet["times"] == [0.7, 1.9, 4.6] and sheet["labels"] == ["open", "tap", "end"]
         assert r["sheet"] == "video/recordings/week-view.png" and "contact sheet" in r["next"]
-        assert get_ctx().pop_image(get_agent_id()) == (base64.b64encode(PNG).decode(), "image/png")
+        assert get_ctx().pop_images(get_agent_id()) == [(base64.b64encode(PNG).decode(), "image/png")]
         for bad, msg in (({"name": "Week View"}, "lowercase"), ({"steps": [{"wait": 99}]}, "0–10 seconds")):
             with pytest.raises(ToolError, match=msg):
                 await shorts.short_record.ainvoke({"name": "x", "url": "https://a.b/", "steps": [], **bad})
@@ -374,7 +383,7 @@ def test_short_record_uploads_frames_and_keeps_step_times(loop, studio, monkeypa
         with pytest.raises(ToolError, match="recording shop stopped: .*Buy now"):
             await shorts.short_record.ainvoke({"name": "shop", "url": "https://a.b/", "steps": [{"tap": "Buy now"}]})
         assert not studio["ctx_lock"].locked()
-        assert get_ctx().pop_image(get_agent_id()) == ("SCREEN", "image/jpeg")  # what the screen showed
+        assert get_ctx().pop_images(get_agent_id()) == [("SCREEN", "image/jpeg")]  # what the screen showed
 
         # an agent that has the browser itself (its own browser_start session) records without waiting on itself
         monkeypatch.setattr(screencast, "record", record)
@@ -415,7 +424,7 @@ def test_short_look_shows_the_page_and_its_outline(loop, studio, monkeypatch):
         r = await shorts.short_look.ainvoke({"url": "https://aiml-daily-quiz.vercel.app/", "start_at": "Today"})
         assert seen == {"url": "https://aiml-daily-quiz.vercel.app/", "start_at": "Today", "signed_in": False}
         assert "3.2 screens tall" in r["outline"] and "0.6: tap: Dropout removes random neurons" in r["outline"]
-        assert get_ctx().pop_image(get_agent_id()) == ("JPEG", "image/jpeg")
+        assert get_ctx().pop_images(get_agent_id()) == [("JPEG", "image/jpeg")]
         assert not get_ctx().browser_lock.locked()
     loop.run_until_complete(go())
 
@@ -492,8 +501,143 @@ def test_a_script_follows_a_format_card_and_review_says_which(loop, studio, monk
         assert any("no format card" in w for w in loose["warnings"])
         r = await shorts.short_new.ainvoke({"title": "quiz", "hooks": HOOKS, "beats": BEATS, "format_id": card.id})
         assert script_of(studio, r["slug"])["format"] == {"id": card.id, "name": "question-first quiz",
-                                                         "examples": 2, "plays": [50000, 90000]}
+                                                         "examples": 2, "plays": [50000, 90000], "audio": None,
+                                                         "measured": None}
         await shorts.short_voiceover.ainvoke({"slug": r["slug"]})
         await shorts.short_review.ainvoke({"slug": r["slug"]})
         assert "Format: question-first quiz, from 2 real video(s)." in asked[-1]
+    loop.run_until_complete(go())
+
+
+TEXT_HOOKS = [{"seconds": 1.6, "text": "pov: it's 11pm and you want to skate tomorrow",
+               "shot": {"source": "screen", "path": "shots/rec.mp4", "focus": {"x": 0.5, "y": 0.3, "zoom": 1.4}}}]
+TEXT_BEATS = [{"seconds": 2.2, "text": "the rec site has it on 4 pages", "shots": [
+                  {"source": "screen", "path": "shots/rec.mp4", "in_s": 0.5},
+                  {"source": "screen", "path": "shots/rec.mp4", "in_s": 2.5}]},
+              {"seconds": 2.0, "text": "this one has all of it", "text_style": "outline",
+               "shot": {"source": "image", "path": "shots/bench.png"}}]
+
+
+def test_a_text_and_sound_short_needs_no_voice(loop, studio, monkeypatch):
+    from todd.sdk import get_ctx
+    asked = []
+
+    async def ask(question, agent=None, data=None):
+        asked.append(question)
+        return "Looks good"
+
+    async def go():
+        monkeypatch.setattr(get_ctx(), "ask_human", ask)
+        with pytest.raises(ToolError, match="give it seconds"):
+            await shorts.short_new.ainvoke({"title": "x", "hooks": [{"text": "hi", "shot": TEXT_BEATS[1]["shot"]}],
+                                            "beats": TEXT_BEATS})
+        r = await shorts.short_new.ainvoke({"title": "rink pov", "hooks": TEXT_HOOKS, "beats": TEXT_BEATS,
+                                            "sound": "trending sound: a sped-up pop song (add in the app)"})
+        assert r["estimate_s"] == pytest.approx(5.8) and "nothing to voice" in r["next"]
+        assert any("add the sound in the app" in w for w in r["warnings"])
+        s = script_of(studio, r["slug"])
+        assert s["captions"] is None and s["hooks"][0]["seconds"] == 1.6 and len(s["beats"][0]["shots"]) == 2
+        v = await shorts.short_voiceover.ainvoke({"slug": r["slug"]})
+        assert v["takes"] == {} and not studio["spoken"]
+        plan = await shorts.short_plan.ainvoke({"slug": r["slug"]})
+        assert plan["cuts"]["h1"]["duration_s"] == pytest.approx(5.8) and plan["cuts"]["h1"]["shots"] == 4
+        await shorts.short_render.ainvoke({"slug": r["slug"], "hook": "h1"})
+        tl = studio["media"].last("/render/timeline")
+        assert "voice" not in tl and tl["captions"] == [] and tl["video"][0]["crop"]["zoom"] == 1.4
+        assert [(o["text"], o["style"]) for o in tl["overlays"] if o["position"] != "tag"] == [
+            ("pov: it's 11pm and you want to skate tomorrow", "box"), ("the rink site has it on 4 pages".replace(
+                "rink", "rec"), "box"), ("this one has all of it", "outline")]
+        rv = await shorts.short_review.ainvoke({"slug": r["slug"]})
+        assert rv["approved"] and "No voice" in asked[-1] and "Sound: trending sound" in asked[-1]
+        assert "short_render(mode=\"final\")" in rv["next"] and "elevenlabs" not in rv["next"]
+        # a voiced short can turn a beat silent (a reveal), and back
+        e = await shorts.short_edit.ainvoke({"slug": r["slug"], "part": "b2", "vo": "And it's all on one page."})
+        assert e["changed"] == ["vo"] and script_of(studio, r["slug"])["beats"][1]["vo"].startswith("And it's")
+        with pytest.raises(ToolError, match="isn't voiced yet"):
+            await shorts.short_plan.ainvoke({"slug": r["slug"]})
+        await shorts.short_voiceover.ainvoke({"slug": r["slug"]})
+        plan = await shorts.short_plan.ainvoke({"slug": r["slug"]})
+        tl = (await shorts.short_render.ainvoke({"slug": r["slug"], "hook": "h1"}))
+        sent = studio["media"].last("/render/timeline")
+        assert len(sent["voice"]["segments"]) == 1 and sent["voice"]["segments"][0]["at"] == pytest.approx(3.8)
+        assert sent["captions"] and sent["caption_style"] == "phrase"
+    loop.run_until_complete(go())
+
+
+def test_stock_footage_is_searched_by_eye_downloaded_and_credited(loop, studio, monkeypatch):
+    from todd.sdk import get_agent_id, get_ctx
+    from todd.tools import stock
+    asked, got = [], []
+
+    async def ask(question, agent=None, data=None):
+        asked.append((question, data))
+        return "skip"
+
+    hits = [{"id": 11, "pageURL": "https://pixabay.com/videos/rink-11/", "tags": "ice, rink", "duration": 14,
+             "user": "skater", "user_id": 5, "videos": {
+                 "large": {"url": "https://cdn.pixabay.com/video/11_large.mp4", "width": 1920, "height": 1080,
+                           "thumbnail": "https://cdn.pixabay.com/video/11_large.jpg"},
+                 "medium": {"url": "https://cdn.pixabay.com/video/11_medium.mp4", "width": 1280, "height": 720,
+                            "thumbnail": "https://cdn.pixabay.com/video/11_medium.jpg"}}},
+            {"id": 12, "pageURL": "https://pixabay.com/videos/laces-12/", "tags": "skates", "duration": 9,
+             "user": "puck", "user_id": 6, "videos": {
+                 "large": {"url": "https://cdn.pixabay.com/video/12_large.mp4", "width": 1080, "height": 1920,
+                           "thumbnail": "https://cdn.pixabay.com/video/12_large.jpg"}}}]
+
+    async def fake_get(url, params, headers=None):
+        got.append((url, params))
+        if params.get("id"):
+            return {"hits": [{**next(h for h in hits if str(h["id"]) == params["id"]), "videos": {
+                "large": {"url": "https://cdn.pixabay.com/video/12_fresh.mp4", "width": 1080, "height": 1920}}}]}
+        return {"hits": hits[:1] if params.get("q") == "empty rink" else hits}
+
+    monkeypatch.setattr(stock, "_get", fake_get)
+    stock._cache.clear()
+
+    async def go():
+        monkeypatch.setattr(get_ctx(), "ask_human", ask)
+        with pytest.raises(ToolError, match="didn't add PIXABAY_API_KEY"):
+            await stock.short_stock.ainvoke({"query": "hands lacing skates"})
+        assert asked[0][1] == {"secret_name": "PIXABAY_API_KEY"} and "pixabay.com/api/docs" in asked[0][0]
+        vault.set_secret("PIXABAY_API_KEY", "px-key")
+        try:
+            r = await stock.short_stock.ainvoke({"query": "hands lacing skates", "k": 4})
+            # another producer's search in between doesn't change what "1" means for this one
+            from todd.runtime import _current_agent, set_current_agent
+            tok = set_current_agent("other-producer")
+            await stock.short_stock.ainvoke({"query": "empty rink", "k": 4})
+            get_ctx().pop_images("other-producer")
+            _current_agent.reset(tok)
+            assert [c["key"] for c in r["candidates"]] == ["pixabay:12", "pixabay:11"]  # portrait first
+            assert r["candidates"][0]["portrait"] and got[0][1]["q"] == "hands lacing skates"
+            assert get_ctx().pop_images(get_agent_id()) == [(base64.b64encode(b"thumbs").decode(), "image/png")]
+            p = await stock.short_stock_pick.ainvoke({"pick": "1", "name": "laces"})
+            assert p["path"] == "video/stock/laces.mp4" and p["duration_s"] == 12.0
+            assert studio["media"].last("/fetch/video")["url"] == "https://cdn.pixabay.com/video/12_fresh.mp4"
+            credits = (studio["dir"] / "video" / "stock" / "CREDITS.md").read_text()
+            assert "video/stock/laces.mp4: video by [puck](https://pixabay.com/users/puck-6/)" in credits
+            # a stock clip in a short is toned down to sit with phone footage
+            beats = [{"vo": "Skates on.", "shot": {"source": "clip", "path": p["path"], "in_s": 4}}]
+            slug = (await shorts.short_new.ainvoke({"title": "laces", "hooks": HOOKS[:1], "beats": beats}))["slug"]
+            await shorts.short_voiceover.ainvoke({"slug": slug})
+            await shorts.short_render.ainvoke({"slug": slug, "hook": "h1"})
+            clip = studio["media"].last("/render/timeline")["video"][-1]
+            assert clip["src"] == "video/stock/laces.mp4" and clip["grade"] == "phone" and clip["in_s"] == 4
+        finally:
+            vault.delete_secret("PIXABAY_API_KEY")
+    loop.run_until_complete(go())
+
+
+def test_a_silent_hook_variant_next_to_a_spoken_one(loop, studio):
+    async def go():
+        hooks = [HOOKS[0], {"seconds": 1.5, "text": "pov: drop-in", "shot": {"source": "image",
+                                                                           "path": "shots/bench.png"}}]
+        beats = [{"seconds": 2, "text": "every week", "shot": {"source": "screen", "path": "shots/rec.mp4"}}]
+        slug = (await shorts.short_new.ainvoke({"title": "mixed", "hooks": hooks, "beats": beats}))["slug"]
+        v = await shorts.short_voiceover.ainvoke({"slug": slug})
+        assert list(v["takes"]) == ["h1"]  # h2 says nothing: no take, and no empty request
+        plan = await shorts.short_plan.ainvoke({"slug": slug})
+        assert set(plan["cuts"]) == {"h1", "h2"} and plan["cuts"]["h2"]["duration_s"] == pytest.approx(3.5)
+        r = await shorts.short_render.ainvoke({"slug": slug, "hook": "h2"})
+        assert "voice" not in studio["media"].last("/render/timeline") and r["duration_s"] == pytest.approx(3.5)
     loop.run_until_complete(go())

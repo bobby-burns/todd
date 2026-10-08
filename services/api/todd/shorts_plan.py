@@ -32,6 +32,10 @@ MIN_BEAT_S = 0.7
 MAX_SPEEDUP = 2.0  # a recording may be sped up this much to fit its slot ("speed": "fit")
 MIN_SPEED = 0.85  # and slowed down this little
 MAX_FREEZE_S = 0.5  # holding a clip's last frame longer than this is flagged
+MAX_STILL_S = 4.5  # one shot on screen longer than this, with nothing changing, is where people swipe
+READ_WPS = 3.3  # on-screen words a viewer reads per second, for text-led beats
+STOCK_DIR = "video/stock/"  # stock clips (short_stock): toned down to sit with phone footage
+MAX_ITEMS = 120  # pieces of video one timeline render takes (the media service's limit)
 MAX_SCREEN_HOLD_S = 3.0  # a screen recording is a still page at either end: holding it this long reads naturally
 WORDS_PER_S = 2.8  # for estimating a script's length before it's voiced
 MIN_PAGE_S = 0.25  # a caption page shown shorter than this can't be read
@@ -115,9 +119,12 @@ def parts(script: dict[str, Any], hook_id: str) -> list[dict[str, Any]]:
 
 
 def take_text(script: dict[str, Any], hook_id: str) -> tuple[str, list[tuple[int, int]]]:
-    """The text sent for one take, and each part's (start, end) character span in it."""
+    """The text sent for one take, and each spoken part's (start, end) character span in it (silent parts aren't in
+    the take)."""
     text, spans = "", []
     for p in parts(script, hook_id):
+        if not p.get("vo"):
+            continue
         line = " ".join(str(p["vo"]).split())
         if text:
             text += " "
@@ -164,10 +171,14 @@ def choose_length(model: str, needed_s: float) -> int | None:
 
 def estimate_seconds(script: dict[str, Any]) -> float:
     """Before a take exists: roughly how long the script runs."""
-    longest_hook = max(len(str(h["vo"]).split()) for h in script["hooks"])
-    body = sum(len(str(b["vo"]).split()) for b in script["beats"])
+    def length(p: dict[str, Any]) -> float:
+        return len(str(p["vo"]).split()) / WORDS_PER_S if p.get("vo") else float(p.get("seconds") or 0)
+
+    longest_hook = max(length(h) for h in script["hooks"])
+    body = sum(length(b) for b in script["beats"])
     holds = sum(float(b.get("hold_s") or 0) for b in [*script["hooks"], *script["beats"]])
-    return (longest_hook + body) / WORDS_PER_S + holds + float(script.get("end_hold_s", 0.6))
+    voiced = any(p.get("vo") for p in [*script["hooks"], *script["beats"]])
+    return longest_hook + body + holds + (float(script.get("end_hold_s", 0.6)) if voiced else 0.0)
 
 
 def _caption_text(w: str) -> str:
@@ -188,53 +199,129 @@ def length_notes(seconds: float, platform: dict[str, Any], about: str = "") -> l
     return []
 
 
-def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media: dict[str, dict[str, Any]],
-         take_audio: str, fps: int = FPS) -> Plan:
-    """Plan one cut (one hook variant). `media` maps file paths to {kind, duration_s} for the shots' files."""
-    text, spans = take_text(script, hook_id)
-    ws = words(text, spans, alignment)
+def _shots_of(p: dict[str, Any]) -> list[dict[str, Any]]:
+    """A part's shots: one, or a few quick cuts inside it (`shots`)."""
+    return list(p.get("shots") or [p.get("shot") or {}])
+
+
+def _split(frames_total: int, shots: list[dict[str, Any]]) -> list[int]:
+    """Frames for each cut inside a part, by their `share` (equal by default); every cut gets at least one frame."""
+    if frames_total < len(shots):
+        raise ValueError(f"{len(shots)} cuts don't fit in {frames_total} frames: fewer cuts, or a longer beat")
+    if len(shots) == 1:
+        return [frames_total]
+    weights = [max(float(sh.get("share") or 1), 0.05) for sh in shots]
+    total_w = sum(weights)
+    out, used = [], 0
+    for i, wt in enumerate(weights):
+        left = len(weights) - i - 1
+        f = frames_total - used - left if i == len(weights) - 1 else \
+            min(max(1, round(frames_total * wt / total_w)), frames_total - used - left)
+        out.append(f)
+        used += f
+    return out
+
+
+def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any] | None, media: dict[str, dict[str, Any]],
+         take_audio: str | None, fps: int = FPS) -> Plan:
+    """Plan one cut (one hook variant). `media` maps file paths to {kind, duration_s} for the shots' files. Parts with a
+    spoken line (`vo`) are timed from the take; parts without one are silent and last their `seconds` (a text-led beat,
+    a visual payoff). A short with no spoken line at all needs no take."""
     ps = parts(script, hook_id)
     n = len(ps)
-    by_part: list[list[Word]] = [[w for w in ws if w.beat == k] for k in range(n)]
-    missing = [ps[k]["id"] for k in range(n) if not by_part[k]]
-    if missing:
-        raise ValueError(f"no words found for {', '.join(missing)}: voice the script again")
+    voiced = [k for k, p in enumerate(ps) if p.get("vo")]
+    silent = [0.0 if p.get("vo") else float(p.get("seconds") or 0) for p in ps]
+    for k, p in enumerate(ps):
+        if not p.get("vo") and silent[k] <= 0:
+            raise ValueError(f"{p['id']} has no spoken line, so it needs seconds")
     pc = pace(script)
     end_hold = float(script.get("end_hold_s", 0.6))
-    lead_trim = max(0.0, by_part[0][0].start - PRE_ROLL)
-    # pauses: the part's own hold, a gap after every line but the last, and whatever lifts a short shot to min_shot_s
-    holds = [float(p.get("hold_s") or 0) + (pc["beat_gap_s"] if k < n - 1 else 0.0) for k, p in enumerate(ps)]
     lead = LEAD_FRAMES / fps  # cuts land this early, so the first shot loses it and the last one gains it
-    for k in range(n):
-        start = lead_trim if k == 0 else by_part[k][0].start - lead
-        end = by_part[k + 1][0].start - lead if k + 1 < n else by_part[k][-1].end + end_hold
-        natural = end - start
-        if natural + holds[k] < pc["min_shot_s"] + 0.5 / fps:
-            holds[k] = pc["min_shot_s"] + 0.5 / fps - natural
+    by_part: list[list[Word]] = [[] for _ in range(n)]
+    segments: list[dict[str, Any]] = []
+    start_f = [0] * n
+    own_end_f = [0] * n  # where a voiced part's own picture ends (its trailing silent parts follow)
+    tl = None
+    if voiced:
+        if alignment is None:
+            raise ValueError("the short has spoken lines but no take: voice it first")
+        text, spans = take_text(script, hook_id)
+        ws = words(text, spans, alignment)
+        for w in ws:
+            w.beat = voiced[w.beat] if w.beat < len(voiced) else voiced[-1]
+            by_part[w.beat].append(w)
+        missing = [ps[k]["id"] for k in voiced if not by_part[k]]
+        if missing:
+            raise ValueError(f"no words found for {', '.join(missing)}: voice the script again")
+        nxt = {j: (voiced[i + 1] if i + 1 < len(voiced) else n) for i, j in enumerate(voiced)}
+        trail = {j: list(range(j + 1, nxt[j])) for j in voiced}  # the silent parts after each voiced one
+        lead_s = sum(silent[:voiced[0]])  # silent parts before the first line
+        first, last = voiced[0], voiced[-1]
+        lead_trim = max(0.0, by_part[first][0].start - PRE_ROLL)
+        own: dict[int, float] = {}
+        holds: dict[int, float] = {}
+        for i, j in enumerate(voiced):
+            is_last = j == last
+            h = float(ps[j].get("hold_s") or 0) + (pc["beat_gap_s"] if not is_last else 0.0)
+            begin = lead_trim if j == first else by_part[j][0].start - lead
+            if is_last:
+                finish = by_part[j][-1].end + (end_hold if not trail[j] else TAIL)
+            else:
+                finish = by_part[nxt[j]][0].start - lead
+            if finish - begin + h < pc["min_shot_s"] + 0.5 / fps:
+                h = pc["min_shot_s"] + 0.5 / fps - (finish - begin)
+            own[j] = h
+            holds[j] = h + sum(silent[k] for k in trail[j])
+        shift: dict[int, float] = {}
+        acc = lead_s
+        for j in voiced:
+            shift[j] = acc
+            acc += holds[j]
 
-    # the take is split in the pause before each part; holds push later parts back
-    splits = [lead_trim]
-    for k in range(1, n):
-        prev_end, nxt = by_part[k - 1][-1].end, by_part[k][0].start
-        splits.append(prev_end + max(0.0, nxt - prev_end) / 2)
-    take_end = by_part[-1][-1].end + TAIL
-    shift = [sum(holds[:k]) for k in range(n)]  # added silence before part k
+        def tl(t_take: float, k: int) -> float:  # take time -> timeline time, for something in voiced part k
+            return t_take - lead_trim + shift[k]
 
-    def tl(t_take: float, k: int) -> float:  # take time -> timeline time, for something in part k
-        return t_take - lead_trim + shift[k]
-
-    segments = []
-    for k in range(n):
-        src_in, src_out = splits[k], (splits[k + 1] if k + 1 < n else take_end)
-        segments.append({"src_in": round(src_in, 4), "src_out": round(src_out, 4), "at": round(tl(src_in, k), 4)})
-
-    total_f = frames(tl(by_part[-1][-1].end, n - 1) + holds[-1] + end_hold, fps)
-    cuts = [0]
-    for k in range(1, n):
-        cuts.append(max(cuts[-1] + 1, frames(tl(by_part[k][0].start, k), fps) - LEAD_FRAMES))
-    cuts.append(max(total_f, cuts[-1] + 1))
+        # the take is split in the pause before each line; holds and silent parts push later lines back
+        splits = [lead_trim]
+        for i in range(1, len(voiced)):
+            prev_end, nx = by_part[voiced[i - 1]][-1].end, by_part[voiced[i]][0].start
+            splits.append(prev_end + max(0.0, nx - prev_end) / 2)
+        take_end = by_part[last][-1].end + TAIL
+        for i, j in enumerate(voiced):
+            src_in, src_out = splits[i], (splits[i + 1] if i + 1 < len(voiced) else take_end)
+            segments.append({"src_in": round(src_in, 4), "src_out": round(src_out, 4), "at": round(tl(src_in, j), 4)})
+        tail_end = (end_hold if not trail[last] else TAIL)
+        total_f = frames(tl(by_part[last][-1].end, last) + own[last] + tail_end + sum(silent[k] for k in trail[last]),
+                         fps)
+        # leading silent parts, one after another from frame 0
+        at = 0.0
+        for k in range(first):
+            start_f[k] = frames(at, fps)
+            at += silent[k]
+        cut = {}
+        for i, j in enumerate(voiced):
+            cut[j] = frames(lead_s, fps) if i == 0 else max(cut[voiced[i - 1]] + 1,
+                                                            frames(tl(by_part[j][0].start, j), fps) - LEAD_FRAMES)
+            start_f[j] = cut[j]
+        for i, j in enumerate(voiced):
+            end_j = cut[voiced[i + 1]] if i + 1 < len(voiced) else max(total_f, cut[j] + 1)
+            for k in reversed(trail[j]):  # silent parts are carved from the end of the gap before the next line
+                end_j -= max(1, frames(silent[k], fps))
+                start_f[k] = end_j
+            own_end_f[j] = max(end_j, cut[j] + 1)
+            if end_j <= cut[j]:
+                raise ValueError(f"{ps[j]['id']}: the silent parts after it don't fit")
+    else:  # no voice at all: every part lasts its seconds
+        at = 0.0
+        for k in range(n):
+            start_f[k] = frames(at, fps)
+            at += silent[k]
+        total_f = max(frames(at, fps), n)
+    ends = [start_f[k + 1] if k + 1 < n else max(total_f, start_f[k] + 1) for k in range(n)]
+    total_f = ends[-1]
 
     platform = PLATFORMS.get(script.get("platform", "tiktok"), PLATFORMS["tiktok"])
+    style = script.get("text_style") or "box"
     warnings: list[str] = []
     beats_report: list[dict[str, Any]] = []
     video: list[dict[str, Any]] = []
@@ -242,88 +329,144 @@ def plan(script: dict[str, Any], hook_id: str, alignment: dict[str, Any], media:
     captions: list[dict[str, Any]] = []
     overlays: list[dict[str, Any]] = []
     tags: list[dict[str, Any]] = []  # beat labels for the scaffold, so feedback can say "b3 is rushed"
+    caption_mode = script.get("captions") or "phrase"
 
     for k, p in enumerate(ps):
-        start_f, end_f = cuts[k], cuts[k + 1]
-        slot = (end_f - start_f) / fps
-        start_s, end_s = start_f / fps, end_f / fps
-        shot = p.get("shot") or {}
+        start_f_k, end_f_k = start_f[k], ends[k]
+        slot = (end_f_k - start_f_k) / fps
+        start_s, end_s = start_f_k / fps, end_f_k / fps
         notes: list[str] = []
-        item, fit = _fit_shot(p["id"], shot, slot, start_s, by_part[k], tl, k, media, notes)
-        item["frames"] = end_f - start_f
-        video.append(item)
-        if item["kind"] == "placeholder":
-            spec = _generation(p["id"], shot, slot)
-            generate.append(spec)
-            notes += spec.pop("notes")
-            item["label"] = (f"{AI_MODELS[spec['model']]['name']} · {spec['seconds']} s · ${spec['usd']:.2f} · "
-                             f"{shot.get('prompt', '')}")[:400]
+        shots = _shots_of(p)
+        fits = []
+        at_f = start_f_k
+        for i, (shot, nf) in enumerate(zip(shots, _split(end_f_k - start_f_k, shots))):
+            sub_id = p["id"] if len(shots) == 1 else f"{p['id']}.{i + 1}"
+            sub_start = at_f / fps
+            sub = nf / fps
+            items, fit = _fit_shot(sub_id, shot, sub, sub_start, by_part[k], tl, k, media, notes, fps)
+            for item in items:
+                video.append(item)
+            if items[0]["kind"] == "placeholder" and shot.get("source") == "ai":
+                spec = _generation(sub_id, shot, sub)
+                generate.append(spec)
+                notes += spec.pop("notes")
+                items[0]["label"] = (f"{AI_MODELS[spec['model']]['name']} · {spec['seconds']} s · ${spec['usd']:.2f} "
+                                     f"· {shot.get('prompt', '')}")[:400]
+            fits.append(fit if len(shots) == 1 else f"{sub_id}: {fit}")
+            if len(shots) > 1 and sub < 0.5 - 1e-6:
+                notes.append(f"{sub_id} is only {sub:.2f}s on screen: under half a second doesn't register")
+            if sub > MAX_STILL_S and not (not p.get("vo") and len(ps) <= 2):  # a one-idea loop may hold
+                notes.append(f"{sub_id} stays on one shot for {sub:.1f}s: cut it up (more shots, a punch-in with "
+                             "focus) so something changes every 2–3 s")
+            sub_text = shot.get("text")
+            if sub_text:
+                _overlay(overlays, notes, sub_text, sub_start, (at_f + nf) / fps, shot.get("text_position") or
+                         p.get("text_position") or "top", shot.get("text_style") or p.get("text_style") or style)
+            at_f += nf
         if slot < min(MIN_BEAT_S, pc["min_shot_s"]) - 1e-6:
             notes.append(f"only {slot:.2f}s on screen (under {min(MIN_BEAT_S, pc['min_shot_s'])}s)")
         tags.append({"text": f"{p['id']} · {slot:.1f}s", "start": round(start_s, 3), "end": round(end_s, 3),
                      "position": "tag"})
-        if p.get("text"):
-            text = plain(p["text"])
-            if text != p["text"]:
-                notes.append("emoji left out of the on-screen text (the font can't draw them): add them in the app "
-                             "when posting")
-            if text:
-                overlays.append({"text": text, "start": round(start_s, 3), "end": round(end_s, 3), "position": "top"})
-        pages = _pages(by_part[k], tl, k, end_s, pc["caption_words"])
-        for pg in pages:
-            if pg["end"] - pg["start"] < MIN_PAGE_S:
-                notes.append(f"caption \"{' '.join(w['text'] for w in pg['words'])}\" is on screen only "
-                             f"{pg['end'] - pg['start']:.2f}s")
-        captions += pages
-        beats_report.append({"id": p["id"], "vo": p["vo"], "start_s": round(start_s, 3), "end_s": round(end_s, 3),
-                             "slot_s": round(slot, 3), "shot": shot.get("source"), "fit": fit, "warnings": notes})
+        if p.get("text") and not any(sh.get("text") for sh in shots):
+            _overlay(overlays, notes, p["text"], start_s, end_s, p.get("text_position") or "top",
+                     p.get("text_style") or style)
+        elif p.get("text"):  # cuts with their own text: the part's text fills the cuts without one
+            at_f = start_f_k
+            for shot, nf in zip(shots, _split(end_f_k - start_f_k, shots)):
+                if not shot.get("text"):
+                    _overlay(overlays, notes, p["text"], at_f / fps, (at_f + nf) / fps,
+                             p.get("text_position") or "top", p.get("text_style") or style)
+                at_f += nf
+        if p.get("vo") and caption_mode != "none":
+            if "low" in (p.get("text_position"), *(sh.get("text_position") for sh in shots)):
+                notes.append("text at \"low\" sits where the captions are: use top or middle on a spoken beat")
+            own_end_s = own_end_f[k] / fps
+            pages = _pages(by_part[k], tl, k, own_end_s, pc["caption_words"])
+            for pg in pages:
+                if pg["end"] - pg["start"] < MIN_PAGE_S:
+                    notes.append(f"caption \"{' '.join(w['text'] for w in pg['words'])}\" is on screen only "
+                                 f"{pg['end'] - pg['start']:.2f}s")
+            captions += pages
+        if not p.get("vo") and p.get("text"):
+            need = len(str(p["text"]).split()) / READ_WPS + 0.4
+            if slot < need - 0.05:
+                notes.append(f"{slot:.1f}s isn't enough to read \"{p['text']}\" (about {need:.1f}s)")
+        beats_report.append({"id": p["id"], "vo": p.get("vo") or "", "start_s": round(start_s, 3),
+                             "end_s": round(end_s, 3), "slot_s": round(slot, 3),
+                             "shot": "+".join(str(sh.get("source")) for sh in shots), "fit": "; ".join(fits),
+                             "warnings": notes})
         warnings += [f"{p['id']}: {x}" for x in notes]
 
+    if len(video) > MAX_ITEMS:
+        raise ValueError(f"{len(video)} pieces of video is more than one render takes ({MAX_ITEMS}): fewer cuts")
     duration = total_f / fps
-    lo, hi = platform["ideal_s"]
     warnings += length_notes(duration, platform)
     music = script.get("music")
     timeline = {
         "version": 1, "slug": script["slug"], "hook": hook_id, "fps": fps, "width": script["width"],
         "height": script["height"], "frames": total_f, "duration_s": round(duration, 3),
-        "video": video, "voice": {"src": take_audio, "segments": segments},
+        "video": video, "voice": {"src": take_audio, "segments": segments} if voiced else None,
         "music": {"src": music["path"], "volume": float(music.get("volume", 0.25))} if music else None,
-        "captions": captions, "overlays": overlays, "tags": tags,
+        "captions": captions, "caption_style": "karaoke" if caption_mode == "karaoke" else "phrase",
+        "overlays": overlays, "tags": tags,
     }
     report = {"hook": hook_id, "duration_s": round(duration, 3), "beats": beats_report, "warnings": warnings,
-              "estimate_usd": round(sum(g["usd"] for g in generate), 2), "pace": pc}
+              "estimate_usd": round(sum(g["usd"] for g in generate), 2), "pace": pc,
+              "cuts": len(video) - 1, "avg_shot_s": round(duration / max(len(video), 1), 2)}
     return Plan(timeline, report, generate)
 
 
+def _overlay(overlays: list[dict[str, Any]], notes: list[str], raw: str, start: float, end: float, position: str,
+             style: str) -> None:
+    text = plain(raw)
+    if text != raw:
+        notes.append("emoji left out of the on-screen text (the font can't draw them): add them in the app when "
+                     "posting")
+    if text:
+        overlays.append({"text": text, "start": round(start, 3), "end": round(end, 3), "position": position,
+                         "style": style})
+
+
 def _fit_shot(beat_id: str, shot: dict[str, Any], slot: float, start_s: float, ws: list[Word], tl, k: int,
-              media: dict[str, dict[str, Any]], notes: list[str]) -> tuple[dict[str, Any], str]:
-    """How a shot fills its slot: (timeline video item, a short description of the fit)."""
+              media: dict[str, dict[str, Any]], notes: list[str], fps: int = FPS) -> tuple[list[dict[str, Any]], str]:
+    """How a shot fills its slot: (timeline video items, a short description of the fit). One item, or two when a
+    punch-in (`focus` with `at_s`) lands partway through."""
+    frames_n = max(1, round(slot * fps))
     source = shot.get("source")
     path = shot.get("clip") if source == "ai" else shot.get("path")
+    focus = shot.get("focus")
+    crop = {k2: float(focus[k2]) for k2 in ("x", "y", "zoom")} if focus else None
     if source == "ai" and not path:
-        return {"kind": "placeholder", "src": shot.get("start_image"), "zoom": "in"}, "placeholder (not generated)"
+        return [{"kind": "placeholder", "src": shot.get("start_image"), "zoom": "in", "frames": frames_n}], \
+            "placeholder (not generated)"
     info = media.get(path or "") or {}
     if source == "image" or info.get("kind") == "image":
-        return {"kind": "image", "src": path, "fit": shot.get("fit", "cover"), "zoom": shot.get("zoom", "in")}, "still"
+        item = {"kind": "image", "src": path, "fit": shot.get("fit", "cover"), "zoom": shot.get("zoom", "in"),
+                "frames": frames_n}
+        if crop:
+            item["crop"] = crop
+        return [item], "still"
     dur = info.get("duration_s")
     if not dur:
         notes.append(f"{path}: not a video the planner could read")
-        return {"kind": "placeholder", "src": None, "label": f"missing: {path}"}, "missing"
+        return [{"kind": "placeholder", "src": None, "label": f"missing: {path}", "frames": frames_n}], "missing"
     in_s = float(shot.get("in_s") or 0)
     sync = shot.get("sync") or {}
     speed_mode = shot.get("speed", 1)
     speed = 1.0 if speed_mode in (None, "fit") else float(speed_mode)
     # Screen recordings start and end on a still page, so holding a first or last frame looks like the page waiting;
-    # a generated clip frozen that long looks broken.
+    # a generated or filmed clip frozen that long looks broken.
     max_hold = MAX_SCREEN_HOLD_S if source == "screen" else MAX_FREEZE_S
     hold = 0.0  # the first frame, held before the clip plays
     if sync.get("word"):
         target = sync["word"].lower().strip(".,!?")
         hit = next((w for w in ws if w.text.lower().strip(".,!?\"'") == target), None)
-        if hit is None:
+        if hit is None or tl is None:
             notes.append(f"sync word {sync['word']!r} isn't in this beat's line")
         else:
             offset = tl(hit.start, k) - start_s  # seconds into the slot where the word is spoken
+            if not 0 <= offset <= slot:
+                notes.append(f"{beat_id}: sync word {sync['word']!r} is said while another cut is on screen")
             in_s = float(sync.get("at_s", 0)) - offset * speed
             if in_s < 0 and source == "screen" and -in_s <= MAX_SCREEN_HOLD_S:
                 hold = min(-in_s, slot)
@@ -351,10 +494,31 @@ def _fit_shot(beat_id: str, shot: dict[str, Any], slot: float, start_s: float, w
             freeze, fit = short, f"too short by {short:.2f}s (holds its last frame)"
             notes.append(f"{path} is {short:.2f}s too short for its slot: re-record or re-generate it longer")
     item = {"kind": "clip", "src": path, "in_s": round(in_s, 3), "speed": round(speed, 4),
-            "freeze_s": round(freeze, 3), "fit": shot.get("fit", "cover")}
+            "freeze_s": round(freeze, 3), "fit": shot.get("fit", "cover"), "frames": frames_n}
+    grade = shot.get("grade") or ("phone" if source == "ai" or str(path).startswith(STOCK_DIR) else None)
+    if grade == "phone":
+        item["grade"] = "phone"
     if hold:
         item["hold_s"] = round(hold, 3)
-    return item, fit
+    if not crop:
+        return [item], fit
+    at = focus.get("at_s")
+    if at is None:
+        return [{**item, "crop": crop}], f"{fit}; punched in {crop['zoom']:g}×"
+    if float(at) >= in_s + available - 1 / fps:
+        notes.append(f"{beat_id}: the punch-in at {at}s is past the end of {path} ({dur:g}s): punched in from the start")
+        return [{**item, "crop": crop}], f"{fit}; punched in {crop['zoom']:g}×"
+    t_on = hold + (float(at) - in_s) / speed  # when the clip reaches at_s, seconds into the slot
+    f1 = round(t_on * fps)
+    if f1 <= 0:
+        return [{**item, "crop": crop}], f"{fit}; punched in {crop['zoom']:g}×"
+    if f1 >= frames_n:
+        notes.append(f"{beat_id}: the punch-in at {at}s comes after this cut ends")
+        return [item], fit
+    first = {**item, "frames": f1, "freeze_s": 0.0}
+    second = {**item, "frames": frames_n - f1, "in_s": round(max(float(at), in_s), 3), "crop": crop}
+    second.pop("hold_s", None)
+    return [first, second], f"{fit}; punches in {crop['zoom']:g}× at {t_on:.1f}s"
 
 
 def _generation(beat_id: str, shot: dict[str, Any], slot: float) -> dict[str, Any]:

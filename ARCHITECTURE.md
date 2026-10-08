@@ -37,13 +37,18 @@ tools/infra.py     `vercel`, `github`, `vault` toolsets
 tools/web.py       `web` toolset: fetch_url, api_request (vault secrets injected, host-bound for protected ones)
 tools/video.py     `video` toolset: storyboard (video/<slug>/storyboard.json), search each shot by meaning (Pixabay,
                    Pexels and the run's own images) ranked with the picked shots in view, pick, render slides + MP4
-tools/shorts.py    `shorts` toolset: record the product → script (hooks + beats) → voiceover take (free local voice or
-                   ElevenLabs) → timing plan → scaffold / final cut
+tools/shorts.py    `shorts` toolset: record the product → script from a format card (hooks + beats; voiced, silent
+                   beats or text + sound; quick cuts, punch-ins, the app's text styles) → voiceover take (free local
+                   voice or ElevenLabs) → timing plan → scaffold / final cut
+tools/stock.py     Stock video b-roll for shorts (Pixabay, Pexels): search with a candidate sheet, pick, credit
 screencast.py      Todd films its own product: a 9:16 tab (fresh, signed out by default), scripted steps, CDP screencast
-tools/trends.py    `trends` toolset: trend_scan (outliers by reach), trend_analyze (transcript + frames), format cards
+tools/trends.py    `trends` toolset: trend_scan (search phrases, hashtags, related videos; outliers by reach),
+                   trend_analyze (cuts and a frame from every shot, words per shot), format cards (shot list, audio,
+                   text style, measured pace)
 tools/apify.py     Apify client: run an actor, read its dataset, fetch its stored files (token only to api.apify.com)
 shorts_plan.py     The timing plan, pure: the take's character timestamps decide every cut, caption, hold, synced
-                   moment and AI clip length (docs/video-step2-plan.md, "Locking voice to picture")
+                   moment and AI clip length (docs/video-step2-plan.md, "Locking voice to picture"); silent beats
+                   last their `seconds`, and a short with no spoken line needs no take
 tools/elevenlabs.py ElevenLabs client: text to speech with character timestamps (voiceover only)
 tools/media.py     Client for the media container (embeddings, fetch, slides, slideshow and timeline renders, files)
 media_index.py     Nearest-neighbour search over MediaAsset embeddings: pgvector when the DB has it, else Python

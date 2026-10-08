@@ -152,23 +152,31 @@ Expo's servers, and there's no iOS simulator, so the human tests on their phone 
 The product already exists (a live site, or a repository): the job is the video, not the product. No launch plan,
 no hosting, no deploy, and nothing posted.
 - **The team, at the start, together:**
-  1. **Trend research** (`trends`): `format_search`, then scans its niche's hashtags, studies the breakouts and saves
-     format cards. It reports the card ids and what each one is.
-  2. **Footage** (`shorts`, plus `sandbox` when the product is only a repository): films the product's pages and
-     flows with `short_record`, a few seconds each, and reports each recording's path and its marks. A repository
-     gets cloned and run in the sandbox (a dev server on port 3000) and filmed at http://localhost:3000: never
-     deploy it for a video.
-  When both have reported: 3. **Producer** (`shorts` and `trends`): writes the script on the best card
-  (`format_id`), uses the footage (or records more), voices it with the free local voice, plans it and puts the
-  scaffold in front of the human with `short_review`, until they approve. One producer per video.
-- **The look:** it has to pass for something a person filmed on their phone and edited: the product's real screens
-  full-frame, or real phone footage, one short line of text, hard cuts. Never designed frames (backgrounds, slides,
-  mockups, logos, end cards, URLs on screen) and never a page built just for the video. The `shorts` guide has the
-  details; put "follow the look in your guide" in the producer's task.
+  1. **Trend research** (`trends`): finds what's working in the product's niche, decodes the breakouts shot by
+     shot and saves format cards (shot list, audio, text style, measured pace, why it works). It reports each
+     card's id, name, audio, what it needs on camera and its pace.
+  2. **Product scout** (`shorts`, plus `sandbox` when the product is only a repository): looks through the product
+     with `short_look` and reports what a video can show: the screens and moments that make its point (the payoff),
+     the exact texts to tap, what works signed out, the real data on screen. It films only the one or two moments
+     any short would need, a few seconds each, not a tour. A repository gets cloned and run in the sandbox (a dev
+     server on port 3000) and filmed at http://localhost:3000: never deploy it for a video.
+  When both have reported: 3. **Producers** (`shorts` and `trends`), one per video, each on its own card (give
+  the card id and the scout's report in its task): it writes the shot list from the card, films or finds exactly
+  that footage, scripts it, voices it if anything is spoken, plans it and puts the scaffold in front of the human
+  with `short_review` until they approve.
+- **Variety:** several videos follow different formats: vary the audio (text + sound vs voiceover) and what's on
+  camera (the product's screens, b-roll, people); at most one of them is a screen recording with a voiceover. Pick
+  cards the product can really fill. A card that needs a person on camera gets AI shots (priced placeholders until
+  the human approves) or stock, never a fake customer.
+- **The look:** it has to pass for something a person filmed on their phone and edited: real screens and footage
+  full-frame, the app's own text style, hard cuts, something changing every 2–3 s. Never designed frames
+  (backgrounds, slides, mockups, logos, end cards, URLs on screen) and never a page built just for the video. The
+  `shorts` guide has the details; put "follow the look in your guide" in each producer's task.
 - **Length:** as short as the idea allows, most 8–20 s, 30 s at most. Several shorts: vary the length, at least one
   under 12 s.
-- **Keys:** the trend scan needs APIFY_API_TOKEN, and asks the human for it by itself when it's missing. ElevenLabs
-  (and later Higgsfield) only after the human approves the scaffold.
+- **Keys:** the trend scan needs APIFY_API_TOKEN and stock video a free PIXABAY_API_KEY; each tool asks the human
+  for its key by itself when it's missing (a short can go on without stock). ElevenLabs (and later Higgsfield) only
+  after the human approves the scaffold.
 - **Recording:** `short_record` films in a fresh browser with nobody signed in, so it can tap, type and submit on
   the product's own pages like any visitor (a quiz answer, a search, a demo form). Only `signed_in=true` (to film
   pages behind the human's sign-in) restricts it to reading and safe taps. Rendering runs in Todd's media service:

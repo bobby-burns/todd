@@ -29,6 +29,7 @@ ENV HF_HUB_OFFLINE=1
 # Same uid as the sandbox's `agent` user (the node image's `node` is 1000, so `agent` is 1001): both write run folders.
 RUN useradd -m -u 1001 -s /usr/sbin/nologin media && mkdir -p /workspace && chown media:media /workspace
 COPY server.py /opt/media/server.py
+COPY fonts /opt/media/fonts
 
 USER media
 WORKDIR /workspace

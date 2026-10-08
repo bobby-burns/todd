@@ -111,13 +111,16 @@ def browser_lock() -> BrowserLock:
     return _browser_locks[key]
 
 
+MAX_PENDING_IMAGES = 12  # images one tool result can carry to the model (each a few hundred KB of JPEG)
+
+
 class RunContext:
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
         self.cancelled = False
         self.user_notes = Inbox()  # the human's messages to the planner
         self._waiting = 0
-        self._images: dict[str, tuple[str, str]] = {}  # agent_id -> (base64, mime): the next image to show the model
+        self._images: dict[str, list[tuple[str, str]]] = {}  # agent_id -> [(base64, mime)]: images for its next result
         self.agents: dict[str, Any] = {}  # agent_id -> AgentHandle (see agents/dynamic.py)
         self.gates: dict[str, PauseGate] = {}  # agent_id -> pause switch ("planner" included)
 
@@ -131,11 +134,14 @@ class RunContext:
         events.emit(self.run_id, agent, kind, text, data)
 
     def push_image(self, agent_id: str, b64: str, mime: str = "image/png") -> None:
-        """Show the agent an image with its next tool result (a screenshot, a recording's contact sheet)."""
-        self._images[agent_id] = (b64, mime)
+        """Show the agent an image with its next tool result (a screenshot, a recording's contact sheet, a reference
+        video's shots). Several pushed by one call all go with that result."""
+        pending = self._images.setdefault(agent_id, [])
+        pending.append((b64, mime))
+        del pending[:-MAX_PENDING_IMAGES]  # an engine that never shows them doesn't keep piling them up
 
-    def pop_image(self, agent_id: str) -> tuple[str, str] | None:
-        return self._images.pop(agent_id, None)
+    def pop_images(self, agent_id: str) -> list[tuple[str, str]]:
+        return self._images.pop(agent_id, None) or []
 
     def add_llm_cost(self, usd: float) -> None:
         if usd:

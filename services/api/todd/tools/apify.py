@@ -25,6 +25,7 @@ ASK_KEY = ("Todd needs your Apify API token to find what's trending in this nich
            "Settings → API & Integrations (https://console.apify.com/settings/integrations) and paste it here: it "
            "goes straight into Todd's vault.")
 DONE = ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT")
+MIN_CHARGE_CAP_USD = 0.5  # Apify refuses a per-run cap below this ("max-total-charge-usd-below-minimum", 2026-10-08)
 
 
 def estimate(actor: str, results: int, downloads: int = 0) -> float:
@@ -47,9 +48,13 @@ async def _call(token: str, method: str, path: str, timeout: float = 90, **kw: A
     return r.json()
 
 
-async def run_actor(token: str, actor: str, payload: dict[str, Any], max_wait: float = 600) -> tuple[dict, list]:
-    """Start the actor, wait for it (Apify answers at most 60 s at a time), return (run, dataset items)."""
-    run = (await _call(token, "POST", f"/acts/{actor}/runs", json=payload))["data"]
+async def run_actor(token: str, actor: str, payload: dict[str, Any], max_wait: float = 600,
+                    max_charge_usd: float | None = None) -> tuple[dict, list]:
+    """Start the actor, wait for it (Apify answers at most 60 s at a time), return (run, dataset items).
+    `max_charge_usd`: Apify stops charging (and the actor stops) at this amount, the one the human approved, or
+    Apify's smallest allowed cap (MIN_CHARGE_CAP_USD) when that's less."""
+    params = {"maxTotalChargeUsd": f"{max(max_charge_usd, MIN_CHARGE_CAP_USD):.2f}"} if max_charge_usd else None
+    run = (await _call(token, "POST", f"/acts/{actor}/runs", json=payload, params=params))["data"]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_wait
     while run["status"] not in DONE:

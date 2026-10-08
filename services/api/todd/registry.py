@@ -54,37 +54,81 @@ class Toolset:
                 "tools": [t.name for t in self.tools]}
 
 
-# How a short gets made, for agents with the shorts toolset. The look comes first: it decides whether anyone believes it.
+# How a short gets made, for agents with the shorts toolset. A format seen working in the niche comes first, then a
+# shot list from it, then footage for each shot; the look decides whether anyone believes a person made it.
 SHORTS_GUIDE = """\
 The look: it has to pass for something a person filmed on their phone and cut in an editing app, never a template.
-- Footage is real: the product's own screens filmed full-frame with short_record (that reads as a phone screen
-  recording: no device frame, no backdrop around it), or phone-camera footage of real places and people (AI shots are
-  prompted as handheld phone video in natural light, with no text in them).
-- Never design frames: no made-up backgrounds or gradients, slides, cards, phone mockups, logos, brand-colour badges,
-  progress bars, countdowns or end cards, and no URLs or calls to action on screen (the link goes in the post's
-  caption). Never build a page, image or animation just for the video: if the product doesn't show it, film
-  something else.
-- Text: one short line at the top in the native style (a beat's `text`, often only on the hook), written the way
-  people type; the captions do the rest. Hard cuts, no transitions.
+- Real footage, full-frame: the product's own screens (short_record reads as a phone screen recording), phone-style
+  b-roll (short_stock: plain, handheld-looking clips of places, hands, things), and AI shots for people (prompted
+  as phone video, see below). Never design frames: no made-up backgrounds, gradients, slides, cards, mockups, logos,
+  badges, countdowns or end cards, no URLs or calls to action on screen (the link goes in the post's caption), and
+  never a page, image or animation built just for the video.
+- Text is the app's own (short_new text_style "box" or "outline"): lowercase or sentence case, 1–2 short lines,
+  up to ~8 words a line. The hook's text is on screen from the first frame. One audio mode per video:
+  * text + sound: nobody talks; the on-screen text tells the story beat by beat (silent beats with `seconds`), no
+    captions; it renders silent and the sound (the format's trending sound) is added in the app when posting:
+    say which in `sound`;
+  * voiceover: one voice over the footage, first person, how people in the niche talk (contractions, no ad words,
+    the product named at most twice); phrase captions; "karaoke" captions only if the format really has them;
+  * natural: the footage's own sound (rare for us: screen recordings are silent).
+- The edit: hard cuts, no transitions. Most shots 1.5–3 s, none under 0.5 s; something changes at least every
+  2–3 s (a cut, a punch-in, new text). Use quick cuts inside a beat (`shots`), punch-ins (`focus` 1.2–1.6 on the
+  thing being tapped or read, often at the moment it happens: `at_s`), cut loading and waiting out of recordings
+  (start each cut where something happens; `speed: "fit"` for a long scroll). The payoff is on screen by ~3 s;
+  the last frame should loop back into the first.
 - Length: as short as the idea allows. Most land at 8–20 s; 30 s is a ceiling, not a target, and a real example's
   length isn't one to match. When you make several, make at least one under 12 s.
+- Honest: never present a stock or AI person as a customer or reviewer, never fake a comment, post, review,
+  message or number. Film real public pages (the product, or the real place a problem lives) signed out.
+From a format card to a shot list: follow the card's shots, audio, text style and pace (its `measured` avg_shot_s
+is the examples'), fitting the product in where `adapt` says. Make each of the card's shots with what fits it:
+  screen -> short_record of the product (or of the real public page the problem lives on), one moment per cut;
+  screenshot -> a still of a real page (a recording held on it), never a made-up post, comment or chat;
+  talking-head / person / pov-hands -> an AI shot (prompt below), silent with the line as on-screen text; or a stock
+    clip of someone doing the thing (not talking, not a fake customer); or drop the face: text over the screen;
+  place / object -> short_stock first (pick the one that looks phone-shot), an AI shot second;
+  text-only -> the text over a real shot (a screen, a stock clip), never a designed card;
+  reused (TV, games, other creators) -> never reuse it: a person, place or text shot that does the same job.
+AI shots stay priced placeholders until the human approves the scaffold. Prompt them as phone video, one shot,
+one action, 2–4 s used: "Vertical 9:16 smartphone video, <front-camera selfie at arm's length | rear camera held in
+one hand | phone propped on a counter>, slightly off-center, one continuous take. <the same cast description in
+every shot: age, hair, clothes, one detail>. <one simple action, small natural motion>. In <an ordinary lived-in
+place>, <time of day>, lit by <a named light source>; phone auto-exposure, natural skin texture, slight handheld
+shake. Screens, signs and labels in view are blank or turned away." Never ask for text, UI, logos or a speaking
+mouth; never words like cinematic, epic, professional, studio.
 Steps:
-0) Film the product: short_look a page first (a screenshot and an outline with the exact texts to tap and scroll
-   to), then short_record its real pages and flows: the live site, or for a repository a local copy running in the
-   sandbox at http://localhost:3000; start_at opens on the right section. Recordings are signed out, so go through
-   the real flow like a visitor (answer the quiz, submit the demo form). Each recording comes back with a contact
-   sheet (a frame after each step): look at it before using the footage. Never write your own recorder or call
-   ffmpeg: Todd's media service renders everything.
-1) Base the script on a format card (trends toolset: format_search, or a fresh scan) and pass its id to short_new
-   (format_id); follow its hook, beats and sound. Never a feature tour. short_new: 2–3 hook variants (the first line
-   decides whether anyone keeps watching) and the beats, each one spoken line, optional on-screen text and one shot.
-   Prefer your recordings over AI shots. Write the way people in the niche talk, never like an ad; the product is
-   the payoff, not the pitch.
-2) short_voiceover (free local voice), short_plan, fix every warning and plan again, then short_render the animatic
-   and look at its contact sheet (a frame from each beat) against the look above; fix what doesn't pass.
-3) short_review: the human watches the free scaffold and approves or asks for changes (pace, a line, a shot); apply
-   them and review again until they approve. Only then: short_voiceover(provider="elevenlabs"), plan again, and
-   (later) generate. Never post."""
+0) Read the format card(s) (format_search) and decide which one this short follows. Write its shot list first: for
+   each of the card's shots, what our version shows and where it comes from (above). Then get exactly that footage:
+   short_look a page (a screenshot and an outline with the exact texts to tap), then short_record the moments the
+   shot list needs, a few seconds each (the live site, or for a repository a local copy in the sandbox at
+   http://localhost:3000; start_at opens on the right section; recordings are signed out, so go through the flow
+   like a visitor). short_stock / short_stock_pick for b-roll. Every recording and clip comes back with a contact
+   sheet: look at it. Never write your own recorder or call ffmpeg: Todd's media service renders everything.
+1) short_new with format_id, the audio mode the card has, 2–3 hook variants (the first line or text decides whether
+   anyone keeps watching) and the beats. Never a feature tour; the product is the payoff, not the pitch.
+2) short_voiceover (free local voice) if anything is spoken, short_plan (fix every warning, and look at vs_format:
+   cut more if it's slower than the examples), then short_render the animatic and look at its contact sheet against
+   the look above and the card's examples. Fix what doesn't pass.
+3) short_review: the human watches the free scaffold and approves or asks for changes; apply them and review again
+   until they approve. Only then: short_voiceover(provider="elevenlabs") for a voiced short, plan again, and (later)
+   generate. Never post."""
+
+TRENDS_GUIDE = """\
+1) format_search first: the library may already know this niche (and cards older than ~30 days are worth refreshing).
+2) Map the niche from the product: who it's for, the situations they post about (not the product), the phrases
+   they'd type into TikTok search, and the hashtags they really use.
+3) trend_scan with 3–6 search phrases (they find the niche better than hashtags) plus a few hashtags. Read the
+   captions: a phrase or tag can mean something else (another sport, another country). If the best on-niche videos
+   are few, trend_scan(related=[their ids]) once for more like them.
+4) trend_analyze the 3–5 strongest on-niche videos (high reach and share rate; skip ads, big accounts and
+   off-niche results). Look at every sheet: you're seeing the edit, a frame from every shot. First write down what
+   is there (what each shot shows, who's on camera, how it's filmed, the exact on-screen text and where it sits,
+   what's said, the cuts per second), then what it means.
+5) format_save one card per format (merge videos that share one): the shot list as it really is, the audio mode,
+   the text style, why it works (pointing at shots), and how a product fits without becoming an ad (`adapt`).
+   Different formats matter more than more of the same: aim for cards that differ in audio (text + sound vs voice)
+   and in what's on camera, including at least one that the product's own screens can carry. Never copy a video:
+   learn its shape. Report each card: its id, name, audio, what it needs on camera, and its measured pace."""
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
     "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "
@@ -124,21 +168,18 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                            "at least one shot. Render once with video_render and report the MP4 path (the slides are "
                            "also a TikTok photo post). Add music only if the human gave you a file for it. Don't post "
                            "anything: posting is a separate, approved step."),
-    "shorts": Toolset("shorts", "Short vertical videos (TikTok, Reels, Shorts) with a voiceover, timed from the voice: "
-                      "film the product in the agents' browser, write the script, voice it (free local voice for the "
-                      "scaffold, ElevenLabs for the final), plan every cut, caption and clip length from the take, "
-                      "and render a free scaffold to approve before anything is spent.", SHORTS_TOOLS,
+    "shorts": Toolset("shorts", "Short vertical videos (TikTok, Reels, Shorts) that look made on a phone: film the "
+                      "product in the agents' browser, find phone-style stock b-roll, write the script from a format "
+                      "card (voiced, or text + sound), voice it (free local voice for the scaffold, ElevenLabs for "
+                      "the final), plan every cut, caption and punch-in, and render a free scaffold to approve before "
+                      "anything is spent.", SHORTS_TOOLS,
                       guide=SHORTS_GUIDE),
-    "trends": Toolset("trends", "What's working right now in a niche: recent TikToks for its hashtags ranked by how "
-                      "far they outperformed their creator's audience, their transcripts and frames, and a shared "
-                      "library of format cards (hook, beats, why it works) to build shorts from.", TRENDS_TOOLS,
-                      guide="1) format_search first: the library may already know this niche. 2) Map the niche: who "
-                            "it's for and the hashtags they really use (not the product's name). 3) trend_scan 3–6 "
-                            "hashtags. 4) trend_analyze the 3–5 strongest (high reach and share rate; skip ads, big "
-                            "accounts and off-niche results: a hashtag can mean something else). 5) format_save one "
-                            "card per format you see, with the mechanism in `why` and how a product fits in `adapt` "
-                            "without becoming an ad. Report the cards, not the videos. Never copy a video: learn its "
-                            "shape."),
+    "trends": Toolset("trends", "What's working right now in a niche: recent TikToks for what its people search and "
+                      "the hashtags they use, ranked by how far they outperformed their creator's audience, decoded "
+                      "shot by shot (cuts, a frame from every shot, the words over each), and a shared library of "
+                      "format cards (shot list, audio, text style, measured pace, why it works) to build shorts "
+                      "from.", TRENDS_TOOLS,
+                      guide=TRENDS_GUIDE),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",
