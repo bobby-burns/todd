@@ -25,6 +25,9 @@ Endpoints (JSON, require X-Media-Token; every path is relative to the run's fold
                                                             avg_shot_s, longest_shot_s, sheets, images_b64?}
                                                            (a reference's edit: its cuts and a frame from every shot)
   /transcribe     {run_id, src}                         -> {text, words: [{word, start, end}]}  (local, free)
+  /watch          {run_id, src, transcribe}             -> {duration_s, freezes, blacks, silences, silent, cuts, heard}
+                                                           (what a critic can measure in a rendered cut)
+  /filmstrip      {run_id, src, out, times, labels}     -> {sheets, images_b64}  (dense labelled frames of a cut)
                                                            (the free scaffold voice)
   /screencast/assemble {run_id, session, times, end_s, out, fps}            -> {path, duration_s, frames, size_bytes}
 It has no vault access, fetches only from MEDIA_FETCH_HOSTS over https, and reads and writes only inside run folders.
@@ -1648,3 +1651,133 @@ async def transcribe(req: TranscribeReq) -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "image_model": IMAGE_MODEL, "text_model": TEXT_MODEL, "dim": DIM}
+
+
+# ------------------------------------------------------------------------------------------ watching a cut
+# The critic watches a rendered short: what the code can measure (where the picture freezes or goes black, where the
+# sound drops out, what the soundtrack actually says) and a filmstrip every half second, each frame labelled with what
+# is said and written at that moment, so saying and showing can be compared beat by beat.
+FREEZE_NOISE, FREEZE_MIN_S = 0.003, 1.2  # freezedetect: this little change for this long is a frozen picture
+SILENCE_DB, SILENCE_MIN_S = -45, 0.5
+STRIP_TILE_W, STRIP_PER_SHEET, STRIP_MAX = 270, 12, 72
+
+
+class WatchReq(BaseModel):
+    run_id: str
+    src: str
+    transcribe: bool = True
+
+
+def _intervals(text: str, start_key: str, end_key: str, total: float) -> list[list[float]]:
+    """[start, end] pairs from FFmpeg's printed frame metadata (an interval still open at the end runs to the end)."""
+    out: list[list[float]] = []
+    cur = None
+    for line in text.splitlines():
+        m = re.search(rf"{re.escape(start_key)}=(-?[0-9.]+)", line)
+        if m:
+            cur = max(0.0, float(m.group(1)))
+            continue
+        m = re.search(rf"{re.escape(end_key)}=(-?[0-9.]+)", line)
+        if m and cur is not None:
+            out.append([round(cur, 2), round(float(m.group(1)), 2)])
+            cur = None
+    if cur is not None and total - cur > 0.05:
+        out.append([round(cur, 2), round(total, 2)])
+    return out
+
+
+def _watch(req: WatchReq) -> dict:
+    src = within(req.run_id, req.src)
+    if not src.is_file():
+        raise HTTPException(404, f"no such file: {req.src}")
+    fmt = video_format(src)
+    total = duration(src)
+    with tempfile.TemporaryDirectory(dir=src.parent) as td:
+        tdp = Path(td)
+        ffmpeg(*LOCAL_ONLY, "-f", fmt, "-i", str(src), "-an", "-vf",
+               f"scale=320:-2,freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_S},metadata=print:file=freeze.txt,"
+               "blackdetect=d=0.2:pix_th=0.10,metadata=print:file=black.txt", "-f", "null", "-", cwd=tdp)
+        has_audio = any(st.get("codec_type") == "audio" for st in
+                        probe(src, "-f", fmt, "-show_entries", "stream=codec_type").get("streams") or [])
+        silences: list[list[float]] = []
+        if has_audio:
+            ffmpeg(*LOCAL_ONLY, "-f", fmt, "-i", str(src), "-vn", "-af",
+                   f"silencedetect=n={SILENCE_DB}dB:d={SILENCE_MIN_S},ametadata=print:file=silence.txt",
+                   "-f", "null", "-", cwd=tdp)
+            silences = _intervals((tdp / "silence.txt").read_text() if (tdp / "silence.txt").is_file() else "",
+                                  "lavfi.silence_start", "lavfi.silence_end", total)
+        read = lambda n: (tdp / n).read_text() if (tdp / n).is_file() else ""  # noqa: E731
+        freezes = _intervals(read("freeze.txt"), "lavfi.freezedetect.freeze_start", "lavfi.freezedetect.freeze_end",
+                             total)
+        blacks = _intervals(read("black.txt"), "lavfi.black_start", "lavfi.black_end", total)
+    cuts = find_cuts(scene_scores(src, fmt))
+    heard: list[dict] = []
+    silent_through = has_audio and sum(e - s for s, e in silences) >= total - 0.3
+    if req.transcribe and has_audio and not silent_through:
+        heard = _transcribe(TranscribeReq(run_id=req.run_id, src=req.src))["words"]
+    return {"duration_s": round(total, 3), "freezes": freezes, "blacks": blacks, "silences": silences,
+            "silent": not has_audio or silent_through, "cuts": [{"t": round(t, 2), "kind": k} for t, k in cuts],
+            "heard": heard}
+
+
+@app.post("/watch", dependencies=[Depends(auth)])
+async def watch(req: WatchReq) -> dict:
+    return await asyncio.to_thread(_watch, req)
+
+
+class FilmstripReq(BaseModel):
+    run_id: str
+    src: str
+    out: str  # .jpg: the first sheet; more get -2, -3… before the extension
+    times: list[float] = Field(min_length=1, max_length=STRIP_MAX)
+    labels: list[str] = Field(default_factory=list, max_length=STRIP_MAX)  # under each frame, up to 3 lines
+    inline: bool = True
+
+
+def _filmstrip(req: FilmstripReq) -> dict:
+    src, out = within(req.run_id, req.src), within(req.run_id, req.out)
+    if out.suffix.lower() not in (".jpg", ".jpeg"):
+        raise HTTPException(400, "out must be a .jpg path")
+    if not src.is_file():
+        raise HTTPException(404, f"no such file: {req.src}")
+    fmt = video_format(src)
+    total = duration(src)
+    font = ImageFont.truetype(FONT, 17)
+    tiles = []
+    with tempfile.TemporaryDirectory(dir=src.parent) as td:
+        for k, t in enumerate(req.times):
+            t = min(max(float(t), 0.0), max(total - 0.04, 0.0))
+            f = Path(td) / f"{k:02d}.png"
+            ffmpeg(*LOCAL_ONLY, "-f", fmt, "-ss", f"{t:.3f}", "-i", str(src), "-frames:v", "1", "-vf",
+                   f"scale={STRIP_TILE_W}:-2", str(f))
+            im = Image.open(f).convert("RGB")
+            label = req.labels[k] if k < len(req.labels) else f"{t:.1f}s"
+            probe_draw = ImageDraw.Draw(im)
+            lines = wrap(probe_draw, " ".join(str(label).split())[:160], font, im.width - 10)[:3]
+            tile = Image.new("RGB", (im.width, im.height + 8 + 20 * 3), (16, 16, 18))
+            tile.paste(im, (0, 0))
+            d = ImageDraw.Draw(tile)
+            for i, ln in enumerate(lines):
+                d.text((5, im.height + 4 + 20 * i), ln, fill="white" if i == 0 else (200, 200, 205), font=font)
+            tiles.append(tile)
+    sheets, b64 = [], []
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for s, at in enumerate(range(0, len(tiles), STRIP_PER_SHEET)):
+        group = tiles[at:at + STRIP_PER_SHEET]
+        cols = min(4, len(group))
+        tw, th = max(t.width for t in group), max(t.height for t in group)
+        rows = math.ceil(len(group) / cols)
+        sheet = Image.new("RGB", (cols * (tw + 6) + 6, rows * (th + 6) + 6), (0, 0, 0))
+        for k, tile in enumerate(group):
+            sheet.paste(tile, (6 + k % cols * (tw + 6), 6 + k // cols * (th + 6)))
+        path = out if s == 0 else out.with_name(f"{out.stem}-{s + 1}{out.suffix}")
+        sheet.save(path, "JPEG", quality=80)
+        sheets.append(rel(req.run_id, path))
+        if req.inline:
+            b64.append(base64.b64encode(path.read_bytes()).decode())
+    return {"sheets": sheets, **({"images_b64": b64} if req.inline else {})}
+
+
+@app.post("/filmstrip", dependencies=[Depends(auth)])
+async def filmstrip(req: FilmstripReq) -> dict:
+    return await asyncio.to_thread(_filmstrip, req)

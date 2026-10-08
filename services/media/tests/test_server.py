@@ -680,3 +680,35 @@ def test_stock_video_is_fetched_checked_and_previewed(media, monkeypatch):
                                 "labels": ["1 · 9s", "2 · 4s"], "out": "video/stock/search.png"}, headers=H)
     assert r.status_code == 200, r.text
     assert r.json()["missing"] == [2] and base64.b64decode(r.json()["png_b64"])[:4] == b"\x89PNG"
+
+
+def test_watch_measures_a_frozen_picture_black_and_silence_and_the_filmstrip_labels_frames(media):
+    _, c, run = media
+    # 1 s of moving pattern, 2 s frozen (a still colour), 0.6 s black; a tone then silence
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=s=360x640:r=30:d=1",
+                    "-f", "lavfi", "-i", "color=c=0x3366aa:s=360x640:r=30:d=2",
+                    "-f", "lavfi", "-i", "color=c=black:s=360x640:r=30:d=0.6",
+                    "-f", "lavfi", "-i", "sine=f=440:d=1.2", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+                    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1[v];[3:a][4:a]concat=n=2:v=0:a=1,"
+                    "atrim=0:3.6[a]", "-map", "[v]", "-map", "[a]", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    str(run / "cut.mp4")], check=True)
+    r = c.post("/watch", json={"run_id": RUN, "src": "cut.mp4"}, headers=H)
+    assert r.status_code == 200, r.text
+    w = r.json()
+    assert abs(w["duration_s"] - 3.6) < 0.1 and not w["silent"]
+    assert any(1.0 <= a <= 1.4 and e >= 2.4 for a, e in w["freezes"]), w["freezes"]
+    assert any(abs(a - 3.0) < 0.15 for a, _ in w["blacks"]), w["blacks"]
+    assert any(abs(a - 1.2) < 0.2 for a, _ in w["silences"]), w["silences"]
+    assert w["heard"] == []  # fake recogniser in tests
+    r = c.post("/filmstrip", json={"run_id": RUN, "src": "cut.mp4", "out": "crit/strip.jpg",
+                                   "times": [k * 0.25 for k in range(14)],
+                                   "labels": [f"{k * 0.25:.2f}s h1 · says: \"a long line that wraps onto the next "
+                                              "line under the frame\" · text: hello" for k in range(14)]}, headers=H)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["sheets"] == ["crit/strip.jpg", "crit/strip-2.jpg"] and len(out["images_b64"]) == 2  # 12 a sheet
+    with Image.open(run / "crit" / "strip.jpg") as im:
+        assert im.width == 4 * (270 + 6) + 6
+    assert c.post("/filmstrip", json={"run_id": RUN, "src": "cut.mp4", "out": "x.png", "times": [0]},
+                  headers=H).status_code == 400

@@ -162,8 +162,9 @@ no hosting, no deploy, and nothing posted.
      server on port 3000) and filmed at http://localhost:3000: never deploy it for a video.
   When both have reported: 3. **Producers** (`shorts` and `trends`), one per video, each on its own card (give
   the card id and the scout's report in its task): it writes the shot list from the card, films or finds exactly
-  that footage, scripts it, voices it if anything is spoken, plans it and puts the scaffold in front of the human
-  with `short_review` until they approve.
+  that footage, scripts it, voices it if anything is spoken, plans it, has the critic watch it and fixes what it
+  finds (`short_critique`, a few free rounds that stop by themselves), then puts the scaffold in front of the
+  human with `short_review` until they approve.
 - **Variety:** several videos follow different formats: vary the audio (text + sound vs voiceover) and what's on
   camera (the product's screens, b-roll, people); at most one of them is a screen recording with a voiceover. Pick
   cards the product can really fill. A card that needs a person on camera gets AI shots (priced placeholders until

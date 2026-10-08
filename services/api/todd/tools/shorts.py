@@ -788,7 +788,7 @@ async def short_pace(slug: str, preset: str | None = None, voice_speed: float | 
 
 
 @todd_tool(toolset="shorts")
-async def short_review(slug: str, hook: str = "h1") -> dict:
+async def short_review(slug: str, hook: str = "h1", without_critique: bool = False) -> dict:
     """Show the human a free scaffold and get their call before anything costs money. Renders a numbered version
     (video/<slug>/<slug>-<hook>-scaffold-v<N>.mp4, beats labelled b1, b2… in the corner), asks them, and records their
     answer. "Slower" / "Faster" are applied for you; anything else is feedback for you to act on (short_edit,
@@ -798,9 +798,13 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
     Args:
         slug: the short, from short_new
         hook: the hook variant to show
+        without_critique: only when the human asked to see it right away: skip the critic's pass
     """
     ctx = get_ctx()
     script, plans = await _plan(slug, [hook])
+    crits = [c for c in script.get("critiques") or [] if c.get("hook") == hook]
+    if not crits and not without_critique:
+        raise ToolError(f"have the critic watch it first: short_critique(\"{slug}\", \"{hook}\")")
     p = plans[hook]
     if p.report["duration_s"] > sp.CEILING_S + 5:
         raise ToolError(f"this cut runs {p.report['duration_s']:.0f}s: get it under {sp.CEILING_S}s before showing it "
@@ -821,6 +825,8 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
                 + (f"Approving it means paying about ${price:.2f} to generate {len(p.generate)} AI shot(s): {shots}. "
                    if p.generate else "It's all real footage: nothing to generate. ")
                 + (f"Sound: {script['sound']}. " if script.get("sound") else "")
+                + (f"Critic (v{crits[-1]['version']}, {crits[-1]['overall']}/5): {crits[-1]['summary']}. "
+                   if crits and crits[-1].get("overall") is not None else "")
                 + (f"Pace now: voice {pc['voice_speed']}×, {pc['beat_gap_s']}s between lines, at least "
                    f"{pc['min_shot_s']}s a shot. " if voiced else "No voice: the text and the cuts carry it. ")
                 + "Approve, or tell me what to change (pace, a line, a shot, the hook).")
@@ -853,7 +859,8 @@ async def short_review(slug: str, hook: str = "h1") -> dict:
             "applied": applied, "pace": script["pace"], "next": nxt}
 
 
-from .stock import STOCK_TOOLS  # noqa: E402  (stock.py uses this module's file helpers)
+from .critic import short_critique  # noqa: E402  (critic.py uses this module's file helpers)
+from .stock import STOCK_TOOLS  # noqa: E402
 
 SHORTS_TOOLS = [short_look, short_record, *STOCK_TOOLS, short_new, short_edit, short_pace, short_voices,
-                short_voiceover, short_plan, short_render, short_review]
+                short_voiceover, short_plan, short_render, short_critique, short_review]

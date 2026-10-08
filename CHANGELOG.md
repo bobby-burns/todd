@@ -9,6 +9,24 @@ changes).
 
 ### Added
 
+- **A critic watches every short before the human does:**
+  - `short_critique` renders the cut clean, and the media service watches it (`/watch`): where the picture freezes or
+    goes black, where the sound drops out, and what the soundtrack actually says, transcribed locally.
+  - It also makes a filmstrip every half second (`/filmstrip`), each frame labelled with the beat, the words being
+    said then and the text on screen.
+  - A separate critic agent with fresh context (a hidden `critic` toolset: `critic_watch`, `critic_verdict`) looks
+    at that next to the format card's real examples. It scores the hook, what's said and written against what's
+    shown (counted double), how organic it looks, the timing and the fit to the format, and returns up to six
+    concrete fixes the producer applies.
+  - Todd's own checks come with it: a line the voice says differently from the script, a picture that doesn't move,
+    dead air, nothing to read or hear at the start, every shot the same length.
+  - Iterating is free, and it can't loop: at most three critiques per cut, only after something changed, none
+    after a pass, and the producer is told to stop as soon as the score stops improving. A critic that doesn't
+    answer within ten minutes is stopped, and the producer judges the filmstrip itself.
+  - `short_review` needs a critique first (`without_critique` when the human wants to see it now), and shows the
+    critic's score.
+  - A lesson the critic draws for a format, not a product, is kept on the format card (`lessons`) for later
+    producers.
 - **Shorts learn the edit, not just the words:** `trend_analyze` decodes each reference shot by shot. It finds the
   cuts (hard cuts, and jump cuts as spikes against the frames around them, so a fast scroll isn't a string of cuts),
   shows the agent a sheet with a frame from every shot (and every 2.5 s of a long one), and lines the words up with

@@ -32,6 +32,7 @@ from .tools.cli_login import CLI_LOGIN_TOOLS
 from .tools.human import HUMAN_TOOLS
 from .tools.infra import GITHUB_TOOLS, VAULT_TOOLS, VERCEL_TOOLS, resolve_secrets
 from .tools.sandbox_tools import SANDBOX_TOOLS
+from .tools.critic import CRITIC_TOOLS
 from .tools.shorts import SHORTS_TOOLS
 from .tools.trends import TRENDS_TOOLS
 from .tools.video import VIDEO_TOOLS
@@ -48,6 +49,7 @@ class Toolset:
     tools: list[BaseTool] = field(default_factory=list)
     source: str = "builtin"
     guide: str = ""  # usage tips added to the system prompt of agents that get this toolset
+    hidden: bool = False  # used by tools themselves (e.g. the critic short_critique starts), not offered to the planner
 
     def info(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "source": self.source,
@@ -110,8 +112,12 @@ Steps:
    anyone keeps watching) and the beats. Never a feature tour; the product is the payoff, not the pitch.
 2) short_voiceover (free local voice) if anything is spoken, short_plan (fix every warning, and look at vs_format:
    cut more if it's slower than the examples), then short_render the animatic and look at its contact sheet against
-   the look above and the card's examples. Fix what doesn't pass.
-3) short_review: the human watches the free scaffold and approves or asks for changes; apply them and review again
+   the look above and the card's examples (and the card's `lessons`, from earlier critiques). Fix what doesn't pass.
+3) short_critique: a separate critic watches the cut (a frame every half second with what's said and written then,
+   what the soundtrack really says, frozen picture and silence) next to the card's real examples, and returns scores
+   and fixes. Apply the fixes (voice again if a line changed, plan), then short_critique again. It's free; it stops
+   by itself (at most 3 rounds, never after a pass, and as soon as the score stops improving). Follow its `next`.
+4) short_review: the human watches the free scaffold and approves or asks for changes; apply them and review again
    until they approve. Only then: short_voiceover(provider="elevenlabs") for a voiced short, plan again, and (later)
    generate. Never post."""
 
@@ -182,6 +188,8 @@ BUILTIN_TOOLSETS: dict[str, Toolset] = {
                       "format cards (shot list, audio, text style, measured pace, why it works) to build shorts "
                       "from.", TRENDS_TOOLS,
                       guide=TRENDS_GUIDE),
+    "critic": Toolset("critic", "Watch a rendered short and give a verdict (the critic agent short_critique starts).",
+                      CRITIC_TOOLS, hidden=True),
     "vault": Toolset("vault", "List secret names and store new secrets (referenced as {{secret:NAME}}).",
                      VAULT_TOOLS),
     "accounts": Toolset("accounts", "See which services the browser is signed in to; ask the human to sign in.",
@@ -321,7 +329,7 @@ def planner_tools(toolsets: dict[str, Toolset]) -> list[BaseTool]:
 
 
 def toolsets_prompt(toolsets: dict[str, Toolset]) -> str:
-    return "\n".join(f"- `{ts.name}` — {ts.description}" for ts in toolsets.values())
+    return "\n".join(f"- `{ts.name}` — {ts.description}" for ts in toolsets.values() if not ts.hidden)
 
 
 def catalog(extra: dict[str, Toolset] | None = None) -> dict[str, Any]:

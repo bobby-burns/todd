@@ -294,7 +294,8 @@ def test_shorts_toolset_and_elevenlabs_routing(loop):
     ts = registry.all_toolsets()
     assert [t.name for t in ts["shorts"].tools] == ["short_look", "short_record", "short_stock", "short_stock_pick",
                                                     "short_new", "short_edit", "short_pace", "short_voices",
-                                                    "short_voiceover", "short_plan", "short_render", "short_review"]
+                                                    "short_voiceover", "short_plan", "short_render", "short_critique",
+                                                    "short_review"]
     assert ts["shorts"].source == "builtin" and "scaffold" in ts["shorts"].guide
     vault.set_secret("ELEVENLABS_API_KEY", "el-test-key")
     try:
@@ -454,7 +455,7 @@ def test_review_shows_a_free_scaffold_and_applies_feedback(loop, studio, monkeyp
         monkeypatch.setattr(get_ctx(), "ask_human", ask)
         slug = await make()
         await shorts.short_voiceover.ainvoke({"slug": slug})
-        r1 = await shorts.short_review.ainvoke({"slug": slug})
+        r1 = await shorts.short_review.ainvoke({"slug": slug, "without_critique": True})
         assert r1["version"] == 1 and not r1["approved"] and r1["applied"] == "slower"
         assert r1["video"] == f"video/{slug}/{slug}-h1-scaffold-v1.mp4"
         q, data = asked[0]
@@ -465,10 +466,10 @@ def test_review_shows_a_free_scaffold_and_applies_feedback(loop, studio, monkeyp
         with pytest.raises(ToolError, match="voiced"):
             await shorts.short_plan.ainvoke({"slug": slug})
         await shorts.short_voiceover.ainvoke({"slug": slug})
-        r2 = await shorts.short_review.ainvoke({"slug": slug})
+        r2 = await shorts.short_review.ainvoke({"slug": slug, "without_critique": True})
         assert r2["version"] == 2 and r2["feedback"] == "Shorter hook please" and r2["applied"] is None
         assert "act on the feedback" in r2["next"]
-        r3 = await shorts.short_review.ainvoke({"slug": slug})
+        r3 = await shorts.short_review.ainvoke({"slug": slug, "without_critique": True})
         assert r3["approved"] and "elevenlabs" in r3["next"]
         reviews = script_of(studio, slug)["reviews"]
         assert [(x["version"], x["approved"]) for x in reviews] == [(1, False), (2, False), (3, True)]
@@ -504,7 +505,7 @@ def test_a_script_follows_a_format_card_and_review_says_which(loop, studio, monk
                                                          "examples": 2, "plays": [50000, 90000], "audio": None,
                                                          "measured": None}
         await shorts.short_voiceover.ainvoke({"slug": r["slug"]})
-        await shorts.short_review.ainvoke({"slug": r["slug"]})
+        await shorts.short_review.ainvoke({"slug": r["slug"], "without_critique": True})
         assert "Format: question-first quiz, from 2 real video(s)." in asked[-1]
     loop.run_until_complete(go())
 
@@ -547,7 +548,7 @@ def test_a_text_and_sound_short_needs_no_voice(loop, studio, monkeypatch):
         assert [(o["text"], o["style"]) for o in tl["overlays"] if o["position"] != "tag"] == [
             ("pov: it's 11pm and you want to skate tomorrow", "box"), ("the rink site has it on 4 pages".replace(
                 "rink", "rec"), "box"), ("this one has all of it", "outline")]
-        rv = await shorts.short_review.ainvoke({"slug": r["slug"]})
+        rv = await shorts.short_review.ainvoke({"slug": r["slug"], "without_critique": True})
         assert rv["approved"] and "No voice" in asked[-1] and "Sound: trending sound" in asked[-1]
         assert "short_render(mode=\"final\")" in rv["next"] and "elevenlabs" not in rv["next"]
         # a voiced short can turn a beat silent (a reveal), and back

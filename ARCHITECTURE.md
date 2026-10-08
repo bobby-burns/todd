@@ -41,6 +41,8 @@ tools/shorts.py    `shorts` toolset: record the product → script from a format
                    beats or text + sound; quick cuts, punch-ins, the app's text styles) → voiceover take (free local
                    voice or ElevenLabs) → timing plan → scaffold / final cut
 tools/stock.py     Stock video b-roll for shorts (Pixabay, Pexels): search with a candidate sheet, pick, credit
+tools/critic.py    The critic: short_critique renders and watches a cut (media /watch, /filmstrip) and a separate
+                   critic agent (hidden `critic` toolset) judges it; guarded fix-and-critique loop, lessons on the card
 screencast.py      Todd films its own product: a 9:16 tab (fresh, signed out by default), scripted steps, CDP screencast
 tools/trends.py    `trends` toolset: trend_scan (search phrases, hashtags, related videos; outliers by reach),
                    trend_analyze (cuts and a frame from every shot, words per shot), format cards (shot list, audio,
