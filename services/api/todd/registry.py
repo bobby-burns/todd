@@ -100,6 +100,8 @@ every shot: age, hair, clothes, one detail>. <one simple action, small natural m
 place>, <time of day>, lit by <a named light source>; phone auto-exposure, natural skin texture, slight handheld
 shake. Screens, signs and labels in view are blank or turned away." Never ask for text, UI, logos or a speaking
 mouth; never words like cinematic, epic, professional, studio.
+Don't ask the human anything on the way except what the tools ask for themselves (a key) and short_review: decide
+(Todd films, cuts and renders everything; stock or an AI shot when something can't be filmed) and say what you chose.
 Steps:
 0) Read the format card(s) (format_search) and decide which one this short follows. Write its shot list first: for
    each of the card's shots, what our version shows and where it comes from (above). Then get exactly that footage:
@@ -136,7 +138,9 @@ TRENDS_GUIDE = """\
    the text style, why it works (pointing at shots), and how a product fits without becoming an ad (`adapt`).
    Different formats matter more than more of the same: aim for cards that differ in audio (text + sound vs voice)
    and in what's on camera, including at least one that the product's own screens can carry. Never copy a video:
-   learn its shape. Report each card: its id, name, audio, what it needs on camera, and its measured pace."""
+   learn its shape. Report each card: its id, name, audio, what it needs on camera, and its measured pace.
+Never ask the human about the videos (footage, editing, whether the cards or specs look right): choose and report;
+they see the drafts at short_review."""
 
 BUILTIN_TOOLSETS: dict[str, Toolset] = {
     "sandbox": Toolset("sandbox", "Linux sandbox (node 22, pnpm, git, gh, python, vercel/firebase/eas CLIs) with a "

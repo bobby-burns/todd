@@ -165,6 +165,9 @@ no hosting, no deploy, and nothing posted.
   that footage, scripts it, voices it if anything is spoken, plans it, has the critic watch it and fixes what it
   finds (`short_critique`, a few free rounds that stop by themselves), then puts the scaffold in front of the
   human with `short_review` until they approve.
+- **Questions:** no agent asks the human about footage, editing or specs. Todd films, cuts and renders
+  everything; stock or an AI shot covers what can't be filmed; the human sees the drafts at `short_review`. Only
+  missing keys (asked for by the tools) and the reviews reach them.
 - **Variety:** several videos follow different formats: vary the audio (text + sound vs voiceover) and what's on
   camera (the product's screens, b-roll, people); at most one of them is a screen recording with a voiceover. Pick
   cards the product can really fill. A card that needs a person on camera gets AI shots (priced placeholders until
